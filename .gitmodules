@@ -1,0 +1,3 @@
+[submodule "Src/cython-bbox"]
+	path = Src/cython-bbox
+	url = https://github.com/yanfengliu/cython_bbox.git
