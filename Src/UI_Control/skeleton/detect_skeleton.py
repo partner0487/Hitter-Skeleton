@@ -504,22 +504,23 @@ class PoseEstimater:
 
         return pd.DataFrame(self.person_data)
     
-    def mergeBatData(self, bbox, mask,  frame_num:int = None):
+    def mergeBatData(self, bbox, mask, frame_num: int = None):
         if mask is None:
             self.has_pre_bat_df = False
-        else: # 有detect到東西
-            self.has_pre_bat_df = True
-            if frame_num is None:
-                return pd.DataFrame()
-            else:
-                bat_info = {
-                    'bbox': bbox,
-                    'mask': mask,
-                    'frame_number': frame_num
-                }
-                self.pre_bat_df.copy(bat_info)
-                self.bat_data.append(bat_info)
-                return pd.DataFrame(self.bat_data)
+            return pd.DataFrame(self.bat_data) if self.bat_data else pd.DataFrame()
+        
+        self.has_pre_bat_df = True
+        if frame_num is None:
+            return pd.DataFrame(self.bat_data) if self.bat_data else pd.DataFrame()
+            
+        bat_info = {
+            'bbox': bbox,
+            'mask': mask,
+            'frame_number': frame_num
+        }
+        self.pre_bat_df = pd.DataFrame([bat_info])
+        self.bat_data.append(bat_info)
+        return pd.DataFrame(self.bat_data)
   
     def detectKpt(self, image:np.ndarray, frame_num:int = None, is_video:bool = False, is_processed:bool=False):
         # --- 1. 定義預設的空資料夾 (防呆基礎) ---
