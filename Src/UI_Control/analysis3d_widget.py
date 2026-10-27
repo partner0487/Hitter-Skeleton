@@ -26,6 +26,8 @@ from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
 from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR
 from PyQt5 import QtGui
+from utils.fps_utils import get_video_fps
+
 
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
@@ -613,8 +615,7 @@ class Analysis3DWidget(QWidget):
             return {}
 
         is_righty = (self.ui.batterInput.currentText() == "右打")
-        fps = getattr(self.video_loader, 'video_fps', 240.0)
-        if fps <= 0: fps = 240.0
+        fps = get_video_fps(self.video_loader)
         
         # 定義關節索引 (與 2D 保持一致)
         neck_idx = 18 
@@ -700,8 +701,7 @@ class Analysis3DWidget(QWidget):
         import numpy as np
         
         is_righty = (self.ui.batterInput.currentText() == "右打")
-        fps = getattr(self.video_loader, 'video_fps', 240.0)
-        if fps <= 0: fps = 240.0
+        fps = get_video_fps(self.video_loader)
         
         # 定義關節索引 (與 2D 保持一致)
         neck_idx = 18 
@@ -1679,7 +1679,7 @@ class Analysis3DWidget(QWidget):
                 bat_frames.append(f)
                 bat_head_pts.append(h_3d)
 
-        fps = getattr(self.video_loader, 'video_fps', 240.0)
+        fps = get_video_fps(self.video_loader)
         self.bat_speed_plot = BatKinematicsGraph(bat_frames, bat_head_pts, total_frames, fps=fps)
         
         # [NEW] 用 3D 真實速度曲線的最高點覆寫 Impact，保證與圖表完美對齊
@@ -1961,7 +1961,7 @@ class Analysis3DWidget(QWidget):
                     cog_t = (pt_L_t + pt_R_t) / 2
                     cog_prev = (pt_L_prev + pt_R_prev) / 2
                     dist = np.linalg.norm(cog_t - cog_prev)
-                    fps = self.video_loader.video_fps if self.video_loader.video_fps else 30
+                    fps = get_video_fps(self.video_loader)
                     speed = dist * fps
                     self.ui.centerGravityLabel.setText(f"{speed:.1f}") # Check units
                 else:
@@ -1994,7 +1994,7 @@ class Analysis3DWidget(QWidget):
                     cog_t = (pt_L_t + pt_R_t) / 2
                     cog_prev = (pt_L_prev + pt_R_prev) / 2
                     dist = np.linalg.norm(cog_t - cog_prev)
-                    fps = self.video_loader.video_fps if self.video_loader.video_fps else 30
+                    fps = get_video_fps(self.video_loader)
                     speed = dist * fps
                     self.ui.centerGravityLabel2.setText(f"{speed:.1f}") # Check units
                 else:
@@ -2511,7 +2511,7 @@ class Analysis3DWidget(QWidget):
             # --- B. 揮擊軌跡指標 ---
             if head_prev is not None:
                 # 取得影片 FPS (預設 30)
-                fps = self.video_loader.video_fps if hasattr(self.video_loader, 'video_fps') and self.video_loader.video_fps else 30
+                fps = get_video_fps(self.video_loader)
                 
                 # 1. 揮棒速度計算 (Bat Speed) - 使用 mph
                 # 位移向量與 3D 距離 (公尺)

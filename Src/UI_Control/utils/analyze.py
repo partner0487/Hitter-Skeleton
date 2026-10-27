@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from skeleton.detect_skeleton_dual import PoseEstimater
 from utils.one_euro_filter import OneEuroFilter
+from utils.fps_utils import DEFAULT_FPS
 
 class PoseAnalyzer:
     def __init__(self, pose_estimater:PoseEstimater):
@@ -108,7 +109,7 @@ class BatAnalyzer:
         self.batHeadAngle_df = pd.DataFrame()
 
         # Parameters
-        self.fps = 285
+        self.fps = DEFAULT_FPS
         self.batsize = 81
         self.batHeadTail = []
         self.batHeadTail_df = pd.DataFrame()
