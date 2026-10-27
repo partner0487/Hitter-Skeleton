@@ -81,7 +81,7 @@ class Camera:
         self.camera_idx = camera_idx
         self.is_opened = False
         self.frame_count = 0
-        self.fps_control = 3  # 90 fps 再取 1/3 → 30 fps 給 realtime ViTPose
+        self.fps_control = 2  # 60 fps 再取 1/2 → 30 fps 給 realtime ViTPose
         self.frame_buffer = queue.Queue(maxsize=self.FRAME_BUFFER_SIZE)
         self.frame_buffer_2 = queue.Queue(maxsize=self.FRAME_BUFFER_SIZE)
         self.video_path = None

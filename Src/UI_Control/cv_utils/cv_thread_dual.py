@@ -63,8 +63,8 @@ from camera_objects.two_cameras import DualFlirSystem
 
 class VideoCaptureThread(QThread):
     frame_ready = pyqtSignal(np.ndarray, np.ndarray, float)
-    # 相機 180 fps，每 EMIT_EVERY 幀送出一次（論文設計：180 → 90 fps）
-    EMIT_EVERY = 2
+    # 相機 180 fps，每 EMIT_EVERY 幀送出一次（180 → 60 fps，與論文資料集一致）
+    EMIT_EVERY = 3
 
 
     def __init__(self, parent=None, camera_index=0):
