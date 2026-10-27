@@ -18,37 +18,44 @@ import os
 import glob
 
 class ContinuousRecorder:
-    def __init__(self, fps=180, pre_roll_sec=2, post_roll_sec=1):
-        self.fps = fps
-        # self.pre_roll_frames = int(fps * pre_roll_sec)
-        # self.post_roll_frames = int(fps * post_roll_sec)
-        
-        # 使用 deque 作為環形緩衝區，儲存 (frame1, frame2)
-        # 50 表示錄製觸發「前」的 50 幀畫面。若要錄更前面可加大數字。
-        self.buffer = collections.deque(maxlen=50)
-        
+    def __init__(self, pre_roll_frames=50, post_roll_frames=40):
+        self.post_roll_frames = post_roll_frames
+        # 環形緩衝區，儲存觸發「前」的 (frame1, frame2, grab_time)
+        self.buffer = collections.deque(maxlen=pre_roll_frames)
+
         self.is_recording_post = False
         self.post_count = 0
-        self.trigger_data = [] # 用於暫存觸發後的影像 tuples
+        self.trigger_data = []  # 暫存觸發後的影像
         self.is_saving = False
         self.full_video = []
+        self.frame_times = []
+        self.measured_fps = None
 
-    def add_frame(self, frame1, frame2):
+    @staticmethod
+    def _calc_fps(times):
+        # 以實際擷取時間計算平均 fps，可反映掉幀
+        if len(times) > 1 and times[-1] > times[0]:
+            return (len(times) - 1) / (times[-1] - times[0])
+        return None
+
+    def add_frame(self, frame1, frame2, grab_time):
         if self.is_saving: return
-        
-        # 永遠在更新緩衝區
+
+        # emit 出來的陣列每次都是新物件，不需要再 copy
+        item = (frame1, frame2, grab_time)
         if not self.is_recording_post:
-            self.buffer.append((frame1.copy(), frame2.copy()))
+            self.buffer.append(item)
         else:
-            # 如果處於觸發後的「後一秒」錄製狀態
-            self.trigger_data.append((frame1.copy(), frame2.copy()))
+            self.trigger_data.append(item)
             self.post_count += 1
-            
-            if self.post_count >= 40: # 假設 30 是你要的後段長度
-                # 將緩衝區的所有內容轉存到 full_video
-                self.full_video = list(self.buffer) + self.trigger_data
-                self.is_recording_post = False 
-                print("片段擷取完成，等待寫入磁碟...")
+
+            if self.post_count >= self.post_roll_frames:
+                clip = list(self.buffer) + self.trigger_data
+                self.full_video = [(f1, f2) for f1, f2, _ in clip]
+                self.frame_times = [t for _, _, t in clip]
+                self.measured_fps = self._calc_fps(self.frame_times)
+                self.is_recording_post = False
+                print(f"片段擷取完成（{len(clip)} 幀），等待寫入磁碟...")
 
     def trigger(self):
         """當偵測到球碰到球棒時呼叫此函數"""
@@ -63,6 +70,8 @@ class ContinuousRecorder:
         self.post_count = 0
         self.trigger_data = []
         self.full_video = []
+        self.frame_times = []
+        self.measured_fps = None
 
 class Camera:
     # 即時預覽只需最新畫面，限制緩衝避免延遲累積與記憶體成長
@@ -72,7 +81,7 @@ class Camera:
         self.camera_idx = camera_idx
         self.is_opened = False
         self.frame_count = 0
-        self.fps_control = 15
+        self.fps_control = 3  # 90 fps 再取 1/3 → 30 fps 給 realtime ViTPose
         self.frame_buffer = queue.Queue(maxsize=self.FRAME_BUFFER_SIZE)
         self.frame_buffer_2 = queue.Queue(maxsize=self.FRAME_BUFFER_SIZE)
         self.video_path = None
@@ -81,7 +90,7 @@ class Camera:
         self.video_writer2 = None
         self.video_thread = None
         self.frame_size=None
-        self.continuous_recorder = ContinuousRecorder(fps=180, pre_roll_sec=2, post_roll_sec=1)
+        self.continuous_recorder = ContinuousRecorder(pre_roll_frames=50, post_roll_frames=40)
 
     def _put_latest(self, buffer: queue.Queue, frame: np.ndarray):
         # 佇列滿時丟掉最舊的幀，只保留最新畫面
@@ -92,6 +101,10 @@ class Camera:
                 pass
         buffer.put_nowait(frame)
 
+    def get_stream_fps(self) -> float:
+        """buffer_frame 實際收到的名目 fps（相機 fps ÷ 抽幀間隔）"""
+        return self.video_thread.camera1.get_fps() / VideoCaptureThread.EMIT_EVERY
+    
     def open_camera(self):
         # 開啟相機，並設置回調來處理每一幀
         self.frame_count = 0
@@ -129,13 +142,13 @@ class Camera:
             self.frame_size=None
             return (0, 0, 0)
 
-    def buffer_frame(self, frame:np.ndarray, frame2:np.ndarray):
+    def buffer_frame(self, frame:np.ndarray, frame2:np.ndarray, grab_time:float):
         # 接收每一幀並進行處理
         self.frame_count += 1
         
         # 更新 ContinuousRecorder
         if self.continuous_recorder:
-            self.continuous_recorder.add_frame(frame, frame2)
+            self.continuous_recorder.add_frame(frame, frame2, grab_time)
             
         if self.is_opened and self.frame_count % self.fps_control ==0:
             self._put_latest(self.frame_buffer, frame)
@@ -151,8 +164,7 @@ class Camera:
             return
         frame_width = int(self.video_thread.camera1.get_width())
         frame_height = int(self.video_thread.camera1.get_height())
-        fps = int(self.video_thread.camera1.get_fps())
-        # fps = int(self.video_thread.cap.get(cv2.CAP_PROP_FPS))
+        fps = self.get_stream_fps()
         self.video_path = filename
         self.video_path2 = filename2
         self.video_writer1 = VideoWriterThread(filename, frame_width, frame_height, fps=fps)
