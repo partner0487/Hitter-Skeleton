@@ -16,6 +16,8 @@ from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR
 from cv_utils.cv_control_dual import DualJsonLoader
 from utils.phase_detect3d import PhaseDetector, PhaseResult
 import pandas as pd
+from utils.fps_utils import get_video_fps
+
 
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
@@ -852,8 +854,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         # 嘗試計算 1, 2, 3, 4 (動力學順序)
         try:
             peaks = {}
-            fps = p.video_loader.video_fps if getattr(p.video_loader, 'video_fps', None) else 30
-            if fps > 600 or fps <= 0: fps = 30
+            fps = get_video_fps(p.video_loader)
             
             if p.is_3d and getattr(p, 'person_3d_df', None) is not None and not p.person_3d_df.empty:
                 peaks = self._get_velocity_peaks_3d(p)
@@ -914,8 +915,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         """核心生物力學數據計算公式 - 與 3D / 2D 分析模塊嚴格統一"""
         res = {}
         person_side_df = context.pose_estimater_side.person_df
-        fps = context.video_loader.video_fps if getattr(context.video_loader, 'video_fps', None) else 30
-        if fps > 600 or fps <= 0: fps = 30 # fallback if ridiculous
+        fps = get_video_fps(context.video_loader)
 
         def get_kpt(f):
             if f is None or person_side_df is None: return None
@@ -1413,8 +1413,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
             return {}
 
         is_righty = (p.current_mode in ["正投", "側拋", "T座", "Tbar"])
-        fps = getattr(p.video_loader, 'video_fps', 240.0)
-        if fps <= 0: fps = 240.0
+        fps = get_video_fps(p.video_loader)
         
         neck_idx = 18 
         if is_righty:

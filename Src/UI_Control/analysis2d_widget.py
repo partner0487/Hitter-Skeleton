@@ -28,6 +28,7 @@ from utils.model import Model
 from utils.phase_detect2d import PhaseDetector, PhaseResult
 from ocr import ocr_capture_1time as ocr
 from utils.paths import DB_DIR, ICON_DIR
+from utils.fps_utils import get_video_fps
 
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
@@ -1171,7 +1172,7 @@ class Analysis2dWidget(QWidget):
                 cog_prev = (pt_L_prev + pt_R_prev) / 2
                 # 計算像素位移
                 dist_px = np.linalg.norm(cog_t - cog_prev)
-                fps = self.video_loader.video_fps if self.video_loader.video_fps else 30
+                fps = get_video_fps(self.video_loader)
                 speed_px = dist_px * fps
                 speed_px = speed_px * 0.01
                 # 注意：這裡輸出的是 px/s，若有轉換係數可乘以係數
@@ -1195,7 +1196,7 @@ class Analysis2dWidget(QWidget):
                     cog_t = (pt_L_t + pt_R_t) / 2
                     cog_prev = (pt_L_prev + pt_R_prev) / 2
                     dist_px = np.linalg.norm(cog_t - cog_prev)
-                    fps = self.video_loader.video_fps if self.video_loader.video_fps else 30
+                    fps = get_video_fps(self.video_loader)
                     speed_px = dist_px * fps
                     speed_px = speed_px * 0.01
                     self.ui.centerGravityLabel2.setText(f"{speed_px:.1f} m/s")
@@ -1620,7 +1621,7 @@ class Analysis2dWidget(QWidget):
         attack_angle = abs(attack_angle) # 依照您的需求取絕對值
 
         # 2. 計算揮棒速度
-        fps = self.video_loader.video_fps if hasattr(self.video_loader, 'video_fps') else 180
+        fps = get_video_fps(self.video_loader)
         px_to_meter = 0.0032  # 假設比例尺
         
         # 速度 = (平均像素位移 * 比例尺) * FPS
@@ -1725,7 +1726,7 @@ class Analysis2dWidget(QWidget):
         attack_angle = abs(attack_angle)
 
         # 2. 揮棒速度
-        fps = self.video_loader.video_fps if hasattr(self.video_loader, 'video_fps') else 180
+        fps = get_video_fps(self.video_loader)
         px_to_meter = 0.0032  # 比例尺
         
         # =========================================================================
