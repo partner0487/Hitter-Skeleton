@@ -10,41 +10,35 @@ import queue
 
 class VideoToImagesThread(QThread):
     emit_signal = pyqtSignal([list,int,int])   
-    _run_flag=True
     def __init__(self,video_path):
         super(VideoToImagesThread, self).__init__()
         self.video_path=video_path
+        self._run_flag = True
 
     def video_to_frame(self, input_video_path):
         video_images = []
         vidcap = cv2.VideoCapture(input_video_path)
         fps = vidcap.get(cv2.CAP_PROP_FPS)
         success, image = vidcap.read()
-        frame_counter = 0
         count = 0
-        while success:
-            # # load in even number frame only
-            # if not frame_counter & 1:
+        while self._run_flag and success:
             video_images.append(image)
             count += 1
             success, image = vidcap.read()
-            # frame_counter += 1
         vidcap.release()
         fps = int(fps) >> 1
-        # set image count labels
         return video_images, fps, count
 
     def run(self):
-        # capture from web cam
         video_images, fps, count= self.video_to_frame(self.video_path)
-        _run_flag=False
+        # 被中止時不送出讀到一半的資料
+        if not self._run_flag:
+            return
         self.emit_signal.emit(video_images, fps, count)
-        
+
     def stop(self):
-        """Sets run flag to False and waits for thread to finish"""
+        """Sets run flag to False; caller should wait() for the thread to finish"""
         self._run_flag = False
-        # if self.cap!=None:
-        #     self.cap.release()
         print("stop video to image thread")
     
     def isFinished(self):
