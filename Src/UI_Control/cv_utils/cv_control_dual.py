@@ -7,6 +7,7 @@ from enum import Enum
 from PyQt5.QtWidgets import QGraphicsScene
 from utils.vis_image_dual import ImageDrawer
 from cv_utils.cv_thread_dual import VideoCaptureThread, VideoWriterThread, VideoToImagesThread
+from utils.paths import RECORD_DIR
 from PyQt5.QtWidgets import *
 import EasyPySpin
 import cv2
@@ -235,7 +236,7 @@ class VideoLoader:
     def loadVideo(self, video_path:str = None, video_path2:str = None):
         self.reset()
         options = QFileDialog.Options()
-        initial_dir = "../../Db/Record"
+        initial_dir = str(RECORD_DIR)
         # if video_path is None or video_path2 is None:
         #     video_path, _ = QFileDialog.getOpenFileName(None, "選取正面攝影機", initial_dir, "Video Files (*.mp4 *.avi);;All Files (*)", options=options)
         #     video_path2, _ = QFileDialog.getOpenFileName(None, "選取側面攝影機", video_path, "Video Files (*.mp4 *.avi);;All Files (*)", options=options)

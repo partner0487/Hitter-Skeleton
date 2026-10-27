@@ -27,6 +27,7 @@ import pyqtgraph as pg
 from utils.model import Model
 from utils.phase_detect2d import PhaseDetector, PhaseResult
 from ocr import ocr_capture_1time as ocr
+from utils.paths import DB_DIR, ICON_DIR
 
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
@@ -388,7 +389,7 @@ class Analysis2dWidget(QWidget):
                 self.recent_video_model.clear()
             return
 
-        db_path = os.path.abspath(os.path.join(os.getcwd(), "../../Db"))
+        db_path = str(DB_DIR)
         hitter_path = os.path.join(db_path, hitter_name)
         
         # 若該選手資料夾不存在，清空清單並返回
@@ -484,7 +485,7 @@ class Analysis2dWidget(QWidget):
             return
 
         # 定義資料庫基礎路徑 (參考 startRecording 中的路徑結構)
-        db_base_path = os.path.abspath(os.path.join(os.getcwd(), "../../Db"))
+        db_base_path = str(DB_DIR)
         hitter_path = os.path.join(db_base_path, new_name)
 
         try:
@@ -695,7 +696,7 @@ class Analysis2dWidget(QWidget):
         hitter_name = self.ui.hitterNameInput.currentText()
         current_mode_zh = self.mode_dict.get(getattr(self, 'current_mode', 'Tbar'), 'T座')
         ball_folder = f"{hitter_name}_H{self.hitBallNum:02d}"
-        output_dir = f'../../Db/{hitter_name}/{current_date}/{current_mode_zh}/{ball_folder}/'
+        output_dir = os.path.join(DB_DIR, hitter_name, current_date, current_mode_zh, ball_folder)
         os.makedirs(output_dir, exist_ok=True)
         
         # Increment ball count and update UI
@@ -794,7 +795,7 @@ class Analysis2dWidget(QWidget):
         hitter_name = self.ui.hitterNameInput.currentText()
         current_mode_zh = self.mode_dict.get(getattr(self, 'current_mode', 'Tbar'), 'T座')
         ball_folder = f"{hitter_name}_H{self.hitBallNum:02d}"
-        output_dir = f'../../Db/{hitter_name}/{current_date}/{current_mode_zh}/{ball_folder}/'
+        output_dir = os.path.join(DB_DIR, hitter_name, current_date, current_mode_zh, ball_folder)
         os.makedirs(output_dir, exist_ok=True)
         video_filename = os.path.join(output_dir, f'CF_{ball_folder}.mp4')
         video_filename_2 = os.path.join(output_dir, f'CS_{ball_folder}.mp4')
@@ -1407,7 +1408,7 @@ class Analysis2dWidget(QWidget):
                                 joint_coords["wrist"] = kpts[10][:2] if is_righty else kpts[9][:2]
                             
                         # 圖標目錄
-                        icon_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../Db/icon"))
+                        icon_dir = str(ICON_DIR)
                         icon_size = 90 # 設定 icon 統一大小
                         
                         def overlay_transparent(background, overlay, x, y):
@@ -1827,7 +1828,7 @@ class Analysis2dWidget(QWidget):
         """掃描 Db 資料夾，將現有的選手名稱加入下拉選單"""
         if not hasattr(self.ui, 'hitterNameInput'): return
         
-        db_base_path = os.path.abspath(os.path.join(os.getcwd(), "../../Db"))
+        db_base_path = str(DB_DIR)
         if not os.path.exists(db_base_path): return
         
         # 暫時阻斷訊號避免重複觸發清單更新
