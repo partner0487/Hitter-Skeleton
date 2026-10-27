@@ -24,6 +24,8 @@ from ui.dual_camera_system_video import Ui_hitter_ui_dual
 from utils.phase_detect3d import PhaseDetector, PhaseResult
 from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
+from PyQt5 import QtGui
+
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2131,9 +2133,9 @@ class Analysis3DWidget(QWidget):
                         draw_img = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
                     except Exception as e:
-                        print(f"PIL 繪圖失敗，改用預設字體: {e}")
-                        # 如果 PIL 失敗，至少用 OpenCV 寫英文數值墊背
-                        cv2.putText(draw_img, text_val, (f_x + 30, f_y - 30), font, 1.2, WHITE, 3)
+                        print(f"PIL 繪圖失敗: {e}")
+                        # 修正：將未定義的 font 改為 cv2.FONT_HERSHEY_SIMPLEX
+                        cv2.putText(draw_img, text_val, (f_x + 30, f_y - 30), cv2.FONT_HERSHEY_SIMPLEX, 1.2, WHITE, 3)
 
             # --- C. Impact：繪製腿部骨架 (髖-膝-踝) ---
             # if phase_type == 'impact':
