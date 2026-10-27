@@ -93,18 +93,29 @@ class VideoCaptureThread(QThread):
 
     def run(self):
         count = 0
-        while self.running:     
-            ret, frame_1,frame_2 = self.cameras.get_grayscale_images()
-            rgb_frame_1 = cv2.cvtColor(frame_1, cv2.COLOR_BayerBG2BGR)
-            rgb_frame_2 = cv2.cvtColor(frame_2, cv2.COLOR_BayerBG2BGR)
-            if ret:
-                if count % 3 ==0:
-                    self.frame_ready.emit(rgb_frame_1,rgb_frame_2)  # 發送影像
-            else:  # 例外處理
-                print("Warning: Failed to capture frame")
-                break
-            count +=1
-        self.cameras.release()
+        fail_count = 0
+        max_fail = 30  # 連續失敗超過此次數才視為相機斷線
+        try:
+            while self.running:
+                ret, frame_1, frame_2 = self.cameras.get_grayscale_images()
+                if not ret or frame_1 is None or frame_2 is None:
+                    fail_count += 1
+                    if fail_count >= max_fail:
+                        print(f"Error: 連續 {max_fail} 次擷取失敗，停止相機")
+                        break
+                    continue
+                fail_count = 0
+
+                # 只轉換要送出的幀，避免浪費運算
+                if count % 3 == 0:
+                    rgb_frame_1 = cv2.cvtColor(frame_1, cv2.COLOR_BayerBG2BGR)
+                    rgb_frame_2 = cv2.cvtColor(frame_2, cv2.COLOR_BayerBG2BGR)
+                    self.frame_ready.emit(rgb_frame_1, rgb_frame_2)  # 發送影像
+                count += 1
+        finally:
+            # 無論正常結束或發生例外都要釋放相機
+            self.cameras.release()
+
 
 class VideoWriterThread(QThread):
     # 使用 signal 傳遞狀態更新
