@@ -5,7 +5,7 @@ import os
 import pandas as pd
 from enum import Enum
 from PyQt5.QtWidgets import QGraphicsScene
-from cv_utils.cv_thread_3d import VideoCaptureThread, VideoWriterThread, VideoToImagesThread
+from cv_utils.cv_thread_3d import VideoToImagesThread
 from PyQt5.QtWidgets import *
 import EasyPySpin
 

@@ -4,7 +4,7 @@ import PyQt5.QtCore as QtCore
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QEvent, QRect
 from PyQt5.QtWidgets import QSizePolicy
 from PIL import Image, ImageDraw, ImageFont
-from PyQt5 import QtWidgets
+from PyQt5 import QtWidgets, QtGui
 from PyQt5.QtWidgets import QWidget, QFileDialog, QGraphicsView, QGraphicsScene, QMessageBox, QGroupBox, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QComboBox
 import numpy as np
 import pandas as pd
@@ -1331,7 +1331,7 @@ class Analysis2dWidget(QWidget):
                     except Exception as e:
                         print(f"PIL 繪圖失敗，改用預設字體: {e}")
                         # 如果 PIL 失敗，至少用 OpenCV 寫英文數值墊背
-                        cv2.putText(draw_img, text_val, (f_x + 30, f_y - 30), font, 1.2, WHITE, 3)
+                        cv2.putText(draw_img, text_val, (f_x + 30, f_y - 30), cv2.FONT_HERSHEY_SIMPLEX, 1.2, WHITE, 3)
 
             # --- C. Impact：繪製腿部骨架 (髖-膝-踝) ---
             if phase_type == 'impact':
