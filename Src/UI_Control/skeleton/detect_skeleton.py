@@ -505,7 +505,7 @@ class PoseEstimater:
         return pd.DataFrame(self.person_data)
     
     def mergeBatData(self, bbox, mask,  frame_num:int = None):
-        if mask == None:
+        if mask is None:
             self.has_pre_bat_df = False
         else: # 有detect到東西
             self.has_pre_bat_df = True
