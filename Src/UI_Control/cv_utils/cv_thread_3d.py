@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 from utils.timer import Timer
+from utils.paths import CAMERA_CONFIG_DIR
 
 class VideoToImagesThread(QThread):
     emit_signal = pyqtSignal([list, list, int,int])   
@@ -60,8 +61,8 @@ class VideoCaptureThread(QThread):
 
     def __init__(self, parent=None, camera_index=0):
         super().__init__(parent)
-        CONFIG = ".\camera_config\GH3_camera_config.yaml"
-        CONFIG_2 = ".\camera_config\GH3_camera_config_2.yaml"
+        CONFIG = str(CAMERA_CONFIG_DIR / "GH3_camera_config.yaml")
+        CONFIG_2 = str(CAMERA_CONFIG_DIR / "GH3_camera_config_2.yaml")
         SN1 = "25083472" # 側面
         # SN2 = "25083471" # 正面
         SN2 = "25083471"

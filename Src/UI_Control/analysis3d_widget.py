@@ -24,6 +24,7 @@ from ui.dual_camera_system_video import Ui_hitter_ui_dual
 from utils.phase_detect3d import PhaseDetector, PhaseResult
 from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
+from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR
 from PyQt5 import QtGui
 
 class AnalysisBar(QWidget):
@@ -1213,7 +1214,7 @@ class Analysis3DWidget(QWidget):
     def updateHitterList(self):
         """初始化與更新選手選單"""
         if not hasattr(self.ui, 'hitterNameInput'): return
-        db_path = os.path.abspath(os.path.join(os.getcwd(), "../../Db"))
+        db_path = str(DB_DIR)
         if not os.path.exists(db_path): return
         current_name = self.ui.hitterNameInput.currentText()
         self.ui.hitterNameInput.blockSignals(True)
@@ -1233,7 +1234,7 @@ class Analysis3DWidget(QWidget):
         if not new_name:
             QMessageBox.warning(self, "錯誤", "請輸入選手姓名")
             return
-        db_base_path = os.path.abspath(os.path.join(os.getcwd(), "../../Db"))
+        db_base_path = str(DB_DIR)
         hitter_path = os.path.join(db_base_path, new_name)
         try:
             if not os.path.exists(hitter_path):
@@ -1257,7 +1258,7 @@ class Analysis3DWidget(QWidget):
             if hasattr(self, 'recent_video_model'):
                 self.recent_video_model.clear()
             return
-        db_path = os.path.abspath(os.path.join(os.getcwd(), "../../Db"))
+        db_path = str(DB_DIR)
         hitter_path = os.path.join(db_path, hitter_name)
         if not os.path.exists(hitter_path):
             self.recent_video_model = QStandardItemModel()
@@ -1603,9 +1604,7 @@ class Analysis3DWidget(QWidget):
 
     def loadFolder(self, folder=None):
         if not folder:
-            # 設定一個相對於目前檔案的預設資料夾，例如 ../../Db/Record
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            default_dir = os.path.abspath(os.path.join(base_dir, "../../Db/Record"))
+            default_dir = str(RECORD_DIR)
 
             folder = QFileDialog.getExistingDirectory(
                 self,
@@ -2240,7 +2239,7 @@ class Analysis3DWidget(QWidget):
                         joint_coords["wrist"] = kpts[10][:2] if is_righty else kpts[9][:2]
                             
                     # 圖標目錄
-                    icon_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../Db/icon"))
+                    icon_dir = str(ICON_DIR)
                     icon_size = 90 # 設定 icon 統一大小
                     
                     def overlay_transparent(background, overlay, x, y):

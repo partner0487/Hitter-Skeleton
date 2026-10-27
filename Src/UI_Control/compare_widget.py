@@ -12,6 +12,7 @@ from utils.vis_image_dual import ImageDrawer as ImageDrawerDual
 from utils.analyze import PoseAnalyzer, BatAnalyzer
 from skeleton.detect_skeleton_dual import PoseEstimater
 from cv_utils.cv_control_dual import VideoLoader as VideoLoaderDual
+from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR
 from cv_utils.cv_control_dual import DualJsonLoader
 from utils.phase_detect3d import PhaseDetector, PhaseResult
 import pandas as pd
@@ -273,7 +274,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
     # ================= 載入與檔案庫邏輯 =================
     
     def updateHitterList(self):
-        db_path = os.path.abspath(os.path.join(os.getcwd(), "../../Db"))
+        db_path = str(DB_DIR)
         if not os.path.exists(db_path): return
         
         hitters = [d for d in os.listdir(db_path) if os.path.isdir(os.path.join(db_path, d)) and d not in ['icon', 'pretrain']]
@@ -305,7 +306,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
             p.recent_video_model.clear()
             return
             
-        db_path = os.path.abspath(os.path.join(os.getcwd(), "../../Db"))
+        db_path = str(DB_DIR)
         hitter_path = os.path.join(db_path, hitter_name)
         
         selected_folders = []
@@ -345,7 +346,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
     def manual_load_folder(self, player_idx):
         options = QFileDialog.Options()
         options |= QFileDialog.ShowDirsOnly
-        initial_dir = os.path.abspath(os.path.join(os.getcwd(), "../../Db"))
+        initial_dir = str(DB_DIR)
         folder_path = QFileDialog.getExistingDirectory(self, "選擇要分析的資料夾", initial_dir, options=options)
         if folder_path:
             self.load_from_folder_path(player_idx, folder_path)
@@ -353,7 +354,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
     def manual_load_video(self, player_idx):
         """與 2D/3D 不同，此處為手動選取原始影片進行比對"""
         options = QFileDialog.Options()
-        initial_dir = "../../Db/Record"
+        initial_dir = str(RECORD_DIR)
         file_path, _ = QFileDialog.getOpenFileName(
             self, f"選取影片 (Player {player_idx})", initial_dir, 
             "Video Files (*.mp4 *.avi);;All Files (*)", options=options
@@ -1361,7 +1362,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
             joint_coords["knee"] = kpts[14][:2] if is_righty else kpts[13][:2]
             joint_coords["wrist"] = kpts[10][:2] if is_righty else kpts[9][:2]
             
-        icon_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../Db/icon"))
+        icon_dir = str(ICON_DIR)
         icon_size = 90
         
         def overlay_transparent(background, overlay, x, y):
