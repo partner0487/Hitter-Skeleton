@@ -11,7 +11,6 @@ if conda_prefix:
     )
 
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
 # from dual_video_onlyProcess_widget import PoseHitVideoTabControlDualInit
 from ui.main_window import Ui_MainWindow
 # Import the Mode Select UI
@@ -38,6 +37,16 @@ class Main(QMainWindow):
         self.ui.Two_d_Tab.addTab(self.analysis3dWidget, "3D")
         self.compareWidget = CompareWidget(self.model)
         self.ui.Two_d_Tab.addTab(self.compareWidget, "回放")
+
+    def closeEvent(self, event):
+        # 關閉視窗前停止所有相機、計時器與背景執行緒，避免 QThread 未結束就被銷毀
+        for widget in (self.analysis2dWidget, self.analysis3dWidget, self.compareWidget):
+            try:
+                widget.shutdown()
+            except Exception as e:
+                print(f"{type(widget).__name__} shutdown 失敗: {e}")
+        super().closeEvent(event)
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

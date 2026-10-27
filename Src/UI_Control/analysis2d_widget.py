@@ -159,6 +159,15 @@ class Analysis2dWidget(QWidget):
         self.initVar()
         self.bindUI()
 
+    def shutdown(self):
+        """關閉程式前停止計時器、影片載入與相機"""
+        self.timer.stop()
+        self.video_timer.stop()
+        if self.video_loader.is_loading:
+            self.video_loader.abort_loading()
+        # close_camera 會一併停止擷取執行緒並釋放錄影 writer
+        self.camera.close_camera()
+
     def initVar(self):
         """Initialize variables and timer."""
         self.is_video = True if self.camera is None else False
