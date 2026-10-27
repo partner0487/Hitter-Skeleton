@@ -3,12 +3,12 @@ from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot, Qt, QThread
 import numpy as np
 import sys
 import cv2
+import queue
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 from utils.timer import Timer
 from utils.paths import CAMERA_CONFIG_DIR
-
 
 class VideoToImagesThread(QThread):
     emit_signal = pyqtSignal([list, list, int,int])   
@@ -114,7 +114,7 @@ class VideoWriterThread(QThread):
     # 使用 signal 傳遞狀態更新
     writeFinished = pyqtSignal()
 
-    def __init__(self, filepath, frame_width, frame_height, fps=60, codec='mp4v'):
+    def __init__(self, filepath, frame_width, frame_height, fps=60, codec='mp4v', max_queue=300):
         super().__init__()
         self.filepath = filepath
         self.frame_width = frame_width
@@ -122,19 +122,30 @@ class VideoWriterThread(QThread):
         self.fps = fps
         self.codec = codec
         self.is_writing = False
+        # 佇列上限避免磁碟寫太慢時記憶體無限成長
+        self.frame_queue = queue.Queue(maxsize=max_queue)
+        self.dropped_frames = 0
 
     def run(self):
-        # 在 run 方法中進行視頻寫入
         fourcc = cv2.VideoWriter_fourcc(*self.codec)
-        self.writer = cv2.VideoWriter(self.filepath, fourcc, self.fps, (self.frame_width, self.frame_height))
-        
-        # 持續寫入直到 is_writing 被設置為 False
-        while self.is_writing:
-            if hasattr(self, 'frame') and self.frame is not None:
-                self.writer.write(self.frame)
+        writer = cv2.VideoWriter(self.filepath, fourcc, self.fps, (self.frame_width, self.frame_height))
+        if not writer.isOpened():
+            print(f"無法開啟影片寫入器: {self.filepath}")
+            self.is_writing = False
+            self.writeFinished.emit()
+            return
+
+        # 逐幀從佇列取出寫入，收到 None 代表結束（佇列中剩餘的幀會先寫完）
+        while True:
+            frame = self.frame_queue.get()
+            if frame is None:
+                break
+            writer.write(frame)
 
         # 錄製結束後釋放資源
-        self.writer.release()
+        writer.release()
+        if self.dropped_frames:
+            print(f"警告: {self.filepath} 因佇列已滿丟棄 {self.dropped_frames} 幀")
         self.writeFinished.emit()
 
     def start_writing(self):
@@ -142,10 +153,19 @@ class VideoWriterThread(QThread):
         self.start()
 
     def stop_writing(self):
+        # 可重複呼叫：只有第一次會送出結束訊號
+        if not self.is_writing:
+            return
         self.is_writing = False
+        self.frame_queue.put(None)
 
     def write_frame(self, frame):
-        self.frame = frame
+        if not self.is_writing:
+            return
+        try:
+            self.frame_queue.put_nowait(frame)
+        except queue.Full:
+            self.dropped_frames += 1
 
     def release(self):
         self.stop_writing()
