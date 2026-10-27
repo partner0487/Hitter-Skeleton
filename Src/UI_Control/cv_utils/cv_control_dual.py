@@ -63,15 +63,17 @@ class ContinuousRecorder:
         self.trigger_data = []
         self.full_video = []
 
-
 class Camera:
+    # 即時預覽只需最新畫面，限制緩衝避免延遲累積與記憶體成長
+    FRAME_BUFFER_SIZE = 2
+
     def __init__(self, camera_idx:int = 0):
         self.camera_idx = camera_idx
         self.is_opened = False
         self.frame_count = 0
         self.fps_control = 15
-        self.frame_buffer = queue.Queue()
-        self.frame_buffer_2 = queue.Queue()
+        self.frame_buffer = queue.Queue(maxsize=self.FRAME_BUFFER_SIZE)
+        self.frame_buffer_2 = queue.Queue(maxsize=self.FRAME_BUFFER_SIZE)
         self.video_path = None
         self.video_path2 = None
         self.video_writer1 = None
@@ -79,6 +81,15 @@ class Camera:
         self.video_thread = None
         self.frame_size=None
         self.continuous_recorder = ContinuousRecorder(fps=180, pre_roll_sec=2, post_roll_sec=1)
+
+    def _put_latest(self, buffer: queue.Queue, frame: np.ndarray):
+        # 佇列滿時丟掉最舊的幀，只保留最新畫面
+        if buffer.full():
+            try:
+                buffer.get_nowait()
+            except queue.Empty:
+                pass
+        buffer.put_nowait(frame)
 
     def open_camera(self):
         # 開啟相機，並設置回調來處理每一幀
@@ -126,9 +137,8 @@ class Camera:
             self.continuous_recorder.add_frame(frame, frame2)
             
         if self.is_opened and self.frame_count % self.fps_control ==0:
-            self.frame_buffer.put(frame)
-            self.frame_buffer_2.put(frame2)
-            # print(self.frame_buffer.qsize())
+            self._put_latest(self.frame_buffer, frame)
+            self._put_latest(self.frame_buffer_2, frame2)
 
         if self.video_writer1 is not None and self.video_writer1.is_writing:
             self.video_writer1.write_frame(frame)
