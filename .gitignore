@@ -160,6 +160,13 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
-Db
+# 忽略執行產生的 Record 影片與 json 記錄
+Db/Record/*.mp4
+Db/Record/*.json
+
+# 若模型權重檔案太大不想上傳到 GitHub，可在此忽略（需手動從雲端硬碟下載放置）
+# Db/pretrain/*.pth
+# Db/pretrain/*.pt
+
 Src/mmpose_main/work_dirs
 Src/mmpose_main/data
