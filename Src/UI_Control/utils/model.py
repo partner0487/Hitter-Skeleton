@@ -50,7 +50,7 @@ class Model(object):
         parser.add_argument('--model', type=str, default=default_model_path, help='Path to YOLO model file (.pt)')
         parser.add_argument('--conf-thres', type=float, default=0.3, help='Confidence threshold')
         parser.add_argument('--iou-thres', type=float, default=0.3, help='IOU threshold for NMS')
-        return parser.parse_args()
+        return parser.parse_args([])
 
     def setPoseParser(self) -> ArgumentParser:
         parser = ArgumentParser()
@@ -85,7 +85,7 @@ class Model(object):
             type=int,
             default=3,
             help='Keypoint radius for visualization')
-        args = parser.parse_args()
+        args = parser.parse_args([])
         return args
 
     def setTrackerParser(self) -> ArgumentParser:
@@ -119,7 +119,7 @@ class Model(object):
         parser.add_argument('--appearance_thresh', type=float, default=0.25,
                             help='threshold for rejecting low appearance similarity reid matches')
 
-        tracker_args = parser.parse_args()
+        tracker_args = parser.parse_args([])
 
         tracker_args.jde = False
         tracker_args.ablation = False
