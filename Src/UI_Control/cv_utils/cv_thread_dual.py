@@ -9,6 +9,7 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 from utils.timer import Timer
 from utils.paths import CAMERA_CONFIG_DIR
+import time
 
 class VideoToImagesThread(QThread):
     emit_signal = pyqtSignal([list, list, int,int])   
@@ -61,7 +62,10 @@ from camera_objects.single_camera import FlirCameraSystem
 from camera_objects.two_cameras import DualFlirSystem
 
 class VideoCaptureThread(QThread):
-    frame_ready = pyqtSignal(np.ndarray,np.ndarray)
+    frame_ready = pyqtSignal(np.ndarray, np.ndarray, float)
+    # 相機 180 fps，每 EMIT_EVERY 幀送出一次（論文設計：180 → 90 fps）
+    EMIT_EVERY = 2
+
 
     def __init__(self, parent=None, camera_index=0):
         super().__init__(parent)
@@ -91,6 +95,7 @@ class VideoCaptureThread(QThread):
         try:
             while self.running:
                 ret, frame_1, frame_2 = self.cameras.get_grayscale_images()
+                grab_time = time.perf_counter()
                 if not ret or frame_1 is None or frame_2 is None:
                     fail_count += 1
                     if fail_count >= max_fail:
@@ -100,10 +105,10 @@ class VideoCaptureThread(QThread):
                 fail_count = 0
 
                 # 只轉換要送出的幀，避免浪費運算
-                if count % 3 == 0:
+                if count % self.EMIT_EVERY == 0:
                     rgb_frame_1 = cv2.cvtColor(frame_1, cv2.COLOR_BayerBG2BGR)
                     rgb_frame_2 = cv2.cvtColor(frame_2, cv2.COLOR_BayerBG2BGR)
-                    self.frame_ready.emit(rgb_frame_1, rgb_frame_2)  # 發送影像
+                    self.frame_ready.emit(rgb_frame_1, rgb_frame_2, grab_time)
                 count += 1
         finally:
             # 無論正常結束或發生例外都要釋放相機

@@ -687,11 +687,15 @@ class Analysis2dWidget(QWidget):
         current_time = now.strftime("%H%M%S")
         current_time_hhmm = now.strftime("%H%M")
         
-        # 取得 FPS
-        try:
-            fps = int(self.camera.video_thread.camera1.get_fps())
-        except:
-            fps = 180
+        # 取得 FPS：優先用實測值（反映戶外過熱掉幀），否則用設定值換算
+        recorder = self.camera.continuous_recorder
+        fps = recorder.measured_fps
+        if not fps:
+            try:
+                fps = self.camera.get_stream_fps()
+            except Exception:
+                fps = 90
+
 
         hitter_name = self.ui.hitterNameInput.currentText()
         current_mode_zh = self.mode_dict.get(getattr(self, 'current_mode', 'Tbar'), 'T座')
@@ -717,6 +721,14 @@ class Analysis2dWidget(QWidget):
 
         out1.release()
         out2.release()
+        # 每幀實際擷取時間：掉幀時 mp4 的固定 fps 不準，分析應以此為準
+        if recorder.frame_times:
+            t0 = recorder.frame_times[0]
+            with open(os.path.join(output_dir, "frame_times.csv"), "w", encoding="utf-8") as f:
+                f.write("frame,time_sec\n")
+                for i, t in enumerate(recorder.frame_times):
+                    f.write(f"{i},{t - t0:.6f}\n")
+
         print(f"Videos saved: {video_filename}, {video_filename_2}")
 
         # --- 即時模式下也儲存側面 JSON 資料 (即使是空的) ---
