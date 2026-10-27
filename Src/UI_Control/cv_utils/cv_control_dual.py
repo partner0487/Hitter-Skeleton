@@ -106,8 +106,8 @@ class Camera:
             self.video_thread = None
 
         self.is_opened = False
-        self.frame_buffer = queue.Queue()
-        self.frame_buffer_2 = queue.Queue()
+        self.frame_buffer = queue.Queue(maxsize=self.FRAME_BUFFER_SIZE)
+        self.frame_buffer_2 = queue.Queue(maxsize=self.FRAME_BUFFER_SIZE)
         if self.video_writer1 is not None:
             self.video_writer1.release()
             self.video_writer1 = None
