@@ -162,7 +162,7 @@ class Camera:
 
     def stop_recording(self):
         # 停止錄製影片
-        if self.video_writer1 is not None or self.video_writer2 is not None:
+        if self.video_writer1 is not None and self.video_writer2 is not None:
             self.video_writer1.stop_writing()  # 停止寫入
             self.video_writer2.stop_writing()  # 停止寫入
             self.video_writer2.release()  # 釋放執行緒
