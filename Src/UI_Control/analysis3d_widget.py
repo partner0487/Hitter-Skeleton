@@ -156,6 +156,18 @@ class Analysis3DWidget(QWidget):
         # self.bindCheckBox()
         self.initVispyCanvas()
 
+    def shutdown(self):
+        """關閉程式前停止計時器與影片載入執行緒"""
+        self.timer.stop()
+        # cv_control_3d 的 VideoLoader 沒有 abort_loading，直接停止它的載入執行緒
+        for loader in (self.video_loader, self.video_loader_raw):
+            v_t = getattr(loader, 'v_t', None)
+            if loader.is_loading and v_t is not None:
+                v_t.stop()
+                v_t.wait()
+        if self.video_loader_dual.is_loading:
+            self.video_loader_dual.abort_loading()
+
     def initVar(self):
         """Initialize variables and timer."""
         self.is_play = False

@@ -40,9 +40,6 @@ class VideoToImagesThread(QThread):
         """Sets run flag to False; caller should wait() for the thread to finish"""
         self._run_flag = False
         print("stop video to image thread")
-    
-    def isFinished(self):
-        print(" finish thread")
 
 import EasyPySpin
 

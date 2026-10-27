@@ -161,6 +161,18 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         self.init_ui_states()
         self.init_signals()
 
+    def shutdown(self):
+        """關閉程式前停止計時器、影片載入與分析執行緒"""
+        self.timer.stop()
+        for p in (self.p1, self.p2):
+            if p.video_loader.is_loading:
+                p.video_loader.abort_loading()
+            thread = getattr(p, 'process_thread', None)
+            if thread is not None and thread.isRunning():
+                p.worker.stop()
+                thread.quit()
+                thread.wait()
+
     def init_ui_states(self):
         # 視窗初始分配: 左邊(_1)放 front(CF), 右邊(_2)放 side(CS)
         self.FrameView1_1.setScene(self.p1.view_scene_front)
