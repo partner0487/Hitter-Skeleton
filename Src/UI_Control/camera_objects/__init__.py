@@ -15,10 +15,9 @@ from .single_camera import *
 
 from .two_cameras import *
  
-__all__ = ['SingleCameraSystem','FlirCameraSystem','DualFlirSystem',
-           'TwoCamerasSystem', 'RealsenseCameraSystem', 'DualRealsenseSystem']
+__all__ = ['SingleCameraSystem', 'TwoCamerasSystem',
+           'RealsenseCameraSystem', 'DualRealsenseSystem']
 try:
-    import PySpin
     __all__.append('FlirCameraSystem')
     __all__.append('DualFlirSystem')
 except ModuleNotFoundError:
