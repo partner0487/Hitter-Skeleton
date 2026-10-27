@@ -266,7 +266,7 @@ class VideoLoader:
         self.video_path = video_path
         self.video_path2 = video_path2
         self.video_name = os.path.splitext(os.path.basename(self.video_path))[0]
-        self.video_name2 = os.path.splitext(os.path.basename(self.video_path))[0]
+        self.video_name2 = os.path.splitext(os.path.basename(self.video_path2))[0]
 
         self.folder_path = os.path.dirname(video_path)
         self.folder_path2 = os.path.dirname(video_path2)
