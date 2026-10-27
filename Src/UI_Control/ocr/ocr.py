@@ -6,7 +6,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
-
+import numpy as np
 import cv2
 from paddleocr import PaddleOCR
 
