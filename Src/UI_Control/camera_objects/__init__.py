@@ -15,7 +15,7 @@ from .single_camera import *
 
 from .two_cameras import *
  
-__all__ = ['SingleCameraSystem','FlirCameraSystem','DualFlirSystem'
+__all__ = ['SingleCameraSystem','FlirCameraSystem','DualFlirSystem',
            'TwoCamerasSystem', 'RealsenseCameraSystem', 'DualRealsenseSystem']
 try:
     import PySpin
