@@ -694,8 +694,7 @@ class Analysis2dWidget(QWidget):
             try:
                 fps = self.camera.get_stream_fps()
             except Exception:
-                fps = 90
-
+                fps = 60
 
         hitter_name = self.ui.hitterNameInput.currentText()
         current_mode_zh = self.mode_dict.get(getattr(self, 'current_mode', 'Tbar'), 'T座')
