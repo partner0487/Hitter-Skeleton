@@ -523,13 +523,9 @@ class PoseEstimater:
         return pd.DataFrame(self.bat_data)
   
     def detectKpt(self, image:np.ndarray, frame_num:int = None, is_video:bool = False, is_processed:bool=False):
-        # --- 1. 定義預設的空資料夾 (防呆基礎) ---
-        empty_df = pd.DataFrame()
-        # 統一回傳格式：(影像, 人物DF, FPS, 球棒DF, 棒球DF)
-        default_return = (image, empty_df, 0, empty_df, empty_df)
+        # 回傳格式：(影像, 人物DF, FPS, 球棒DF)；此版本不偵測棒球
         if not self.is_detect:
             return image, pd.DataFrame(), 0, pd.DataFrame()
-        fps = 0
         if is_video: 
             #影片處理方式
             if frame_num not in self.processed_frames:
@@ -547,7 +543,7 @@ class PoseEstimater:
             self.bat_df = self.mergeBatData(bat_bbox, bat_mask, frame_num)
             self.smoothKpt(person_ids, frame_num)
             self.pre_person_df = self.person_df.copy()
-            if self.kpt_id:
+            if self.kpt_id is not None:
                 person_data = self.getPersonDf(is_select=True, is_kpt=True)
                 if person_data is not None:
                     keypoint = person_data[self.kpt_id][:2]  # 確保取出的是有效的 [x, y] 數據
