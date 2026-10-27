@@ -91,24 +91,29 @@ class FlirCameraSystem(SingleCameraSystem):
 
         serial_number = self.serial_number
 
-        logging.info("Reading Frame for %s...", serial_number)
-        image_result: PySpin.ImagePtr = self.cam.GetNextImage(1000)
-        if image_result.IsIncomplete():
-            logging.warning('SN %s: Image incomplete with image status %d',
-                            serial_number,
-                            image_result.GetImageStatus())
+        try:
+            # 180 fps 每幀約 5.6 ms，100 ms 逾時足夠且不會長時間卡住
+            image_result: PySpin.ImagePtr = self.cam.GetNextImage(100)
+        except PySpin.SpinnakerException as e:
+            # 戶外過熱或頻寬不足時可能逾時，回報失敗讓上層計數重試
+            logging.warning('SN %s: GetNextImage failed: %s', serial_number, e)
             return False, None
 
-        logging.info("Grabbed Frame for %s", serial_number)
-
-        logging.info("Converting Frame for %s...", serial_number)
-        image_converted: PySpin.ImagePtr =  \
-            self.image_processor.Convert(image_result, PySpin.PixelFormat_BayerRG8)
-        image_data = image_converted.GetNDArray()
-        # image_data = cv2.cvtColor(image_data, cv2.COLOR_BayerRG2GRAY)
-        logging.info("Convertion Frame for %s done", serial_number)
+        try:
+            if image_result.IsIncomplete():
+                logging.warning('SN %s: Image incomplete with image status %d',
+                                serial_number,
+                                image_result.GetImageStatus())
+                return False, None
+            image_converted: PySpin.ImagePtr = \
+                self.image_processor.Convert(image_result, PySpin.PixelFormat_BayerRG8)
+            image_data = image_converted.GetNDArray()
+        finally:
+            # 一定要歸還緩衝區，否則連續掉幀時 buffer 耗盡會讓串流卡死
+            image_result.Release()
 
         return True, image_data
+
     def get_depth_image(self) -> Tuple[bool, np.ndarray]:
         """
         Get depth images for the camera system.
