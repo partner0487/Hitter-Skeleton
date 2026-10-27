@@ -9,11 +9,10 @@ import os
 from scipy.signal import savgol_filter
 import sys
 import pyqtgraph as pg
-# import pyqtgraph.opengl as gl
-# from pyqtgraph.opengl import GLViewWidget, GLGridItem, GLScatterPlotItem, GLLinePlotItem
+import pyqtgraph.opengl as gl
+from pyqtgraph.opengl import GLLinePlotItem
 from vispy.scene import visuals
 # from OpenGL.GL import *
-
 
 try:
     colors = np.round(
