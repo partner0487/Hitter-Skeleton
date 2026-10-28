@@ -26,7 +26,7 @@ if qt_plugins.is_dir():
 import cv2
 import numpy as np
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QImage, QKeySequence, QPen, QPixmap
+from PyQt5.QtGui import QColor, QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
@@ -110,9 +110,8 @@ class CaptureWorker(QThread):
                     self.failed.emit("釋放相機失敗：{}".format(exc))
 
 
-class PointView(QGraphicsView):
-    """Image coordinates remain correct after fitting, panning and zooming."""
-    edited = pyqtSignal()
+class ImageView(QGraphicsView):
+    """顯示相機畫面；滾輪縮放、拖曳平移，換畫面時保留目前的縮放位置。"""
 
     def __init__(self):
         super().__init__()
@@ -120,57 +119,25 @@ class PointView(QGraphicsView):
         self.setMinimumSize(300, 230)
         self.setBackgroundBrush(QColor("#20252b"))
         self.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.points = []
         self.image_shape = None
-        self.markers = []
-        self.editable = False
 
-    def set_image(self, image, points=None, editable=False):
+    def set_image(self, image):
         self.scene().clear()
-        self.markers = []
-        self.points = points if points is not None else []
-        self.editable = editable
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         height, width = rgb.shape[:2]
-        self.image_shape = (height, width)
         qimage = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format_RGB888).copy()
         self.scene().addPixmap(QPixmap.fromImage(qimage))
         self.scene().setSceneRect(0, 0, width, height)
-        self.fit_image()
-        self.draw_points()
+        # 預覽每 100 ms 換一張，只在第一張或尺寸改變時縮放至完整畫面，才能放大檢查角點
+        if self.image_shape != (height, width):
+            self.image_shape = (height, width)
+            self.fit_image()
 
     def fit_image(self):
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
 
-    def draw_points(self):
-        for marker in self.markers:
-            self.scene().removeItem(marker)
-        self.markers = []
-        for i, (x, y) in enumerate(self.points):
-            self.markers.append(self.scene().addEllipse(x-4, y-4, 8, 8, QPen(QColor("#ff4545"), 2)))
-            text = self.scene().addText(str(i + 1))
-            text.setDefaultTextColor(QColor("#ffff00"))
-            text.setPos(x + 5, y - 15)
-            self.markers.append(text)
-
-    def mousePressEvent(self, event):
-        if self.editable and not (event.modifiers() & Qt.ControlModifier):
-            position = self.mapToScene(event.pos())
-            if event.button() == Qt.RightButton and self.points:
-                self.points.pop()
-            elif event.button() == Qt.LeftButton and len(self.points) < 6:
-                height, width = self.image_shape
-                if not (0 <= position.x() < width and 0 <= position.y() < height):
-                    return
-                if any(np.hypot(x-position.x(), y-position.y()) < 1 for x, y in self.points):
-                    return
-                self.points.append([position.x(), position.y()])
-            else:
-                return
-            self.draw_points()
-            self.edited.emit()
-        else:
-            super().mousePressEvent(event)
+    def mouseDoubleClickEvent(self, event):
+        self.fit_image()
 
     def wheelEvent(self, event):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -300,7 +267,7 @@ class CalibrationWindow(QMainWindow):
             label = QLabel(title)
             column.addWidget(label)
             self.view_titles[role] = label
-            view = PointView()
+            view = ImageView()
             column.addWidget(view)
             self.views[role] = view
             images.addLayout(column)
@@ -620,7 +587,7 @@ class CalibrationWindow(QMainWindow):
         self.preview_corners = {"cf": None, "cs": None}
         for role, view in self.views.items():
             view.scene().clear()
-            view.editable = False
+            view.image_shape = None
         self.update_view_titles()
 
     def update_view_titles(self):
