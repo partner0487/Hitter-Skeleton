@@ -102,4 +102,4 @@ def get_intrinsic(sn):
 
 
 # 外參 stereo.json 由 stereo.publish_stereo 寫入；
-# 3D 分析（Src/UI_Control/utils/stereo_calibration.py）讀取，錄影時複製成錄影資料夾的 calibration.json。
+# 3D 分析（Src/UI_Control/utils/stereo_calibration.py）依錄影日期挑當天或之前最新的已發布 session。

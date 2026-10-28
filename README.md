@@ -60,15 +60,14 @@ ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders
     |   |   |-- yolo11m-seg.pt
     |   |   `-- yolov7_x_syncbn_fast_8x16b-300e_coco_20221124_215331-ef949a68.pth
     |   |-- Calibration                       # 雙相機校正（見下方「相機校正」）
-    |   |   |-- stereo.json                   # 目前使用中的內外參，3D 分析讀這個
+    |   |   |-- stereo.json                   # 日期最新的內外參
     |   |   |-- intrinsics_all.json
     |   |   |-- camera_roles.json
-    |   |   `-- sessions/<時間>/              # 每次校正的照片與結果
+    |   |   `-- sessions/<日期_時間>/         # 每次校正的照片與結果；3D 依錄影日期挑選
     |   `-- <打者>/<YYYY-MM-DD>/<T座|側拋|正投>/<打者>_H01/   # 每一球的錄影
     |       |-- CF_<打者>_H01.mp4             # 正面影片（60 fps）
     |       |-- CS_<打者>_H01.mp4             # 側面影片
     |       |-- frame_times.csv               # 每幀實際擷取時間（掉幀時用來算實際 fps）
-    |       |-- calibration.json              # 錄影當下的校正快照
     |       `-- person_*.json、bat_*.json …    # 骨架與球棒分析結果
     |-- calibration                           # 校正工具
     `-- Src
