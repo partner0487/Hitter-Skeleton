@@ -27,6 +27,7 @@ from skeleton.detect_skeleton_dual import PoseEstimater
 from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR
 from PyQt5 import QtGui
 from utils.fps_utils import get_video_fps
+from utils.stereo_calibration import load_stereo_params
 
 
 class AnalysisBar(QWidget):
@@ -287,27 +288,41 @@ class Analysis3DWidget(QWidget):
         #             [-0.13782324,  0.98445328,  0.10888753],
         #             [ 0.96295190,  0.10745552,  0.24733974]])
         # self.t = np.array([[ 0.99450367], [-0.10454567], [-0.00571446]])
+        # 以上寫死的數值只在沒有校正檔時使用（t 長度約 1，沒有真實尺度）
+        self.applyStereoCalibration(load_stereo_params())
+
+    def applyStereoCalibration(self, params):
+        """套用 calibration/calibrate.py 的校正結果；params 為 None 時保留寫死的舊參數。"""
+        if params is not None:
+            self.side_intrinsic_matrix = params.K_side
+            self.side_distortion_coeffs = params.dist_side
+            self.front_intrinsic_matrix = params.K_front
+            self.front_distortion_coeffs = params.dist_front
+            self.R, self.t = params.R, params.t
+            # 舊參數的 1 單位 ≈ 基線長，3D 視角是依此調的；換成公尺後按基線等比放大，畫面構圖不變
+            self.view_scale = params.baseline_m
+            self.has_metric_scale = True
+            print(f"[Analysis3D] 校正來源：{params.source}（基線 {params.baseline_m:.2f} m）")
+        else:
+            self.view_scale = 1.0
+            self.has_metric_scale = False
+            print("[Analysis3D] 找不到校正檔，使用程式內寫死的舊參數（沒有真實尺度）")
+        # 換校正等於換座標系，舊的骨架原點不能沿用
+        self.__dict__.pop("origin", None)
         self.P1 = None
         self.P2 = None
         print("Loading Parameters Success!")
         self.computeEssenMatrix()
+        if hasattr(self, "view"):
+            self.change2DefaultView()
 
     def initVispyCanvas(self):
         app.use_app('PyQt5')
             
         self.canvas = scene.SceneCanvas(keys='interactive', show=False, bgcolor='white')
         self.view = self.canvas.central_widget.add_view()
+        self.change2DefaultView()
 
-        # 建立一顆 TurntableCamera，預設為「側面視角」
-        self.view.camera = cameras.TurntableCamera(
-            fov=80,
-            distance=0.5,      # 你原本的距離
-            azimuth=90.0,      # 90 度 ≈ 從側面看；如果方向反了可以改成 -90 或 270
-            elevation=10.0,     # 0 度：水平看
-            up='-y',           # y 軸向上
-            center=(0.0, -0.10, 0.0),
-        )
-   
         axis = scene.visuals.XYZAxis(parent=self.view.scene)
 
         # 嵌到 Qt UI
@@ -321,24 +336,38 @@ class Analysis3DWidget(QWidget):
         self.skeleton_link = self.image_drawer.joints['haple']['skeleton_links']
         self.skeleton_node = scene.Node(parent=self.view.scene)
 
-    def change2SideView(self):
+    def change2DefaultView(self):
+        # distance / center 以舊參數（1 單位 ≈ 基線）調好，乘上 view_scale 換成目前的座標尺度
+        s = getattr(self, "view_scale", 1.0)
         self.view.camera = cameras.TurntableCamera(
-            fov=60,
-            distance=0.5,      # 你原本的距離
+            fov=80,
+            distance=0.5 * s,  # 你原本的距離
             azimuth=90.0,      # 90 度 ≈ 從側面看；如果方向反了可以改成 -90 或 270
             elevation=10.0,     # 0 度：水平看
             up='-y',           # y 軸向上
-            center=(0.0, -0.3, 0.0),
+            center=(0.0, -0.10 * s, 0.0),
+        )
+
+    def change2SideView(self):
+        s = getattr(self, "view_scale", 1.0)
+        self.view.camera = cameras.TurntableCamera(
+            fov=60,
+            distance=0.5 * s,  # 你原本的距離
+            azimuth=90.0,      # 90 度 ≈ 從側面看；如果方向反了可以改成 -90 或 270
+            elevation=10.0,     # 0 度：水平看
+            up='-y',           # y 軸向上
+            center=(0.0, -0.3 * s, 0.0),
         )
 
     def change2FrontView(self):
+        s = getattr(self, "view_scale", 1.0)
         self.view.camera = cameras.TurntableCamera(
             fov=60,
-            distance=0.5,      # 你原本的距離
+            distance=0.5 * s,  # 你原本的距離
             azimuth=180.0,      # 90 度 ≈ 從前面看
             elevation=10.0,     # 0 度：水平看
             up='-y',           # y 軸向上
-            center=(0.0, -0.3, 0.0),
+            center=(0.0, -0.3 * s, 0.0),
         )
 
     def computeEssenMatrix(self):
@@ -1554,6 +1583,8 @@ class Analysis3DWidget(QWidget):
         self.folder = folder
         self.is_dual = False
         print(f"📁 Loading Folder: {folder}")
+        # 錄影資料夾有校正快照就用快照（錄影當下的相機擺位），否則用目前的 stereo.json
+        self.applyStereoCalibration(load_stereo_params(folder))
 
         # 定義輔助函式，支援根目錄或 CF_ 子目錄 (讀取內部那包)
         def get_json_df(fname, sub_prefix="CF_"):
@@ -2560,15 +2591,17 @@ class Analysis3DWidget(QWidget):
                 new_speed_ms = total_path_m / duration_sec
                 new_speed_kmh_raw = new_speed_ms * 3.6
                 
-                # 新方法改用直接加 80 的偏移量計算最終速度
-                speed_kmh = new_speed_kmh_raw + 80
+                # 舊參數沒有真實尺度（1 單位 ≈ 基線），才以 +80 的經驗偏移補償；
+                # 有校正檔時座標是公尺，直接顯示實際速度，+80 的結果只印出來對照
+                legacy_kmh = new_speed_kmh_raw / self.view_scale + 80
+                speed_kmh = new_speed_kmh_raw if self.has_metric_scale else legacy_kmh
                 self.ui.batSpeedLabel.setText(f"{speed_kmh:.1f}")
-                
-                # 計算舊方法的速度以供比對列印
+
+                # 計算舊方法的速度以供比對列印（換回舊的單位長度，與過去的數值可比）
                 old_min, old_max = 80, 160
                 new_min, new_max = 93, 130
                 velocity_vec_old = head_3d - head_prev
-                dist_old = np.linalg.norm(velocity_vec_old)
+                dist_old = np.linalg.norm(velocity_vec_old) / self.view_scale
                 old_speed_ms = (dist_old * fps) / (2.0 * gap)
                 old_speed_kmh_raw = old_speed_ms * 3.6
                 old_speed_kmh_scaled = old_speed_kmh_raw * 2.5
@@ -2577,7 +2610,7 @@ class Analysis3DWidget(QWidget):
                 
                 print(f"[BatMetrics 3D] 速度對比:")
                 print(f"  - 舊方法 (前後鄰近幀位移): 原始={old_speed_kmh_raw:.2f} kmh, 放大={old_speed_kmh_scaled:.2f} kmh, 歸一化={old_normalized_val:.2f} kmh")
-                print(f"  - 新方法 (landing到impact路徑): 原始={new_speed_kmh_raw:.2f} kmh, 偏移後 (+80)={speed_kmh:.2f} kmh, 總路徑公尺={total_path_m:.4f}, 幀數={len(path_f)}/{frames_diff}, 時間={duration_sec:.4f}秒")
+                print(f"  - 新方法 (landing到impact路徑): 原始={new_speed_kmh_raw:.2f} kmh, 舊算法 (+80)={legacy_kmh:.2f} kmh, 顯示={speed_kmh:.2f} kmh（{'公尺尺度' if self.has_metric_scale else '無尺度舊參數'}）, 總路徑={total_path_m:.4f}, 幀數={len(path_f)}/{frames_diff}, 時間={duration_sec:.4f}秒")
                 
                 # 1. 取得揮擊位移向量 (Velocity vector)
                 # velocity[0]: X (左右), velocity[1]: Y (上下), velocity[2]: Z (前後)
