@@ -5,11 +5,11 @@
 與安裝位置無關，因此一台一台單獨校正即可，不需要雙機同步或 GPIO 觸發線。
 
 使用方式：
-    cd Src\\UI_Control
-    python calib.py
+    python calibration/calib.py（可從任何工作目錄執行）
 
 流程：下拉選單選相機 → 連接 → 確認棋盤格規格 → 擷取 10~15 組不同角度
-      → 執行校正 → 自動存到 Db/Calibration/intrinsic/
+      → 執行校正 → 照片、npz 存到 Db/Calibration/sessions/<時間>_SN<序號>/intrinsic/，
+        內參寫入 Db/Calibration/intrinsics_all.json
       → 第 4 區指定正面/側面，寫入 Db/Calibration/camera_roles.json
 
 已有照片：填入相機序號及棋盤格規格 → 讀取照片資料夾 → 執行校正。
@@ -371,7 +371,7 @@ class CalibWindow(QMainWindow):
             self.txt_photo_sn.setFocus()
             return
         folder = QFileDialog.getExistingDirectory(self, "選擇單台相機的棋盤格照片資料夾",
-                                                   calib_store.CALIB_DIR)
+                                                   calib_store.SESSIONS_DIR)
         if folder:
             self.load_photo_folder(folder, self.txt_photo_sn.text().strip())
 
@@ -447,6 +447,7 @@ class CalibWindow(QMainWindow):
         self.captured_count = len(points)
         self.image_size = size
         self.connected_sn = sn
+        self._capture_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._sample_spec = spec
         self._photo_paths = paths
         self.last_frame = preview
@@ -516,9 +517,14 @@ class CalibWindow(QMainWindow):
             msg += f"，尚缺：{'、'.join(missing)}"
         self.log(msg)
 
+    def intrinsic_dir(self):
+        """本次校正的內參資料夾：每次連接相機或讀取照片資料夾各算一個 session"""
+        return (Path(calib_store.SESSIONS_DIR) / f"{self._capture_stamp}_SN{self.connected_sn}"
+                / "intrinsic")
+
     def sample_photo_dir(self):
-        """即時拍攝的原始照片資料夾：每次連接相機一個資料夾（精靈會覆寫成本次校正的資料夾）"""
-        return Path(calib_store.INTRINSIC_DIR) / f"images_SN{self.connected_sn}_{self._capture_stamp}"
+        """即時拍攝的原始照片資料夾（精靈會覆寫成精靈本次的 session）"""
+        return self.intrinsic_dir() / f"images_SN{self.connected_sn}"
 
     def _save_sample_photo(self, frame):
         """把擷取的畫面存成灰階 PNG（無損、檔案較小），回傳絕對路徑"""
@@ -721,8 +727,8 @@ class CalibWindow(QMainWindow):
                 + "\n".join(f"・{p}" for p in problems))
 
         mean_err = float(np.mean(per_image_rms))
-        os.makedirs(calib_store.INTRINSIC_DIR, exist_ok=True)
-        out_name = os.path.join(calib_store.INTRINSIC_DIR, f"calib_SN{self.connected_sn}.npz")
+        self.intrinsic_dir().mkdir(parents=True, exist_ok=True)
+        out_name = str(self.intrinsic_dir() / f"calib_SN{self.connected_sn}.npz")
         np.savez(
             out_name,
             mtx=mtx, dist=dist,
@@ -766,6 +772,9 @@ class CalibWindow(QMainWindow):
             entry["source_images"] = list(self._photo_paths)
 
         try:
+            # 本次 session 留一份，上層 intrinsics_all.json 則是目前使用中的版本
+            calib_store.write_json(str(self.intrinsic_dir().parent / "intrinsics.json"),
+                                   {str(self.connected_sn): entry})
             count = calib_store.save_intrinsic(self.connected_sn, entry)
         except Exception as e:
             self.log(f"寫入 {calib_store.INTRINSICS_JSON} 失敗：{e}")
