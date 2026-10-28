@@ -1,64 +1,56 @@
-# FLIR 相機棋盤格校正系統 (FLIR Chessboard Calibration)
+# 雙相機棋盤格校正（正面 35mm／側面 8mm）
 
-本專案提供了一個基於 Python 和 OpenCV 的工具集，用於 FLIR 相機的棋盤格相機校正（Camera Calibration）。它包含兩個主要的腳本：一個支援連接相機即時拍攝與校正，另一個用於從本機資料夾載入圖片進行批次校正。
+用同一塊棋盤格完成兩台 FLIR 相機的內參與外參，結果給 `Src/UI_Control` 的 3D 分析使用。
 
-## 專案結構
+## 執行
 
-- `flir_camera_system_opencv_app.py`：連接 FLIR 相機並顯示即時預覽、擷取棋盤格影像，並可直接進行校正的主程式。
-- `loadFolderChessboard.py`：從指定的資料夾批次讀取棋盤格圖片，進行相機校正並輸出參數的腳本。
-- `camera_config/`：存放相機相關的設定檔（例如 `.yaml`）。
-- `camera_objects/`：FLIR 相機系統的相關物件與操作封裝。
-- `opencv_objects/`：包含 OpenCV 棋盤格角點偵測與校正演算法的物件 (`ChessboardCalibrator`)。
-- `utils/`：通用工具函數（日誌設定、資料夾建立等）。
-- `result_YYYYMMDD/`：預設的輸出資料夾，用來存放拍攝的相片及產出的校正參數 JSON 檔。
+```bash
+conda activate Pitcher
+python calibration/calibrate.py   # 校正精靈：內參 → 外參（可從任何目錄執行）
+python calibration/calib.py       # 只校正一台相機的內參（即時拍攝或讀取照片資料夾）
+```
 
-## 系統需求
+執行前請關閉 `main.py`、SpinView 等會占用相機的程式。
 
-請確認已安裝以下相關套件與環境：
-- Python 3.x
-- OpenCV (`opencv-python`)
-- NumPy
-- （若要使用即時拍攝功能）需要安裝 FLIR 的相關 SDK 及 Python 驅動（例如 Spinnaker / PySpin，相依於 `camera_objects` 的實作）。
+## 精靈流程
 
-## 核心功能與使用方式
+1. **設定**：選正面、側面相機序號；棋盤格**內角點**數（格子數 − 1，預設 8×7）與每格邊長（預設 100 mm）；兩台鏡頭焦距（預設 35／8 mm）。
+2. **正面內參**、3. **側面內參**：一台一台拍，至少 15 組。畫面會即時提示九宮格覆蓋、傾斜角、轉軸方向是否足夠；焦距 ≥ 25 mm 自動固定光心與 k2、k3。
+4. **雙機拍棋盤格**：需接 GPIO 同步線。兩台畫面都偵測到棋盤格時拍照鍵才會亮，照片以同名存進 `cf/`、`cs/`。建議 15 組以上，涵蓋打擊區不同位置、深度與傾斜方向。
+5. **計算外參**：自動偵測角點、修正棋盤格旋轉造成的角點順序錯誤（`align_pairs`），固定內參求 R、t；每 5 組留 1 組驗證格子邊長。Stereo RMS > 3 px 不發布，回到第 4 步補拍。
 
-本專案中的棋盤格規格預設如下，如有不同請於程式碼中自行修改：
-- `pattern_size`: `(7, 7)` (棋盤格內角點的行與列數量)
-- `square_size_mm`: `100` (單個棋盤格方塊的邊長，單位為毫米 mm)
+已經拍好的照片可在第 4 步「匯入 cf / cs 照片資料夾」。勾選「沿用已有內參」可跳過第 2、3 步，只重做外參。
 
-### 1. 即時相機拍攝與校正 (`flir_camera_system_opencv_app.py`)
+## 輸出：`Db/Calibration/`（不進 git）
 
-這支程式會啟動連接的 FLIR 相機，並顯示即時影像。您可以將棋盤格放置在鏡頭前，程式會自動嘗試尋找棋盤格的角點，並即時將角點繪製在顯示畫面上。
+```
+Db/Calibration/
+├─ camera_roles.json        目前的正面／側面相機序號
+├─ intrinsics_all.json      目前各相機內參（以序號為鍵）
+├─ stereo.json              目前的外參與兩台內參 ← 3D 分析讀這個
+└─ sessions/
+   ├─ <時間>/               精靈每次校正一個資料夾
+   │  ├─ intrinsic/images_SN<序號>/   內參照片
+   │  ├─ intrinsic/calib_SN<序號>.npz  內參完整資料
+   │  ├─ cf/ cs/                       外參照片（同名＝同一時刻）
+   │  ├─ corners/                      角點預覽（標出 0 號角點，可檢查方向）
+   │  ├─ intrinsics.json  stereo.json  session.json
+   │  └─ previous_calibration/         被取代的上一版，可手動還原
+   ├─ <時間>_SN<序號>/      calib.py 單獨校正一台
+   └─ <日期>_legacy/        2026-10 舊版 Intrinsic.py／PnP.py 的照片與結果（legacy/）
+```
 
-**設定與執行：**
-1. 執行前請確認程式碼中的 `config_path`（相機設定檔路徑）與 `serial_number`（相機序號）是否正確。
-2. 執行指令：
-   ```bash
-   python flir_camera_system_opencv_app.py
-   ```
-3. 程式開啟後，可以使用以下 **鍵盤快捷鍵** 來操作：
-   - `s`：若畫面中成功偵測到角點，按下後會儲存該影像至 `result_YYYYMMDD/chessboard_images/`。
-   - `f`：凍結 (Freeze) / 解除凍結 當下畫面，方便確認。
-   - `c`：讀取已儲存的所有圖片，執行相機校正，並將結果儲存至 `./result_YYYYMMDD/single_camera_parameters.json`。
-   - `q`：退出程式。
+`stereo.json` 的外參為正面→側面：`X_cs = R_cs_from_cf @ X_cf + t_cs_from_cf_mm`（mm）。
+3D 分析會轉成側面為世界座標、單位公尺。
 
-### 2. 資料夾圖片批次校正 (`loadFolderChessboard.py`)
+## 檔案
 
-如果您已經準備好了一組棋盤格圖片，且不需要連接相機即時拍攝，可以使用此腳本直接進行校正計算。
-
-**設定與執行：**
-1. 確保圖片放在正確的資料夾中。請修改程式內的 `base_dir` 以對應您的圖片目錄（預設為 `./result_20250903`，其下需有 `chessboard_images/` 資料夾存放圖片）。
-2. 執行指令：
-   ```bash
-   python loadFolderChessboard.py
-   ```
-3. 程式會自動讀取目錄下的所有圖片，進行角點偵測與校正（校正至少需要 5 張有效的棋盤格圖片）。
-4. 處理完成後，程式會在終端機印出 **RMS 重投影誤差**、**相機內參矩陣** 及 **畸變係數**。
-5. 成功後，參數會被儲存至 `<base_dir>/calibration/single_camera_parameters.json` 檔案中。
-
-## 校正結果輸出格式
-
-校正計算完成後儲存的 `single_camera_parameters.json` 包含以下重要資訊：
-- `camera_matrix`: 相機內參矩陣 (3x3)。
-- `dist_coeffs`: 畸變係數陣列 (Distortion coefficients)。
-- `camera_matrix_shape` / `dist_coeffs_shape`: 用來驗證資料維度。
+| 檔案 | 用途 |
+|---|---|
+| `calibrate.py` | 校正精靈 UI |
+| `calib.py` | 單台內參 UI 與品質檢查（精靈的內參步驟也是它） |
+| `calibration_workflow.py` | 外參計算、驗證與發布（不含 Qt） |
+| `calib_store.py` | `Db/Calibration` 的路徑與讀寫 |
+| `chessboard_cross/` | 角點偵測、角點順序對齊、立體校正、驗證；也可用指令列單獨執行 |
+| `camera_objects/`、`camera_config/`、`utils/` | FLIR 相機控制與設定 |
+| `paths.py` | 路徑常數 |
