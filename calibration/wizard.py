@@ -1,8 +1,8 @@
 """單一入口：兩台棋盤格內參 → 棋盤格雙機同步拍照 → 自動偵測角點 → 外參（R、t，mm）。
 
-啟動：python calibration/calibrate.py（可從任何工作目錄執行）
+啟動：python calibration/calibration.py（可從任何工作目錄執行）
 相機固定後，依畫面指示移動棋盤格；外參照片須兩台同時完整看到棋盤格才會存檔。
-本工具不載入 YOLO / ViTPose。calib.py 仍可單獨用來校正一台相機的內參。
+本工具不載入 YOLO / ViTPose。單台相機內參見 intrinsic_window.py（calibration.py --single）。
 """
 
 # Support both python -m and direct file execution from any working directory.
@@ -34,8 +34,9 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
-import calib_store
-from calibration_workflow import (
+import intrinsic
+import storage
+from stereo import (
     MAX_STEREO_RMS, MIN_PAIRS, RECOMMENDED_PAIRS, estimate_chessboard_stereo, match_image_pairs,
     publish_intrinsics, publish_stereo, save_json, validate_intrinsic, validate_roles,
 )
@@ -234,7 +235,7 @@ class CalibrationWindow(QMainWindow):
         form.addRow("棋盤格內角點：寬（格子數 − 1）", self.cols)
         form.addRow("棋盤格內角點：高（格子數 − 1）", self.rows)
         form.addRow("每格實際邊長", self.square)
-        # 鏡頭焦距決定內參初值與長焦鎖定（>= calib.CalibWindow.TELEPHOTO_MM 自動鎖光心與高階畸變）
+        # 鏡頭焦距決定內參初值與長焦鎖定（>= intrinsic_window.CalibWindow.TELEPHOTO_MM 自動鎖光心與高階畸變）
         self.front_focal, self.side_focal = QDoubleSpinBox(), QDoubleSpinBox()
         for spin, value in ((self.front_focal, 35), (self.side_focal, 8)):
             spin.setRange(0, 500)
@@ -297,15 +298,15 @@ class CalibrationWindow(QMainWindow):
     def scan_cameras(self):
         saved, serials = None, set()
         try:
-            saved = calib_store.load_roles()
+            saved = storage.load_roles()
             if saved:
                 serials.update(saved)
-            serials.update(calib_store.load_intrinsics())
+            serials.update(storage.load_intrinsics())
         except Exception as exc:
             self.log("既有校正檔無法讀取：{}".format(exc))
         connected = []
         try:
-            from calib import list_cameras
+            from intrinsic_window import list_cameras
             connected = sorted({sn for sn, _ in list_cameras()})
         except Exception as exc:
             message = "無法掃描相機；可輸入序號並使用既有內參與照片：{}".format(exc)
@@ -369,14 +370,14 @@ class CalibrationWindow(QMainWindow):
             raise ValueError("「沿用已有內參」與「只做內參」只能擇一。")
         entries = {}
         if self.reuse.isChecked():
-            stored = calib_store.load_intrinsics()
+            stored = storage.load_intrinsics()
             for sn in roles:
                 if sn not in stored:
                     raise ValueError("SN{} 尚無內參，請取消「沿用已有內參」。".format(sn))
                 validate_intrinsic(stored[sn])
                 entries[sn] = stored[sn]
         self.roles, self.entries = roles, entries
-        self.session = Path(calib_store.new_session_dir())
+        self.session = Path(storage.new_session_dir())
         for folder in ("cf", "cs", "intrinsic"):
             (self.session / folder).mkdir(parents=True, exist_ok=True)
         self.names = []
@@ -405,11 +406,11 @@ class CalibrationWindow(QMainWindow):
         })
 
     def begin_intrinsic(self, role_index):
-        import calib
+        import intrinsic_window
         sample_dir = self.session / "intrinsic" / ("images_SN" + self.roles[role_index])
         sample_dir.mkdir(parents=True, exist_ok=True)
 
-        class Collector(calib.CalibWindow):
+        class Collector(intrinsic_window.CalibWindow):
             def sample_photo_dir(collector):
                 # 原始照片存進本次校正資料夾，供日後重算或比較方法
                 return sample_dir
@@ -420,7 +421,7 @@ class CalibrationWindow(QMainWindow):
                     super().keyPressEvent(event)
 
         # The legacy collector is reused; only this new process's config is changed.
-        calib.CONFIG_PATH = str(CAMERA_CONFIG_DIR /
+        intrinsic_window.CONFIG_PATH = str(CAMERA_CONFIG_DIR /
                                 ("GH3_camera_config.yaml" if role_index == 0 else "GH3_camera_config_2.yaml"))
         self.state = "intrinsic_{}".format(role_index)
         self.panel = Collector()
@@ -508,25 +509,15 @@ class CalibrationWindow(QMainWindow):
                              .format(rms, panel.RMS_MAX))
         role_index = int(self.state.rsplit("_", 1)[1])
         sn = self.roles[role_index]
-        entry = {
-            "intrinsic_matrix": K.tolist(), "distortion_coefficients": dist.tolist(),
-            "fx": float(K[0, 0]), "fy": float(K[1, 1]), "cx": float(K[0, 2]), "cy": float(K[1, 2]),
-            "image_size": list(panel.image_size), "rms": float(rms),
-            "mean_reproj_err": float(np.mean(errors)), "verdict": verdict,
-            "pattern": [self.cols.value(), self.rows.value()], "square_size_mm": self.square.value(),
-            "sample_count": panel.captured_count, "calibrated_at": datetime.now().isoformat(timespec="seconds"),
-            "sample_images": [Path(p).relative_to(self.session.resolve()).as_posix()
-                              for p in panel._photo_paths],
-            "distortion_locked": panel.chk_lock_dist.isChecked(), "lens_focal_mm": panel.spn_focal.value() or None,
-            "calibration_flags": int(panel._last_flags),
-        }
+        pattern = (self.cols.value(), self.rows.value())
+        # 照片路徑記成相對本次 session，整個資料夾搬家也找得到
+        photos = [Path(p).relative_to(self.session.resolve()).as_posix() for p in panel._photo_paths]
+        entry = intrinsic.make_entry(panel._last_fit, verdict, panel.image_size, pattern, self.square.value(),
+                                     panel.spn_focal.value(), panel.chk_lock_dist.isChecked(), photos)
         validate_intrinsic(entry)
-        np.savez(str(self.session / "intrinsic" / ("calib_SN{}.npz".format(sn))),
-                 mtx=K, dist=dist, image_size=panel.image_size, rms=rms, per_image_rms=errors,
-                 mean_reproj_err=np.mean(errors), tilt_deg=tilts, pattern=entry["pattern"],
-                 square_size=self.square.value(), serial_number=sn, sample_count=panel.captured_count,
-                 objpoints=np.asarray(panel.objpoints), imgpoints=np.asarray(panel.imgpoints),
-                 sample_images=np.asarray(entry["sample_images"]))
+        intrinsic.save_npz(self.session / "intrinsic" / "calib_SN{}.npz".format(sn), sn, panel._last_fit,
+                           panel.image_size, pattern, self.square.value(),
+                           panel.objpoints, panel.imgpoints, photos)
         self.entries[sn] = entry
         self.persist_session("intrinsic_{}_complete".format(role_index))
         self.log("SN{} 內參完成，RMS {:.3f} px。{}".format(sn, rms, "；".join(problems)))
@@ -542,7 +533,7 @@ class CalibrationWindow(QMainWindow):
 
     def finish_intrinsic_only(self):
         """兩台內參完成就發布（內參＋正面／側面角色），不拍外參；相機架好後再勾「沿用已有內參」做外參。"""
-        publish_intrinsics(calib_store.CALIB_DIR, self.session, self.roles, self.entries,
+        publish_intrinsics(storage.CALIB_DIR, self.session, self.roles, self.entries,
                            datetime.now().isoformat(timespec="seconds"))
         self.state = "done"
         try:
@@ -702,7 +693,7 @@ class CalibrationWindow(QMainWindow):
 
     def import_pairs(self):
         folder = QFileDialog.getExistingDirectory(self, "選擇內含 cf 與 cs 的校正照片資料夾",
-                                                   calib_store.SESSIONS_DIR)
+                                                   storage.SESSIONS_DIR)
         if not folder:
             return
         try:
@@ -761,7 +752,7 @@ class CalibrationWindow(QMainWindow):
             raise ValueError("Stereo RMS {:.2f} px 超過 {} px，未更新校正檔（報告已存於 {}）。\n"
                              "請確認棋盤格規格、兩台內參，並補拍不同位置與深度的照片。"
                              .format(fit["stereo_rms_px"], MAX_STEREO_RMS, self.session / "stereo.json"))
-        publish_stereo(calib_store.CALIB_DIR, self.session, self.roles, self.entries, report)
+        publish_stereo(storage.CALIB_DIR, self.session, self.roles, self.entries, report)
         self.state = "done"
         try:
             self.persist_session("complete")
@@ -810,7 +801,7 @@ def main():
     # Load native camera dependencies before starting Qt and calculation workers.
     # Missing SDK is still handled by the camera scan UI.
     try:
-        import calib
+        import intrinsic_window
     except ImportError:
         pass
     app = QApplication(sys.argv)

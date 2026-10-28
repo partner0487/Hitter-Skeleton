@@ -1,4 +1,4 @@
-"""讀取 calibration/calibrate.py 產生的雙相機校正，轉成 3D 介面使用的慣例。
+"""讀取 calibration/calibration.py 產生的雙相機校正，轉成 3D 介面使用的慣例。
 
 Db/Calibration/stereo.json 是目前使用中的校正；錄影時複製一份成錄影資料夾的
 calibration.json（快照），日後重新校正也不會影響舊錄影的 3D 重建。
