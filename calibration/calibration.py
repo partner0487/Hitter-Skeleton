@@ -2,7 +2,7 @@
 
     python calibration/calibration.py                 開啟校正精靈（內參 → 外參）
     python calibration/calibration.py --single        開啟單台相機內參視窗
-    python calibration/calibration.py --calculate [SESSION] [--pattern 7x7]
+    python calibration/calibration.py --calculate [SESSION|日期] [--pattern 7x7]
                                                       用已拍好的照片離線重算，不開相機、不開視窗
 
 --calculate 讀 Db/Calibration/sessions/<SESSION>/：
@@ -34,21 +34,25 @@ def parse_pattern(text):
 
 
 def find_session(name):
-    """名稱（sessions/ 底下）或路徑；未指定時取最新一個有 cf/ 與 cs/ 照片的 session"""
+    """sessions/ 底下有 cf/、cs/ 照片的 session。
+
+    name 可以是完整名稱、日期前綴（20261019 → 當天最新一次）或 sessions/ 底下的路徑；
+    省略時取最新一次。session 名稱的日期決定 3D 分析哪些錄影會使用它，因此不接受 sessions/ 以外的資料夾。
+    """
     import storage
-    sessions = Path(storage.SESSIONS_DIR)
-    if name:
-        path = Path(name)
-        for candidate in (path, sessions / name):
-            if candidate.is_dir():
-                return candidate.resolve()
-        raise SystemExit(f"找不到 session：{name}（請給 {sessions} 底下的資料夾名稱或完整路徑）")
+    from stereo import SESSION_NAME
+    sessions = Path(storage.SESSIONS_DIR).resolve()
     found = sorted((p for p in sessions.iterdir()
-                    if p.is_dir() and (p / "cf").is_dir() and (p / "cs").is_dir()),
+                    if p.is_dir() and SESSION_NAME.fullmatch(p.name)
+                    and (p / "cf").is_dir() and (p / "cs").is_dir()),
                    key=lambda p: p.name) if sessions.is_dir() else []
+    if name:
+        key = Path(name).name if Path(name).resolve().parent == sessions else name
+        found = [p for p in found if p.name == key] or [p for p in found if p.name.startswith(key)]
     if not found:
-        raise SystemExit(f"{sessions} 底下沒有含 cf/、cs/ 照片的 session")
-    return found[-1].resolve()
+        names = "、".join(p.name for p in sorted(sessions.iterdir())) if sessions.is_dir() else "（無）"
+        raise SystemExit(f"找不到 session：{name or '（最新）'}\n{sessions} 底下現有：{names}")
+    return found[-1]
 
 
 def calculate_intrinsic(session, role, sn, pattern, square, focal, lock):
@@ -83,7 +87,7 @@ def calculate_intrinsic(session, role, sn, pattern, square, focal, lock):
 
 def calculate(args):
     import intrinsic
-    from stereo import MAX_STEREO_RMS, estimate_chessboard_stereo, publish_stereo, save_json
+    from stereo import MAX_STEREO_RMS, estimate_chessboard_stereo, publish_stereo, save_json, save_rejected
     import storage
 
     session = find_session(args.session)
@@ -112,7 +116,6 @@ def calculate(args):
     except (ValueError, KeyError) as exc:
         print(f"   ✘ 外參計算失敗：{exc}")
         return 1
-    save_json(session / "stereo.json", report)
     fit = report["fit"]
     checks = report["held_out_board_checks"]
     print(f"   Stereo RMS {fit['stereo_rms_px']:.3f} px｜基線 {report['baseline_mm'] / 1000:.2f} m｜"
@@ -122,12 +125,15 @@ def calculate(args):
         print(f"   姿態不一致而剔除：{'、'.join(report['rejected_pairs'])}")
     for warning in report["warnings"]:
         print(f"   REVIEW：{warning}")
-    print(f"\n已寫入 {session / 'intrinsics.json'}、{session / 'stereo.json'}")
+    print(f"\n已寫入 {session / 'intrinsics.json'}")
 
     if fit["stereo_rms_px"] > MAX_STEREO_RMS:
-        print(f"✘ Stereo RMS 超過 {MAX_STEREO_RMS} px，不採用；3D 分析不會使用這次結果")
+        save_rejected(session, report)
+        print(f"✘ Stereo RMS 超過 {MAX_STEREO_RMS} px，不採用；報告存於 {session / 'stereo_failed.json'}，"
+              "原本的 stereo.json 不受影響")
         return 1
     _, is_current = publish_stereo(storage.CALIB_DIR, session, roles, entries, report)
+    print(f"✔ 已寫入 {session / 'stereo.json'}")
     day = session.name[:8]
     print(f"✔ 已採用：{day[:4]}-{day[4:6]}-{day[6:]} 起的錄影會使用這次校正（直到下一次較新的校正）")
     if is_current:
@@ -141,12 +147,12 @@ def main(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="範例：\n"
                "  python calibration/calibration.py --calculate\n"
-               "  python calibration/calibration.py --calculate 20261019_legacy\n"
-               "  python calibration/calibration.py --calculate 20261019_legacy --pattern 7x7")
+               "  python calibration/calibration.py --calculate 20261019\n"
+               "  python calibration/calibration.py --calculate 20261019 --pattern 7x7")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--single", action="store_true", help="開啟單台相機內參視窗")
     mode.add_argument("--calculate", nargs="?", const="", metavar="SESSION", dest="session",
-                      help="離線重算；SESSION 為 sessions/ 底下的資料夾名稱或路徑，省略則用最新的")
+                      help="離線重算；SESSION 為 sessions/ 底下的名稱或日期（20261019＝當天最新一次），省略則用最新的")
     parser.add_argument("--pattern", type=parse_pattern,
                         help="棋盤格內角點 寬x高，例如 7x7（預設讀 session.json，否則 8x7）")
     args = parser.parse_args(argv)

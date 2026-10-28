@@ -38,6 +38,7 @@ import intrinsic
 import storage
 from stereo import (
     MAX_STEREO_RMS, MIN_PAIRS, RECOMMENDED_PAIRS, estimate_chessboard_stereo, match_image_pairs,
+    save_rejected,
     publish_intrinsics, publish_stereo, save_json, validate_intrinsic, validate_roles,
 )
 
@@ -732,7 +733,6 @@ class CalibrationWindow(QMainWindow):
         self.fail(message)
 
     def extrinsic_finished(self, report):
-        save_json(self.session / "stereo.json", report)
         fit = report["fit"]
         checks = report["held_out_board_checks"]
         held_rmse = float(np.median([c["square_rmse_mm"] for c in checks]))
@@ -749,9 +749,10 @@ class CalibrationWindow(QMainWindow):
         for warning in report["warnings"]:
             self.log("REVIEW：{}".format(warning))
         if fit["stereo_rms_px"] > MAX_STEREO_RMS:
+            save_rejected(self.session, report)
             raise ValueError("Stereo RMS {:.2f} px 超過 {} px，未更新校正檔（報告已存於 {}）。\n"
                              "請確認棋盤格規格、兩台內參，並補拍不同位置與深度的照片。"
-                             .format(fit["stereo_rms_px"], MAX_STEREO_RMS, self.session / "stereo.json"))
+                             .format(fit["stereo_rms_px"], MAX_STEREO_RMS, self.session / "stereo_failed.json"))
         _, is_current = publish_stereo(storage.CALIB_DIR, self.session, self.roles, self.entries, report)
         self.state = "done"
         try:

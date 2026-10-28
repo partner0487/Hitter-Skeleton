@@ -108,8 +108,8 @@ python calibration/calibration.py --calculate  # 用已拍好的照片離線重�
 
 ```bash
 python calibration/calibration.py --calculate                                # 最新一次（有 cf/、cs/ 的 session）
-python calibration/calibration.py --calculate 20261019_legacy                # 指定 session 名稱或完整路徑
-python calibration/calibration.py --calculate 20261019_legacy --pattern 7x7  # 覆寫棋盤格規格（也接受 7*7、7,7）
+python calibration/calibration.py --calculate 20261019                       # 指定日期（當天最新一次），也可給完整 session 名稱
+python calibration/calibration.py --calculate 20261019 --pattern 7x7         # 覆寫棋盤格規格（也接受 7*7、7,7）
 ```
 
 - 棋盤格規格、相機序號、焦距、格子邊長都讀該 session 的 `session.json`，沒有才用 8×7、100 mm、35 / 8 mm。
@@ -133,15 +133,18 @@ Db/Calibration/
    │  ├─ cf/  cs/                      外參照片，同名＝同一時刻
    │  ├─ corners/                      角點預覽，標出 0 號角點，可檢查兩台方向是否一致
    │  ├─ intrinsics.json               本次兩台內參
-   │  ├─ stereo.json                   本次外參完整報告；採用後多一個 published_at
+   │  ├─ stereo.json                   本次採用的外參完整報告（含 published_at）
+   │  ├─ stereo_failed.json            Stereo RMS 不合格時的報告，供檢查；不影響已採用的 stereo.json
    │  ├─ session.json                  本次設定與進度
    │  └─ previous_calibration/         採用時被取代的上一版，可手動複製回去還原
    ├─ <YYYYMMDD_HHMMSS>_SN<序號>/     --single 單獨校正一台
-   └─ <YYYYMMDD>_legacy/              舊版 Intrinsic.py／PnP.py 的照片；舊輸出在 legacy/
+   └─ <YYYYMMDD>_000000_legacy/       舊版 Intrinsic.py／PnP.py 的照片；舊輸出在 legacy/
 ```
 
 `sessions/` 保留每一次校正的原始資料。精靈或 `--calculate` 算出 Stereo RMS ≤ 3 px 時「採用」該 session；
 上層三個 json 永遠是**日期最新**的已採用校正，重算較舊日期的 session（例如 `_legacy`）不會蓋掉它們。
+
+session 名稱固定為 `YYYYMMDD_HHMMSS[_後綴]`，名稱順序就是時間順序；舊資料用 `000000`，同一天若有新的校正會排在它之後。只有 `sessions/` 底下符合此格式的資料夾會被使用。
 
 ### `stereo.json` 主要欄位
 
@@ -165,12 +168,12 @@ Db/Calibration/
 
 校正以**日期**為單位：相機有偏差、或 demo／測試前重新校正一次，之後的錄影都用這次的結果。
 
-3D 分析載入錄影時，從路徑中的日期（`Db/<打者>/2026-10-08/...`）挑**當天或之前最新的已採用校正**：
+3D 分析載入錄影時，從路徑中的日期（`Db/<打者>/2026-10-08/...`，或 `20260421` 這種資料夾）挑**當天或之前最新的已採用校正**：
 
 | 錄影日期 | 已採用的校正 | 使用 |
 |---|---|---|
-| 2026-10-30 | 20261008_legacy、20261029_093000 | 20261029_093000 |
-| 2026-10-19 | 同上 | 20261008_legacy |
+| 2026-10-30 | 20261008_000000_legacy、20261029_093000 | 20261029_093000 |
+| 2026-10-19 | 同上 | 20261008_000000_legacy |
 | 2026-10-05（早於所有校正）或路徑沒有日期 | | 最新的 `Db/Calibration/stereo.json` |
 
 - 重新校正後，舊錄影仍使用當時的校正，不會被新參數影響。
@@ -181,7 +184,7 @@ Db/Calibration/
 **2026-10 的舊錄影**要使用當時的校正，用對應日期的舊照片重算即可（合格就會採用）：
 
 ```bash
-python calibration/calibration.py --calculate 20261008_legacy
+python calibration/calibration.py --calculate 20261008
 ```
 
 ## 9. 常見問題
