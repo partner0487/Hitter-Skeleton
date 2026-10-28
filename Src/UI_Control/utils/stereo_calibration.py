@@ -13,7 +13,7 @@ import numpy as np
 
 from utils.paths import DB_DIR
 
-STEREO_JSON = DB_DIR / "Calibration" / "extrinsic" / "stereo.json"
+STEREO_JSON = DB_DIR / "Calibration" / "stereo.json"
 SNAPSHOT_NAME = "calibration.json"   # 錄影當下的校正快照，與 calibration/calib_store.py 相同
 
 

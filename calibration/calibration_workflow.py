@@ -126,14 +126,14 @@ def publish_stereo(calib_dir, session, roles, entries, report):
             or not np.allclose(R.T @ R, np.eye(3), atol=1e-5)):
         raise ValueError("外參無效，未更新校正檔。")
     calib_dir, session = Path(calib_dir), Path(session)
-    intrinsics_path = calib_dir / "intrinsic/intrinsics_all.json"
+    intrinsics_path = calib_dir / "intrinsics_all.json"
     existing = json.loads(intrinsics_path.read_text(encoding="utf-8")) if intrinsics_path.exists() else {}
     existing.update(entries)
     outputs = {
         "camera_roles.json": json_bytes({"front": front, "side": side,
                                          "updated_at": report["estimated_at"]}),
-        "intrinsic/intrinsics_all.json": json_bytes(existing),
-        "extrinsic/stereo.json": json_bytes(report),
+        "intrinsics_all.json": json_bytes(existing),
+        "stereo.json": json_bytes(report),
     }
     _write_with_backup(calib_dir, session, roles, outputs)
     return report
@@ -146,22 +146,18 @@ def publish_intrinsics(calib_dir, session, roles, entries, updated_at):
     for sn in roles:
         validate_intrinsic(entries[sn])
     calib_dir, session = Path(calib_dir), Path(session)
-    intrinsics_path = calib_dir / "intrinsic/intrinsics_all.json"
+    intrinsics_path = calib_dir / "intrinsics_all.json"
     existing = json.loads(intrinsics_path.read_text(encoding="utf-8")) if intrinsics_path.exists() else {}
     existing.update(entries)
     outputs = {
         "camera_roles.json": json_bytes({"front": front, "side": side, "updated_at": updated_at}),
-        "intrinsic/intrinsics_all.json": json_bytes(existing),
+        "intrinsics_all.json": json_bytes(existing),
     }
     _write_with_backup(calib_dir, session, roles, outputs)
 
 
 def _write_with_backup(calib_dir, session, roles, outputs):
     """寫入校正檔：先把要被取代的舊檔備份到 session/previous_calibration，任何一檔失敗就全部還原。"""
-    for sn in roles:
-        name = "intrinsic/calib_SN{}.npz".format(sn)
-        if (session / name).exists():
-            outputs[name] = (session / name).read_bytes()
     originals = {name: (calib_dir / name).read_bytes() if (calib_dir / name).exists() else None
                  for name in outputs}
     backup = session / "previous_calibration"

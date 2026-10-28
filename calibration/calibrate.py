@@ -17,7 +17,7 @@ import sys
 import time
 from datetime import datetime
 
-from paths import CAMERA_CONFIG_DIR, DB_DIR
+from paths import CAMERA_CONFIG_DIR
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "True")
 qt_plugins = Path(os.environ.get("CONDA_PREFIX", sys.prefix)) / "Library/plugins/platforms"
 if qt_plugins.is_dir():
@@ -376,8 +376,7 @@ class CalibrationWindow(QMainWindow):
                 validate_intrinsic(stored[sn])
                 entries[sn] = stored[sn]
         self.roles, self.entries = roles, entries
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        self.session = Path(calib_store.CALIB_DIR) / "sessions" / (stamp + "_chessboard")
+        self.session = Path(calib_store.new_session_dir())
         for folder in ("cf", "cs", "intrinsic"):
             (self.session / folder).mkdir(parents=True, exist_ok=True)
         self.names = []
@@ -387,6 +386,8 @@ class CalibrationWindow(QMainWindow):
         self.cancel_button.setEnabled(True)
         self.log("本次資料：{}".format(self.session))
         if entries:
+            # 沿用的內參也存一份到本次資料夾，外參報告才知道用的是哪一版
+            save_json(self.session / "intrinsics.json", entries)
             self.begin_capture()
         else:
             self.begin_intrinsic(0)
@@ -532,7 +533,9 @@ class CalibrationWindow(QMainWindow):
         self.dispose_panel()
         if role_index == 0:
             self.begin_intrinsic(1)
-        elif self.intrinsic_only.isChecked():
+            return
+        save_json(self.session / "intrinsics.json", self.entries)
+        if self.intrinsic_only.isChecked():
             self.finish_intrinsic_only()
         else:
             self.begin_capture()
@@ -699,7 +702,7 @@ class CalibrationWindow(QMainWindow):
 
     def import_pairs(self):
         folder = QFileDialog.getExistingDirectory(self, "選擇內含 cf 與 cs 的校正照片資料夾",
-                                                   str(DB_DIR / "Record/Calibrate_Picture"))
+                                                   calib_store.SESSIONS_DIR)
         if not folder:
             return
         try:
@@ -738,7 +741,7 @@ class CalibrationWindow(QMainWindow):
         self.fail(message)
 
     def extrinsic_finished(self, report):
-        save_json(self.session / "report.json", report)
+        save_json(self.session / "stereo.json", report)
         fit = report["fit"]
         checks = report["held_out_board_checks"]
         held_rmse = float(np.median([c["square_rmse_mm"] for c in checks]))
@@ -757,14 +760,14 @@ class CalibrationWindow(QMainWindow):
         if fit["stereo_rms_px"] > MAX_STEREO_RMS:
             raise ValueError("Stereo RMS {:.2f} px 超過 {} px，未更新校正檔（報告已存於 {}）。\n"
                              "請確認棋盤格規格、兩台內參，並補拍不同位置與深度的照片。"
-                             .format(fit["stereo_rms_px"], MAX_STEREO_RMS, self.session / "report.json"))
+                             .format(fit["stereo_rms_px"], MAX_STEREO_RMS, self.session / "stereo.json"))
         publish_stereo(calib_store.CALIB_DIR, self.session, self.roles, self.entries, report)
         self.state = "done"
         try:
             self.persist_session("complete")
         except OSError as exc:
             self.log("校正檔已套用，但工作階段狀態無法更新：{}".format(exc))
-        self.instructions.setText("校正完成，已更新 Db/Calibration/extrinsic/stereo.json。")
+        self.instructions.setText("校正完成，已更新 Db/Calibration/stereo.json。")
         self.log("照片、角點預覽（corners/）、內參樣本與報告：{}".format(self.session))
         self.log("驗證組與訓練組來自同一批照片，仍建議用已知長度的物體現場驗證實際尺寸。")
         self.next_button.setText("開始另一次校正")

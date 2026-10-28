@@ -4,14 +4,21 @@
 所有校正產出都放在 Db/Calibration/ 底下（Db 不進 git）：
 
     Db/Calibration/
-    ├─ camera_roles.json            哪台是正面、哪台是側面（calib.py 第 4 區或 calibrate.py 產生）
-    ├─ intrinsic/
-    │   ├─ intrinsics_all.json      所有相機內參，以序號為鍵（calib.py / calibrate.py）
-    │   └─ calib_SN<序號>.npz        單台完整校正資料（calib.py / calibrate.py）
-    ├─ extrinsic/
-    │   └─ stereo.json              正面→側面外參 R、t（mm），X_cs = R @ X_cf + t（calibrate.py）
-    └─ sessions/<時間>_chessboard/  每次校正的照片、角點預覽與報告
+    ├─ camera_roles.json        目前的正面／側面相機序號
+    ├─ intrinsics_all.json      目前各相機內參，以序號為鍵
+    ├─ stereo.json              目前的外參：正面→側面 R、t（mm），X_cs = R @ X_cf + t，含兩台內參
+    └─ sessions/<時間>/         每次校正一個資料夾，內參、外參共用
+        ├─ intrinsic/images_SN<序號>/  內參照片（一台一台拍）
+        ├─ intrinsic/calib_SN<序號>.npz 內參完整資料（角點、每張誤差、傾斜角）
+        ├─ cf/ cs/                   外參照片，同名＝同一時刻
+        ├─ corners/                  外參角點預覽
+        ├─ intrinsics.json           本次兩台內參
+        ├─ stereo.json               本次外參報告
+        ├─ session.json              本次設定與進度
+        └─ previous_calibration/     發布前被取代的上一版（可還原）
 
+上層三個 json 是「目前使用中」的版本，由最近一次完成的校正發布；
+sessions 底下保留每一次的原始資料，可以回頭重算或比較。
 路徑以本檔位置推算，不受執行時所在目錄影響。
 """
 import os
@@ -22,12 +29,19 @@ import numpy as np
 
 from paths import DB_DIR
 CALIB_DIR = str(DB_DIR / "Calibration")
-INTRINSIC_DIR = os.path.join(CALIB_DIR, "intrinsic")
-EXTRINSIC_DIR = os.path.join(CALIB_DIR, "extrinsic")
+SESSIONS_DIR = os.path.join(CALIB_DIR, "sessions")
 
 ROLES_JSON = os.path.join(CALIB_DIR, "camera_roles.json")
-INTRINSICS_JSON = os.path.join(INTRINSIC_DIR, "intrinsics_all.json")
-STEREO_JSON = os.path.join(EXTRINSIC_DIR, "stereo.json")
+INTRINSICS_JSON = os.path.join(CALIB_DIR, "intrinsics_all.json")
+STEREO_JSON = os.path.join(CALIB_DIR, "stereo.json")
+
+
+def new_session_dir(suffix=""):
+    """建立一個新的校正資料夾 sessions/<YYYYMMDD_HHMMSS>[_suffix]，回傳路徑字串"""
+    name = datetime.now().strftime("%Y%m%d_%H%M%S") + (f"_{suffix}" if suffix else "")
+    path = os.path.join(SESSIONS_DIR, name)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def read_json(path):
