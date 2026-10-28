@@ -3,8 +3,7 @@
 # Support both python -m and direct file execution from any working directory.
 import sys as _sys
 from pathlib import Path as _Path
-if __package__ in (None, ""):
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
 import argparse
 from pathlib import Path
@@ -12,9 +11,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from Src.calibration.chessboard_cross.chessboard_metric import (DEFAULT_CALIBRATION, detect_folder,
+from chessboard_cross.chessboard_metric import (DEFAULT_CALIBRATION, detect_folder,
     read_json, write_json)
-from Src.calibration.chessboard_cross.chessboard_extrinsic import fit_chessboard_rig
+from chessboard_cross.chessboard_extrinsic import fit_chessboard_rig
 
 
 def main(argv=None):

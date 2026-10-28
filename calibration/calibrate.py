@@ -8,8 +8,7 @@
 # Support both python -m and direct file execution from any working directory.
 import sys as _sys
 from pathlib import Path as _Path
-if __package__ in (None, ""):
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 import os
 from pathlib import Path
@@ -18,21 +17,7 @@ import sys
 import time
 from datetime import datetime
 
-# The independent tools do not initialize the legacy camera/intrinsic wizard.
-if __name__ == "__main__" and "--two-rods" in sys.argv:
-    from Src.calibration.calibrate_two_rods import main as rods_main
-    sys.exit(rods_main([argument for argument in sys.argv[1:] if argument != "--two-rods"]))
-if __name__ == "__main__" and "--wood-frame" in sys.argv:
-    from Src.calibration.calibrate_wood_frame import main as wood_main
-    sys.exit(wood_main([argument for argument in sys.argv[1:] if argument != "--wood-frame"]))
-if __name__ == "__main__" and "--manual-coordinates" in sys.argv:
-    from Src.calibration.calibrate_manual_coordinates import main as manual_main
-    sys.exit(manual_main([argument for argument in sys.argv[1:] if argument != "--manual-coordinates"]))
-if __name__ == "__main__" and "--cross" in sys.argv:
-    raise SystemExit("十字架工具已移除，請改用 --wood-frame。")
-
-UI_DIR = Path(__file__).resolve().parent
-from Src.paths import CAMERA_CONFIG_DIR
+from paths import CAMERA_CONFIG_DIR, DB_DIR
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "True")
 qt_plugins = Path(os.environ.get("CONDA_PREFIX", sys.prefix)) / "Library/plugins/platforms"
 if qt_plugins.is_dir():
@@ -49,8 +34,8 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from Src.calibration import calib_store
-from Src.calibration.calibration_workflow import (
+import calib_store
+from calibration_workflow import (
     MIN_PAIRS, estimate_wand_fundamental, match_image_pairs,
     publish_calibration, publish_intrinsics, save_json, validate_intrinsic, validate_roles,
 )
@@ -97,8 +82,7 @@ class CaptureWorker(QThread):
     def run(self):
         cameras = []
         try:
-            from Src.cameras.single_camera.flir_camera_system import FlirCameraSystem
-            from Src.cameras.two_cameras.dual_flir_system import DualFlirSystem
+            from camera_objects import DualFlirSystem, FlirCameraSystem
             for sn, config in zip(self.roles, ("GH3_camera_config.yaml", "GH3_camera_config_2.yaml")):
                 camera = FlirCameraSystem(str(CAMERA_CONFIG_DIR / config), sn)
                 cameras.append(camera)
@@ -113,8 +97,8 @@ class CaptureWorker(QThread):
                     continue
                 failures = 0
                 # Assignment is atomic; the UI reads both images from one pair.
-                self.latest = (time.monotonic(), cv2.cvtColor(front, cv2.COLOR_BayerBG2BGR),
-                               cv2.cvtColor(side, cv2.COLOR_BayerBG2BGR))
+                self.latest = (time.monotonic(), cv2.cvtColor(front, cv2.COLOR_GRAY2BGR),
+                               cv2.cvtColor(side, cv2.COLOR_GRAY2BGR))
         except Exception as exc:
             self.failed.emit(str(exc))
         finally:
@@ -355,7 +339,7 @@ class CalibrationWindow(QMainWindow):
             self.log("既有校正檔無法讀取：{}".format(exc))
         connected = []
         try:
-            from Src.calibration.calib import list_cameras
+            from calib import list_cameras
             connected = sorted({sn for sn, _ in list_cameras()})
         except Exception as exc:
             message = "無法掃描相機；可輸入序號並使用既有內參與照片：{}".format(exc)
@@ -455,7 +439,7 @@ class CalibrationWindow(QMainWindow):
         })
 
     def begin_intrinsic(self, role_index):
-        import Src.calibration.calib as calib
+        import calib
         sample_dir = self.session / "intrinsic" / ("images_SN" + self.roles[role_index])
         sample_dir.mkdir(parents=True, exist_ok=True)
 
@@ -729,7 +713,7 @@ class CalibrationWindow(QMainWindow):
 
     def import_pairs(self):
         folder = QFileDialog.getExistingDirectory(self, "選擇內含 cf 與 cs 的校正照片資料夾",
-                                                   str(UI_DIR.parents[1] / "Db/Record/Calibrate_Picture"))
+                                                   str(DB_DIR / "Record/Calibrate_Picture"))
         if not folder:
             return
         try:
@@ -858,7 +842,7 @@ def main():
     # Load native camera dependencies before starting Qt and calculation workers.
     # Missing SDK is still handled by the camera scan UI.
     try:
-        import Src.calibration.calib as calib
+        import calib
     except ImportError:
         pass
     app = QApplication(sys.argv)

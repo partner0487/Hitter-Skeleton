@@ -21,7 +21,7 @@ from datetime import datetime
 
 import numpy as np
 
-from Src.paths import DB_DIR
+from paths import DB_DIR
 CALIB_DIR = str(DB_DIR / "Calibration")
 INTRINSIC_DIR = os.path.join(CALIB_DIR, "intrinsic")
 EXTRINSIC_DIR = os.path.join(CALIB_DIR, "extrinsic")
