@@ -20,6 +20,8 @@ from datetime import datetime
 from paths import CAMERA_CONFIG_DIR
 # 正面、側面相機的設定檔（曝光、增益的預設值也在這裡）
 CAMERA_CONFIGS = (CAMERA_CONFIG_DIR / "GH3_camera_config.yaml", CAMERA_CONFIG_DIR / "GH3_camera_config_2.yaml")
+# 尚無 camera_roles.json 時的預設：正面 35 mm、側面 8 mm
+DEFAULT_ROLES = ("25083472", "21091470")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "True")
 qt_plugins = Path(os.environ.get("CONDA_PREFIX", sys.prefix)) / "Library/plugins/platforms"
 if qt_plugins.is_dir():
@@ -346,7 +348,7 @@ class CalibrationWindow(QMainWindow):
 
         # Connected devices come first; stored serials remain available for imports.
         choices = connected + sorted(serials.difference(connected))
-        selected = [combo.currentText().strip() or (saved[i] if saved else "")
+        selected = [combo.currentText().strip() or (saved or DEFAULT_ROLES)[i]
                     for i, combo in enumerate((self.front_combo, self.side_combo))]
         if connected and not self.reuse.isChecked():
             # A fresh capture must not default to a disconnected, historical rig.
@@ -860,7 +862,8 @@ def main():
         import intrinsic_window
     except ImportError:
         pass
-    app = QApplication(sys.argv)
+    from qt_app import create_app
+    app = create_app(sys.argv)
     window = CalibrationWindow()
     window.show()
     return app.exec_()

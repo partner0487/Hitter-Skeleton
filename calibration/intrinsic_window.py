@@ -30,7 +30,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "True")
 
 import cv2
 import numpy as np
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QSizePolicy, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QTextEdit,
                              QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox,
                              QMessageBox, QFileDialog, QLineEdit, QProgressDialog,
@@ -190,7 +190,9 @@ class CalibWindow(QMainWindow):
         self.lbl_view.setAlignment(Qt.AlignCenter)
         self.lbl_view.setStyleSheet("border: 2px solid gray; background: #222; color: #ccc;")
         self.lbl_view.setMinimumHeight(420)
-        layout.addWidget(self.lbl_view)
+        # 畫面會縮放到框的大小；框若隨圖片尺寸撐大，每一幀都會再變大一點（含邊框），因此忽略圖片尺寸
+        self.lbl_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        layout.addWidget(self.lbl_view, 1)
 
         # 操作按鈕
         act_group = QGroupBox("3. 擷取與校正")
@@ -699,7 +701,8 @@ class CalibWindow(QMainWindow):
 
 
 def main():
-    app = QApplication(sys.argv)
+    from qt_app import create_app
+    app = create_app(sys.argv)
     window = CalibWindow()
     window.show()
     sys.exit(app.exec_())
