@@ -1,8 +1,8 @@
-"""單一入口：兩台棋盤格內參 → 校正桿雙機拍照 → 標註 → 外參。
+"""單一入口：兩台棋盤格內參 → 棋盤格雙機同步拍照 → 自動偵測角點 → 外參（R、t，mm）。
 
-啟動：python Src/calibration/calibrate.py（可從任何工作目錄執行）
-相機固定後，依畫面指示移動棋盤格／校正桿；左右影像均依相同順序點 6 個球心。
-本工具不載入 YOLO / ViTPose。既有 calib.py、01、02 工具仍可獨立使用。
+啟動：python calibration/calibrate.py（可從任何工作目錄執行）
+相機固定後，依畫面指示移動棋盤格；外參照片須兩台同時完整看到棋盤格才會存檔。
+本工具不載入 YOLO / ViTPose。calib.py 仍可單獨用來校正一台相機的內參。
 """
 
 # Support both python -m and direct file execution from any working directory.
@@ -36,8 +36,8 @@ from PyQt5.QtWidgets import (
 
 import calib_store
 from calibration_workflow import (
-    MIN_PAIRS, estimate_wand_fundamental, match_image_pairs,
-    publish_calibration, publish_intrinsics, save_json, validate_intrinsic, validate_roles,
+    MAX_STEREO_RMS, MIN_PAIRS, RECOMMENDED_PAIRS, estimate_chessboard_stereo, match_image_pairs,
+    publish_intrinsics, publish_stereo, save_json, validate_intrinsic, validate_roles,
 )
 
 
@@ -180,17 +180,22 @@ class PointView(QGraphicsView):
 
 
 class CalibrationWindow(QMainWindow):
+    # 外參拍照預覽：縮圖偵測 + 每 N 次更新偵測一次，避免全解析度偵測拖慢畫面
+    PREVIEW_SCALE = 0.4
+    PREVIEW_DETECT_EVERY = 3
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("相機校正精靈 — 棋盤格內參 / 校正桿外參")
+        self.setWindowTitle("相機校正精靈 — 棋盤格內參 / 外參")
         self.resize(1200, 900)
         self.state = "setup"
         self.session = None
         self.roles = None
         self.entries = {}
-        self.points = {"cf": {}, "cs": {}}
         self.names = []
-        self.index = 0
+        self.preview_tick = 0
+        self.preview_found = {"cf": False, "cs": False}
+        self.preview_corners = {"cf": None, "cs": None}
         self.panel = None
         self.capture = None
         self.job = None
@@ -199,7 +204,7 @@ class CalibrationWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        self.step_label = QLabel("1 設定 → 2 正面內參 → 3 側面內參 → 4 拍照 → 5 標註與計算")
+        self.step_label = QLabel("1 設定 → 2 正面內參 → 3 側面內參 → 4 雙機拍棋盤格 → 5 計算外參")
         self.step_label.setStyleSheet("font-size: 18px; font-weight: bold; padding: 8px;")
         layout.addWidget(self.step_label)
         self.instructions = QLabel()
@@ -249,7 +254,7 @@ class CalibrationWindow(QMainWindow):
         form.addRow(self.scan_status)
         self.reuse = QCheckBox("沿用這兩台已有內參，只重做外參（鏡頭、焦距、解析度須相同）")
         form.addRow(self.reuse)
-        self.intrinsic_only = QCheckBox("只做內參（外參改用 RoMa：在校正中心選 RoMa，不拍校正桿）")
+        self.intrinsic_only = QCheckBox("只做內參（相機還沒架到球場位置時使用，外參之後再做）")
         form.addRow(self.intrinsic_only)
         self.cols, self.rows = QSpinBox(), QSpinBox()
         for spin, value in ((self.cols, 8), (self.rows, 7)):
@@ -272,15 +277,11 @@ class CalibrationWindow(QMainWindow):
             spin.setValue(value)
         form.addRow("正面鏡頭焦距", self.front_focal)
         form.addRow("側面鏡頭焦距", self.side_focal)
-        self.threshold = QDoubleSpinBox()
-        self.threshold.setRange(0.1, 10)
-        self.threshold.setValue(3)
-        self.threshold.setSuffix(" px")
-        form.addRow("外參內點誤差門檻", self.threshold)
         layout.addWidget(box)
         note = QLabel("準備：固定兩台相機與焦距，關閉 main.py / SpinView 等占用相機的程式。\n"
-                      "內參：每台拍至少 15 組不同位置、距離及傾斜角度的棋盤格。\n"
-                      "外參：接 GPIO 同步線，拍至少 4 組不同位置、角度與深度的校正桿。\n"
+                      "內參：每台拍至少 15 組不同位置、距離及傾斜角度的棋盤格，涵蓋畫面四角。\n"
+                      f"外參：接 GPIO 同步線，拍 {RECOMMENDED_PAIRS} 組以上兩台都完整看到的棋盤格"
+                      f"（至少 {MIN_PAIRS} 組），涵蓋打擊區不同位置與深度。\n"
                       "照片可在同一視窗拍攝，也可匯入含 cf / cs 的既有照片資料夾。\n"
                       "完成後才更新目前校正值；每次資料獨立保存，供日後方法比較。")
         note.setWordWrap(True)
@@ -300,7 +301,6 @@ class CalibrationWindow(QMainWindow):
             column.addWidget(label)
             self.view_titles[role] = label
             view = PointView()
-            view.edited.connect(self.points_changed)
             column.addWidget(view)
             self.views[role] = view
             images.addLayout(column)
@@ -318,17 +318,6 @@ class CalibrationWindow(QMainWindow):
         for button in (self.connect_button, self.shot_button, self.import_button):
             buttons.addWidget(button)
         layout.addWidget(self.capture_actions)
-        self.annotation_actions = QWidget()
-        buttons = QHBoxLayout(self.annotation_actions)
-        self.previous_button = QPushButton("上一組")
-        self.previous_button.clicked.connect(lambda: self.move_pair(-1))
-        self.following_button = QPushButton("下一組")
-        self.following_button.clicked.connect(lambda: self.move_pair(1))
-        fit = QPushButton("縮放至完整影像")
-        fit.clicked.connect(lambda: [view.fit_image() for view in self.views.values()])
-        for button in (self.previous_button, self.following_button, fit):
-            buttons.addWidget(button)
-        layout.addWidget(self.annotation_actions)
         self.pages.addWidget(self.pair_page)
 
     def log(self, message):
@@ -400,9 +389,7 @@ class CalibrationWindow(QMainWindow):
             elif self.state == "capture":
                 if len(self.names) < MIN_PAIRS:
                     raise ValueError("至少拍攝或匯入 {} 組雙機照片。".format(MIN_PAIRS))
-                self.stop_capture(self.begin_annotation)
-            elif self.state == "annotate":
-                self.calculate_extrinsic()
+                self.stop_capture(self.calculate_extrinsic)
             elif self.state == "done":
                 self.reset_ui()
         except Exception as exc:
@@ -423,11 +410,10 @@ class CalibrationWindow(QMainWindow):
                 entries[sn] = stored[sn]
         self.roles, self.entries = roles, entries
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        self.session = Path(calib_store.CALIB_DIR) / "sessions" / (stamp + "_wand")
+        self.session = Path(calib_store.CALIB_DIR) / "sessions" / (stamp + "_chessboard")
         for folder in ("cf", "cs", "intrinsic"):
             (self.session / folder).mkdir(parents=True, exist_ok=True)
-        self.names, self.points = [], {"cf": {}, "cs": {}}
-        self.index = 0
+        self.names = []
         self.last_capture_time = None
         self.persist_session("started")
         self.setup_page.setEnabled(False)
@@ -440,13 +426,13 @@ class CalibrationWindow(QMainWindow):
 
     def persist_session(self, status):
         save_json(self.session / "session.json", {
-            "method": "intrinsic_only" if self.intrinsic_only.isChecked() else "wand_manual_ransac",
+            "method": "intrinsic_only" if self.intrinsic_only.isChecked() else "chessboard_stereo_pnp",
             "front": self.roles[0], "side": self.roles[1],
             "status": status, "intrinsics": self.entries,
             "pattern": [self.cols.value(), self.rows.value()], "square_size_mm": self.square.value(),
             "lens_focal_mm": {"front": self.front_focal.value() or None,
                               "side": self.side_focal.value() or None},
-            "threshold_px": self.threshold.value(), "image_names": self.names,
+            "image_names": self.names,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         })
 
@@ -533,7 +519,7 @@ class CalibrationWindow(QMainWindow):
             self.panel.deleteLater()
             self.panel = None
 
-    def start_job(self, function, success):
+    def start_job(self, function, success, failure=None):
         self.next_button.setEnabled(False)
         self.cancel_button.setEnabled(False)
         self.pages.setEnabled(False)
@@ -552,7 +538,7 @@ class CalibrationWindow(QMainWindow):
                     raise ValueError(job.error)
                 success(job.result)
             except Exception as exc:
-                self.fail(str(exc))
+                (failure or self.fail)(str(exc))
             job.deleteLater()
 
         job.finished.connect(finished)
@@ -604,7 +590,7 @@ class CalibrationWindow(QMainWindow):
             self.begin_capture()
 
     def finish_intrinsic_only(self):
-        """兩台內參完成就發布（內參＋正面／側面角色），不拍校正桿；外參之後用 RoMa 計算。"""
+        """兩台內參完成就發布（內參＋正面／側面角色），不拍外參；相機架好後再勾「沿用已有內參」做外參。"""
         publish_intrinsics(calib_store.CALIB_DIR, self.session, self.roles, self.entries,
                            datetime.now().isoformat(timespec="seconds"))
         self.state = "done"
@@ -612,8 +598,8 @@ class CalibrationWindow(QMainWindow):
             self.persist_session("complete")
         except OSError as exc:
             self.log("內參已套用，但工作階段狀態無法更新：{}".format(exc))
-        self.instructions.setText("內參完成，已更新 Db/Calibration。外參請到校正中心（start_calibrate.bat）選 RoMa，用當天的錄影計算。")
-        self.log("兩台內參與正面／側面角色已更新；外參（fundamental.json）沒有改動，若相機有移動請用 RoMa 重新計算。")
+        self.instructions.setText("內參完成，已更新 Db/Calibration。相機架好後，勾選「沿用已有內參」再做一次外參。")
+        self.log("兩台內參與正面／側面角色已更新；外參（stereo.json）沒有改動，若相機有移動請重新做外參。")
         self.log("照片與內參樣本：{}".format(self.session))
         self.next_button.setText("開始另一次校正")
         self.cancel_button.setEnabled(False)
@@ -622,19 +608,37 @@ class CalibrationWindow(QMainWindow):
         self.state = "capture"
         self.pages.setCurrentWidget(self.pair_page)
         self.capture_actions.show()
-        self.annotation_actions.hide()
         self.connect_button.setEnabled(True)
         self.import_button.setEnabled(True)
         self.shot_button.setEnabled(False)
-        self.next_button.setText("開始標註")
-        self.instructions.setText("接好 GPIO 同步線後連接雙相機。校正桿每個位置停穩後按空白鍵，至少 4 組；"
-                                  "涵蓋不同角度及深度，兩台都須看見同樣 6 個球心。")
+        self.next_button.setText("計算外參並儲存")
+        self.instructions.setText(f"接好 GPIO 同步線後連接雙相機。棋盤格每個位置停穩、兩台畫面都出現彩色角點後按空白鍵；"
+                                  f"建議 {RECOMMENDED_PAIRS} 組以上（至少 {MIN_PAIRS} 組），"
+                                  "涵蓋打擊區的左右、前後、高低，並讓板子朝不同方向傾斜。")
         self.pair_status.setText("已拍 0 組；也可匯入既有 cf / cs 照片。")
+        self.preview_found = {"cf": False, "cs": False}
+        self.preview_corners = {"cf": None, "cs": None}
         for role, view in self.views.items():
             view.scene().clear()
             view.editable = False
-            self.view_titles[role].setText(("正面 SN" if role == "cf" else "側面 SN") +
-                                          self.roles[0 if role == "cf" else 1])
+        self.update_view_titles()
+
+    def update_view_titles(self):
+        for role, label in self.view_titles.items():
+            title = ("正面 SN" if role == "cf" else "側面 SN") + self.roles[0 if role == "cf" else 1]
+            found = self.preview_found[role]
+            label.setText("{}　{}".format(title, "✔ 偵測到棋盤格" if found else "✘ 未偵測到棋盤格"))
+            label.setStyleSheet("color: {}; font-weight: bold;".format("#15803d" if found else "#b91c1c"))
+
+    def detect_preview(self, image):
+        pattern = (self.cols.value(), self.rows.value())
+        small = cv2.resize(image, None, fx=self.PREVIEW_SCALE, fy=self.PREVIEW_SCALE,
+                           interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        found, corners = cv2.findChessboardCorners(
+            gray, pattern,
+            flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE | cv2.CALIB_CB_FAST_CHECK)
+        return found, (corners / self.PREVIEW_SCALE if found else None)
 
     def connect_pair(self):
         if self.capture is not None:
@@ -652,10 +656,22 @@ class CalibrationWindow(QMainWindow):
             return
         pair = self.capture.latest
         fresh = pair is not None and time.monotonic() - pair[0] < 2
-        self.shot_button.setEnabled(fresh)
-        if fresh:
+        if not fresh:
+            self.shot_button.setEnabled(False)
+            return
+        self.preview_tick += 1
+        if self.preview_tick % self.PREVIEW_DETECT_EVERY == 0:
             for role, image in zip(("cf", "cs"), pair[1:]):
-                self.views[role].set_image(image)
+                self.preview_found[role], self.preview_corners[role] = self.detect_preview(image)
+            self.update_view_titles()
+        pattern = (self.cols.value(), self.rows.value())
+        for role, image in zip(("cf", "cs"), pair[1:]):
+            if self.preview_found[role]:
+                image = image.copy()
+                cv2.drawChessboardCorners(image, pattern, self.preview_corners[role], True)
+            self.views[role].set_image(image)
+        # 外參照片必須兩台同時看到完整棋盤格，否則該組無法配對
+        self.shot_button.setEnabled(all(self.preview_found.values()))
 
     def stop_capture(self, callback):
         if self.capture is None:
@@ -708,7 +724,11 @@ class CalibrationWindow(QMainWindow):
                 raise ValueError("尚未取得新鮮的雙機畫面，請先連接相機。")
             if pair[0] == self.last_capture_time:
                 return
-            name = "{:02d}.jpg".format(len(self.names) + 1)
+            if not all(self.preview_found.values()):
+                missing = "、".join(("正面" if r == "cf" else "側面") for r, ok in self.preview_found.items() if not ok)
+                raise ValueError("{}未偵測到完整棋盤格，這組無法用於外參；請調整板子位置後再拍。".format(missing))
+            # PNG 無損，避免 JPG 壓縮影響亞像素角點
+            name = "{:02d}.png".format(len(self.names) + 1)
             for role, image in zip(("cf", "cs"), pair[1:]):
                 self.check_image_size(image, role)
             paths = [self.session / role / name for role in ("cf", "cs")]
@@ -723,7 +743,9 @@ class CalibrationWindow(QMainWindow):
             self.last_capture_time = pair[0]
             self.names.append(name)
             self.persist_session("capture")
-            self.pair_status.setText("已拍 {} 組；請移動校正桿再拍下一組。".format(len(self.names)))
+            remain = max(0, RECOMMENDED_PAIRS - len(self.names))
+            self.pair_status.setText("已拍 {} 組；請移動、傾斜棋盤格再拍下一組{}。".format(
+                len(self.names), "（建議再拍 {} 組）".format(remain) if remain else ""))
         except Exception as exc:
             self.fail(str(exc))
 
@@ -752,72 +774,51 @@ class CalibrationWindow(QMainWindow):
         except Exception as exc:
             self.fail(str(exc))
 
-    def begin_annotation(self):
-        self.state = "annotate"
-        self.capture_actions.hide()
-        self.annotation_actions.show()
-        self.next_button.setText("計算並儲存校正")
-        self.instructions.setText("兩張照片依相同實體球心順序點 1–6。左鍵新增、右鍵撤銷；"
-                                  "滾輪縮放，Ctrl＋拖曳平移。點位自動存成草稿；完成所有照片後計算。")
-        self.index = 0
-        self.show_pair()
-
-    def show_pair(self):
-        name = self.names[self.index]
-        for role in ("cf", "cs"):
-            points = self.points[role].setdefault(name, [])
-            self.views[role].set_image(read_image(self.session / role / name), points, True)
-        self.previous_button.setEnabled(self.index > 0)
-        self.following_button.setEnabled(self.index < len(self.names) - 1)
-        self.points_changed()
-
-    def points_changed(self):
-        if self.state != "annotate":
-            return
-        name = self.names[self.index]
-        completed = sum(len(self.points["cf"].get(n, [])) == 6 and
-                        len(self.points["cs"].get(n, [])) == 6 for n in self.names)
-        self.pair_status.setText("第 {}/{} 組 {}｜正面 {}/6、側面 {}/6｜完成 {}/{} 組"
-                                 .format(self.index+1, len(self.names), name,
-                                         len(self.points["cf"][name]), len(self.points["cs"][name]),
-                                         completed, len(self.names)))
-        try:
-            for role in ("cf", "cs"):
-                save_json(self.session / ("selected_points_{}.json".format(role)), self.points[role])
-        except Exception as exc:
-            self.fail("草稿儲存失敗：{}".format(exc))
-
-    def move_pair(self, offset):
-        self.index = max(0, min(len(self.names)-1, self.index + offset))
-        self.show_pair()
-
     def calculate_extrinsic(self):
-        for name in self.names:
-            if any(len(self.points[role].get(name, [])) != 6 for role in ("cf", "cs")):
-                raise ValueError("{} 尚未完成左右各 6 點，請補齊後再計算。".format(name))
-        self.log("正在計算外參並檢查內點品質…")
-        threshold = self.threshold.value()
-        self.start_job(lambda: estimate_wand_fundamental(self.points["cf"], self.points["cs"],
-                                                        threshold), self.extrinsic_finished)
+        self.state = "calculate"
+        self.capture_actions.hide()
+        self.log("正在偵測 {} 組照片的棋盤格角點並計算外參…".format(len(self.names)))
+        roles, entries = self.roles, dict(self.entries)
+        pattern, square = (self.cols.value(), self.rows.value()), self.square.value()
+        self.start_job(lambda: estimate_chessboard_stereo(self.session, roles, entries, pattern, square),
+                       self.extrinsic_finished, self.extrinsic_failed)
+
+    def extrinsic_failed(self, message):
+        # 計算失敗時回到拍照頁，可補拍後再算；已拍的照片保留在本次資料夾
+        self.begin_capture()
+        self.pair_status.setText("已拍 {} 組；外參計算失敗，可補拍後再算。".format(len(self.names)))
+        self.fail(message)
 
     def extrinsic_finished(self, report):
-        report.update(front=self.roles[0], side=self.roles[1])
         save_json(self.session / "report.json", report)
-        publish_calibration(calib_store.CALIB_DIR, self.session, self.roles, self.entries, report, self.points)
+        fit = report["fit"]
+        checks = report["held_out_board_checks"]
+        held_rmse = float(np.median([c["square_rmse_mm"] for c in checks]))
+        summary = ("外參結果：Stereo RMS {:.3f} px｜基線 {:.0f} mm｜訓練 {} 組、驗證 {} 組、剔除 {} 組｜"
+                   "驗證組格子邊長誤差中位數 {:.2f} mm"
+                   .format(fit["stereo_rms_px"], report["baseline_mm"], len(report["training_pairs"]),
+                           len(checks), len(report["rejected_pairs"]), held_rmse))
+        self.log(summary)
+        for role, names in report["detection_failed"].items():
+            if names:
+                self.log("{}未偵測到棋盤格：{}".format("正面" if role == "cf" else "側面", "、".join(names)))
+        if report["rejected_pairs"]:
+            self.log("姿態不一致而剔除：{}".format("、".join(report["rejected_pairs"])))
+        for warning in report["warnings"]:
+            self.log("REVIEW：{}".format(warning))
+        if fit["stereo_rms_px"] > MAX_STEREO_RMS:
+            raise ValueError("Stereo RMS {:.2f} px 超過 {} px，未更新校正檔（報告已存於 {}）。\n"
+                             "請確認棋盤格規格、兩台內參，並補拍不同位置與深度的照片。"
+                             .format(fit["stereo_rms_px"], MAX_STEREO_RMS, self.session / "report.json"))
+        publish_stereo(calib_store.CALIB_DIR, self.session, self.roles, self.entries, report)
         self.state = "done"
         try:
             self.persist_session("complete")
         except OSError as exc:
             self.log("校正檔已套用，但工作階段狀態無法更新：{}".format(exc))
-        for view in self.views.values():
-            view.editable = False
-        self.annotation_actions.hide()
-        self.instructions.setText("校正完成，已更新 Db/Calibration。主程式下次錄影會採用這組校正值。")
-        self.log("校正完成：內點 {}/{}，內點 RMS {:.3f} px；全體中位誤差 {:.3f} px。"
-                 .format(report["inliers"], report["total_points"], report["inlier_rms_px"],
-                         report["median_error_px"]))
-        self.log("照片、內參樣本、點位與報告：{}".format(self.session))
-        self.log("外參採原始像素座標，與現有 3D 流程一致；誤差為擬合結果，仍需現場驗證實際尺寸。")
+        self.instructions.setText("校正完成，已更新 Db/Calibration/extrinsic/stereo.json。")
+        self.log("照片、角點預覽（corners/）、內參樣本與報告：{}".format(self.session))
+        self.log("驗證組與訓練組來自同一批照片，仍建議用已知長度的物體現場驗證實際尺寸。")
         self.next_button.setText("開始另一次校正")
         self.cancel_button.setEnabled(False)
 

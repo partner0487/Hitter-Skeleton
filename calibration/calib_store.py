@@ -4,14 +4,13 @@
 所有校正產出都放在 Db/Calibration/ 底下（Db 不進 git）：
 
     Db/Calibration/
-    ├─ camera_roles.json            哪台是正面、哪台是側面（calib.py 第 4 區產生）
+    ├─ camera_roles.json            哪台是正面、哪台是側面（calib.py 第 4 區或 calibrate.py 產生）
     ├─ intrinsic/
-    │   ├─ intrinsics_all.json      所有相機內參，以序號為鍵（calib.py）
-    │   └─ calib_SN<序號>.npz        單台完整校正資料（calib.py）
-    └─ extrinsic/
-        ├─ selected_points_cf.json  正面標註點（calibrate.py）
-        ├─ selected_points_cs.json  側面標註點（calibrate.py）
-        └─ fundamental.json         F 矩陣（calibrate.py，或 roma/roma_extrinsic.py --save）
+    │   ├─ intrinsics_all.json      所有相機內參，以序號為鍵（calib.py / calibrate.py）
+    │   └─ calib_SN<序號>.npz        單台完整校正資料（calib.py / calibrate.py）
+    ├─ extrinsic/
+    │   └─ stereo.json              正面→側面外參 R、t（mm），X_cs = R @ X_cf + t（calibrate.py）
+    └─ sessions/<時間>_chessboard/  每次校正的照片、角點預覽與報告
 
 路徑以本檔位置推算，不受執行時所在目錄影響。
 """
@@ -28,14 +27,7 @@ EXTRINSIC_DIR = os.path.join(CALIB_DIR, "extrinsic")
 
 ROLES_JSON = os.path.join(CALIB_DIR, "camera_roles.json")
 INTRINSICS_JSON = os.path.join(INTRINSIC_DIR, "intrinsics_all.json")
-POINTS_JSON = {
-    "cf": os.path.join(EXTRINSIC_DIR, "selected_points_cf.json"),
-    "cs": os.path.join(EXTRINSIC_DIR, "selected_points_cs.json"),
-}
-FUNDAMENTAL_JSON = os.path.join(EXTRINSIC_DIR, "fundamental.json")
-
-# 舊設備（2026-02 前人）的校正資料；讀寫它的舊工具已於 2026-10-13 刪除，資料夾保留備查，主流程不使用
-OLD_RIG_DIR = os.path.join(CALIB_DIR, "old_rig_20260223")
+STEREO_JSON = os.path.join(EXTRINSIC_DIR, "stereo.json")
 
 
 def read_json(path):
@@ -95,64 +87,44 @@ def get_intrinsic(sn):
     return K, dist
 
 
-# ---------- 外參（F 矩陣） ----------
+# ---------- 外參（棋盤格立體校正） ----------
 
-def save_fundamental(F, front_sn, side_sn, inliers, total, threshold, extra=None):
-    """extra：額外記錄的欄位（例如 RoMa 工具記下方法與來源影片）"""
-    write_json(FUNDAMENTAL_JSON, {
-        **(extra or {}),
-        "F": np.asarray(F).tolist(),
-        # 02 以側面為 pts1、正面為 pts2 估計，因此 F 滿足 x_front^T F x_side = 0
-        "convention": "x_front^T F x_side = 0",
-        "front": front_sn,
-        "side": side_sn,
-        "inliers": int(inliers),
-        "total_points": int(total),
-        "threshold_px": float(threshold),
-        "estimated_at": datetime.now().isoformat(timespec="seconds"),
-    })
-
-
-def load_fundamental():
-    """回傳 fundamental.json 內容（F 已轉為 ndarray）；不存在回傳 None。"""
-    data = read_json(FUNDAMENTAL_JSON)
+def load_stereo():
+    """回傳 stereo.json 內容（R、t 已轉為 ndarray）；不存在回傳 None。"""
+    data = read_json(STEREO_JSON)
     if data is None:
         return None
-    data["F"] = np.array(data["F"], dtype=np.float64)
+    data["R_cs_from_cf"] = np.array(data["R_cs_from_cf"], dtype=np.float64)
+    data["t_cs_from_cf_mm"] = np.array(data["t_cs_from_cf_mm"], dtype=np.float64).reshape(3, 1)
     return data
 
 
 def load_stereo_calibration():
     """組合 3D 重建需要的全部參數。
 
-    回傳 dict：K_F, dist_F, K_S, dist_S, F, front, side
+    回傳 dict：K_F, dist_F, K_S, dist_S, R, t, front, side
+    （R、t 為正面→側面：X_side = R @ X_front + t，t 單位 mm）
     任一項缺少時回傳 (None, 原因說明)，成功時回傳 (dict, None)。
     """
+    stereo = load_stereo()
+    if stereo is None:
+        return None, f"找不到 {STEREO_JSON}（請先用 calibrate.py 完成棋盤格外參）"
+    front, side = str(stereo["front"]), str(stereo["side"])
     roles = load_roles()
-    if roles is None:
-        return None, f"找不到相機角色設定 {ROLES_JSON}（請用 calib.py 第 4 區指定正面/側面）"
-    front, side = roles
+    if roles is not None and roles != (front, side):
+        return None, (f"外參是用 front={front} side={side} 算的，"
+                      f"與目前角色 front={roles[0]} side={roles[1]} 不符，請重新做外參")
 
-    intr_f = get_intrinsic(front)
-    if intr_f is None:
-        return None, f"正面相機 SN{front} 尚未做內參校正"
-    intr_s = get_intrinsic(side)
-    if intr_s is None:
-        return None, f"側面相機 SN{side} 尚未做內參校正"
-
-    fund = load_fundamental()
-    if fund is None:
-        return None, f"找不到 {FUNDAMENTAL_JSON}（請先用 start_calibrate.bat 完成校正桿外參，或在校正中心用 RoMa 計算外參）"
-    if (fund.get("front"), fund.get("side")) != (front, side):
-        return None, (f"F 矩陣是用 front={fund.get('front')} side={fund.get('side')} 算的，"
-                      f"與目前角色 front={front} side={side} 不符，請重新執行 02")
-
+    # 外參計算時固定的內參一併存在 stereo.json，兩者必定一致，不另外查 intrinsics_all.json
+    cf, cs = stereo["intrinsics"]["cf"], stereo["intrinsics"]["cs"]
     return {
-        "K_F": intr_f[0], "dist_F": intr_f[1],
-        "K_S": intr_s[0], "dist_S": intr_s[1],
-        "F": fund["F"],
+        "K_F": np.array(cf["intrinsic_matrix"], dtype=np.float64),
+        "dist_F": np.array(cf["distortion_coefficients"], dtype=np.float64),
+        "K_S": np.array(cs["intrinsic_matrix"], dtype=np.float64),
+        "dist_S": np.array(cs["distortion_coefficients"], dtype=np.float64),
+        "R": stereo["R_cs_from_cf"], "t": stereo["t_cs_from_cf_mm"],
         "front": front, "side": side,
-        "F_estimated_at": fund.get("estimated_at"),
+        "estimated_at": stereo.get("estimated_at"),
     }, None
 
 
@@ -161,7 +133,7 @@ def load_stereo_calibration():
 # 日後重新校正也不會影響舊錄影的 3D 重建。
 
 SNAPSHOT_NAME = "calibration.json"
-_MATRIX_KEYS = ("K_F", "dist_F", "K_S", "dist_S", "F")
+_MATRIX_KEYS = ("K_F", "dist_F", "K_S", "dist_S", "R", "t")
 
 
 def save_snapshot(folder, front_sn=None, side_sn=None):
