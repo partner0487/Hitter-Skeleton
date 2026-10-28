@@ -6,12 +6,16 @@ import re
 import tempfile
 from datetime import datetime
 
-import cv2
 import numpy as np
 
+from chessboard_cross.chessboard_extrinsic import fit_chessboard_rig
+from chessboard_cross.chessboard_metric import detect_folder
 
-MIN_PAIRS = 4
-POINTS_PER_IMAGE = 6
+
+# 棋盤格外參：每 5 組留 1 組做驗證，訓練組至少要 3 組，所以最少 6 組
+MIN_PAIRS = 6
+RECOMMENDED_PAIRS = 15
+MAX_STEREO_RMS = 3.0  # px，超過不發布外參（沿用 PnP.py 門檻）
 
 
 def validate_roles(front, side):
@@ -54,78 +58,39 @@ def match_image_pairs(folder, minimum=MIN_PAIRS):
                   if Path(n).stem.isdigit() else (1, 0, n))
 
 
-def epipolar_errors(F, side, front):
-    """Maximum of the two point-to-line distances, in raw image pixels."""
-    side_h = np.column_stack((side, np.ones(len(side))))
-    front_h = np.column_stack((front, np.ones(len(front))))
-    lines_f = side_h @ F.T
-    lines_s = front_h @ F
-    numerator = np.abs(np.sum(front_h * lines_f, axis=1))
-    denom = np.minimum(np.linalg.norm(lines_f[:, :2], axis=1),
-                       np.linalg.norm(lines_s[:, :2], axis=1))
-    return numerator / np.maximum(denom, 1e-12)
+def _plain(value):
+    """把 numpy 陣列／純量轉成 JSON 可寫入的型別"""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(type(value).__name__)
 
 
-def estimate_wand_fundamental(front_points, side_points, threshold=3.0):
-    """Keep the existing reconstruction convention: x_front.T F x_side = 0.
+def estimate_chessboard_stereo(session, roles, entries, pattern, square_mm):
+    """偵測 session/cf、cs 的同名棋盤格照片，固定內參求正面→側面外參（R、t，mm）。
 
-    Current reconstruction consumes raw pixels. Do not undistort only the
-    calibration points here: that would change the coordinate space of F.
+    角點偵測用 findChessboardCornersSB；align_pairs 以跨組姿態一致性挑出側面的正確角點排列，
+    解決棋盤格旋轉 180° 造成的配對錯誤；每 5 組留 1 組驗證邊長。
     """
-    if not np.isfinite(threshold) or threshold <= 0:
-        raise ValueError("內點門檻必須是正數。")
-    if set(front_points) != set(side_points) or len(front_points) < MIN_PAIRS:
-        raise ValueError("至少需要 {} 組完整且同名的雙機標註。".format(MIN_PAIRS))
-    names = sorted(front_points)
-    front, side = [], []
-    for name in names:
-        pair = [np.asarray(data[name], dtype=np.float64)
-                for data in (front_points, side_points)]
-        if any(p.shape != (POINTS_PER_IMAGE, 2) or not np.isfinite(p).all()
-               or len(np.unique(p, axis=0)) != POINTS_PER_IMAGE for p in pair):
-            raise ValueError("{}：兩張照片都必須標註 6 個不同且順序一致的點。".format(name))
-        front.append(pair[0])
-        side.append(pair[1])
-    front, side = np.vstack(front), np.vstack(side)
-    for points in (front, side):
-        if np.linalg.matrix_rank(points - points.mean(axis=0)) < 2:
-            raise ValueError("標註點全落在同一直線，請把校正桿移到不同位置、角度及深度拍攝。")
-    cv2.setRNGSeed(0)
-    F, mask = cv2.findFundamentalMat(side, front, cv2.FM_RANSAC, threshold, 0.999)
-    if F is None or F.shape != (3, 3) or mask is None or not np.isfinite(F).all():
-        raise ValueError("無法估計外參，請檢查左右點位順序並補拍不同深度的照片。")
-    mask = mask.ravel().astype(bool)
-    # Refit using all inliers, then independently check both epipolar distances.
-    for _ in range(2):
-        if mask.sum() < 12:
-            raise ValueError("有效內點少於 12 點，請修正標註或補拍。")
-        fitted, _ = cv2.findFundamentalMat(side[mask], front[mask], cv2.FM_8POINT)
-        if fitted is None or fitted.shape != (3, 3) or not np.isfinite(fitted).all():
-            raise ValueError("外參重算失敗，請補拍不同位置與深度。")
-        F = fitted
-        errors = epipolar_errors(F, side, front)
-        mask = errors <= threshold
-    if mask.sum() < 12 or mask.mean() < 0.5:
-        raise ValueError("外參品質不足：內點 {}/{}，至少需 12 點且達 50%。請檢查標註。"
-                         .format(mask.sum(), len(mask)))
-    if np.linalg.matrix_rank(F) != 2 or np.linalg.norm(F) < 1e-12:
-        raise ValueError("外參矩陣退化，請補拍。")
-    F = F / np.linalg.norm(F)
-    return {
-        "F": F.tolist(),
-        "convention": "x_front^T F x_side = 0",
-        "coordinate_space": "raw_pixels",
-        "method": "wand_manual_ransac",
-        "inliers": int(mask.sum()),
-        "total_points": len(mask),
-        "threshold_px": float(threshold),
-        "median_error_px": float(np.median(errors)),
-        "inlier_rms_px": float(np.sqrt(np.mean(errors[mask] ** 2))),
-        "pairs": {name: {"inliers": int(mask[i*6:(i+1)*6].sum()),
-                         "median_error_px": float(np.median(errors[i*6:(i+1)*6]))}
-                  for i, name in enumerate(names)},
-        "estimated_at": datetime.now().isoformat(timespec="seconds"),
-    }
+    session = Path(session)
+    pattern = [int(pattern[0]), int(pattern[1])]
+    cameras = {"cf": entries[roles[0]], "cs": entries[roles[1]]}
+    calibration = {"schema": "chessboard_intrinsics_v1", "units": "mm",
+                   "pattern": pattern, "square_mm": float(square_mm), "cameras": cameras}
+    detections = {"pattern": pattern, "cameras": {}}
+    for role in ("cf", "cs"):
+        # 每 5 張存一張角點預覽（標出 0 號角點），可人工確認兩台的角點方向
+        detections["cameras"][role] = detect_folder(session / role, tuple(pattern),
+                                                    session / "corners" / role, preview_every=5)
+    failed = {role: detections["cameras"][role]["failed"] for role in ("cf", "cs")}
+    result = fit_chessboard_rig(calibration, detections, "pnp", max_pairs=60)
+    result.update(front=roles[0], side=roles[1], session=str(session), detection_failed=failed,
+                  estimated_at=datetime.now().isoformat(timespec="seconds"))
+    # 轉成純 JSON 型別，之後存檔與發布都不必再處理 numpy
+    return json.loads(json.dumps(result, default=_plain))
 
 
 def atomic_write(path, content):
@@ -149,34 +114,33 @@ def save_json(path, data):
     atomic_write(path, json_bytes(data))
 
 
-def publish_calibration(calib_dir, session, roles, entries, report, points):
+def publish_stereo(calib_dir, session, roles, entries, report):
     """Publish only a completed run. Back up replaced files and roll back errors."""
     front, side = roles
     validate_roles(front, side)
     for sn in roles:
         validate_intrinsic(entries[sn])
-    matrix = np.asarray(report["F"], dtype=float)
-    if matrix.shape != (3, 3) or not np.isfinite(matrix).all() or np.linalg.matrix_rank(matrix) != 2:
-        raise ValueError("外參矩陣無效，未更新校正檔。")
+    R = np.asarray(report["R_cs_from_cf"], dtype=float)
+    t = np.asarray(report["t_cs_from_cf_mm"], dtype=float)
+    if (R.shape != (3, 3) or t.size != 3 or not np.isfinite(R).all() or not np.isfinite(t).all()
+            or not np.allclose(R.T @ R, np.eye(3), atol=1e-5)):
+        raise ValueError("外參無效，未更新校正檔。")
     calib_dir, session = Path(calib_dir), Path(session)
     intrinsics_path = calib_dir / "intrinsic/intrinsics_all.json"
     existing = json.loads(intrinsics_path.read_text(encoding="utf-8")) if intrinsics_path.exists() else {}
     existing.update(entries)
-    report = dict(report, front=front, side=side, session=str(session))
     outputs = {
         "camera_roles.json": json_bytes({"front": front, "side": side,
                                          "updated_at": report["estimated_at"]}),
         "intrinsic/intrinsics_all.json": json_bytes(existing),
-        "extrinsic/selected_points_cf.json": json_bytes(points["cf"]),
-        "extrinsic/selected_points_cs.json": json_bytes(points["cs"]),
-        "extrinsic/fundamental.json": json_bytes(report),
+        "extrinsic/stereo.json": json_bytes(report),
     }
     _write_with_backup(calib_dir, session, roles, outputs)
     return report
 
 
 def publish_intrinsics(calib_dir, session, roles, entries, updated_at):
-    """只發布兩台內參與正面／側面角色（外參另用 RoMa 等方法計算）；同樣先備份、出錯還原。"""
+    """只發布兩台內參與正面／側面角色，外參沿用目前的 stereo.json；同樣先備份、出錯還原。"""
     front, side = roles
     validate_roles(front, side)
     for sn in roles:
