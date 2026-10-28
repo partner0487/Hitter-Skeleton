@@ -47,10 +47,18 @@ class FlirCameraSystem(SingleCameraSystem):
 
         self.cam: PySpin.CameraPtr = self.cam_list.GetBySerial(serial_number)
         self.serial_number = serial_number
-        self.cam.Init()
+        try:
+            self.cam.Init()
 
-        self._configure_camera()
-        self._configure_stream_buffer()
+            self._configure_camera()
+            self._configure_stream_buffer()
+        except Exception:
+            # The caller never gets this object to release, so free the camera here.
+            try:
+                self.release()
+            except Exception:
+                logging.exception("Releasing camera %s after a failed open also failed", serial_number)
+            raise
 
         self.image_processor = PySpin.ImageProcessor()
         self.image_processor.SetColorProcessing(PySpin.SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR)
@@ -154,20 +162,27 @@ class FlirCameraSystem(SingleCameraSystem):
         bool
             Whether releasing is successful or not.
         """
-        logging.info("Stopping camera acquisition...")
-        self.cam.EndAcquisition()
-
-        logging.info("Releasing camera...")
-        self.cam.DeInit()
-        logging.info("Camera released.")
-
-        logging.info("Clearing camera list...")
-        self.cam_list.Clear()
-        logging.info("Camera list cleared.")
-
-        logging.info("Releasing system...")
-        self.system.ReleaseInstance()
-        logging.info("System released.")
+        if self.cam is None:
+            return True
+        # Each step runs even if an earlier one fails, so the camera is never left held by this process.
+        try:
+            if self.cam.IsStreaming():
+                logging.info("Stopping camera acquisition...")
+                self.cam.EndAcquisition()
+        finally:
+            try:
+                if self.cam.IsInitialized():
+                    logging.info("Releasing camera...")
+                    self.cam.DeInit()
+                    logging.info("Camera released.")
+            finally:
+                # Spinnaker refuses to release the system while camera references still exist.
+                self.cam = None
+                logging.info("Clearing camera list...")
+                self.cam_list.Clear()
+                logging.info("Releasing system...")
+                self.system.ReleaseInstance()
+                logging.info("System released.")
 
         return True
 

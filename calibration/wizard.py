@@ -99,15 +99,25 @@ class CaptureWorker(QThread):
                 camera = FlirCameraSystem(str(config), sn)
                 cameras.append(camera)
             pair = DualFlirSystem(*cameras)
-            for index, camera in enumerate(cameras):
-                self.opened.emit(index, camera.get_exposure_settings())
+            settings = [camera.get_exposure_settings() for camera in cameras]
+            # 側面是 secondary（觸發模式），回報的曝光上限不受幀率限制，但實際跟著正面的幀率觸發，
+            # 曝光超過正面的上限就會漏掉觸發，因此兩台都以正面（free-run）的上限為準
+            limit = settings[0]["exposure_range"][1]
+            for camera, setting in zip(cameras, settings):
+                low, high = setting["exposure_range"]
+                setting["exposure_range"] = (low, min(high, limit))
+                if setting["exposure_time"] > limit:
+                    setting["exposure_time"] = camera.set_exposure_time(limit)
+            for index, setting in enumerate(settings):
+                self.opened.emit(index, setting)
             failures = 0
             while not self.isInterruptionRequested():
                 for index in list(self.requests):
                     exposure_time, gain = self.requests.pop(index)
                     try:
                         camera = cameras[index]
-                        self.applied.emit(index, camera.set_exposure_time(exposure_time), camera.set_gain(gain))
+                        self.applied.emit(index, camera.set_exposure_time(min(exposure_time, limit)),
+                                          camera.set_gain(gain))
                     except Exception as exc:
                         self.failed.emit("調整曝光／增益失敗：{}".format(exc))
                 ok, front, side = pair.get_grayscale_images()
