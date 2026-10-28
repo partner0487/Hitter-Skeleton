@@ -257,8 +257,9 @@ def run_realtime_capture(dirs: dict, pattern_front: tuple, square_front: float,
     objpoints_s, imgpoints_s = [], []
     image_size_f, image_size_s = None, None
 
-    saved_count_f = get_starting_index(dirs["front_img"])
-    saved_count_s = get_starting_index(dirs["side_img"])
+    # 正面與側面共用同一個編號：同一次按下空白鍵拍的照片檔名相同，PnP.py 才能用檔名正確配對
+    saved_count = max(get_starting_index(dirs["front_img"]),
+                      get_starting_index(dirs["side_img"]))
 
     window_name = "Dual Camera Real-Time Intrinsic Calibration"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -320,17 +321,16 @@ def run_realtime_capture(dirs: dict, pattern_front: tuple, square_front: float,
                 break
 
             elif key == 32:  # 空白鍵採樣
-                sampled_any = False
+                sampled = []
                 if found_f:
                     _, full_c_f = cv2.findChessboardCorners(gray_f, pattern_front, None)
                     if full_c_f is not None:
                         sub_c_f = cv2.cornerSubPix(gray_f, full_c_f, (11, 11), (-1, -1), subpix_criteria)
                         objpoints_f.append(objp_f)
                         imgpoints_f.append(sub_c_f)
-                        save_p = os.path.join(dirs["front_img"], f"chessboard_image{saved_count_f}.png")
+                        save_p = os.path.join(dirs["front_img"], f"chessboard_image{saved_count}.png")
                         cv2.imwrite(save_p, gray_f)
-                        saved_count_f += 1
-                        sampled_any = True
+                        sampled.append("正面")
 
                 if found_s:
                     _, full_c_s = cv2.findChessboardCorners(gray_s, pattern_side, None)
@@ -338,15 +338,19 @@ def run_realtime_capture(dirs: dict, pattern_front: tuple, square_front: float,
                         sub_c_s = cv2.cornerSubPix(gray_s, full_c_s, (11, 11), (-1, -1), subpix_criteria)
                         objpoints_s.append(objp_s)
                         imgpoints_s.append(sub_c_s)
-                        save_p = os.path.join(dirs["side_img"], f"chessboard_image{saved_count_s}.png")
+                        save_p = os.path.join(dirs["side_img"], f"chessboard_image{saved_count}.png")
                         cv2.imwrite(save_p, gray_s)
-                        saved_count_s += 1
-                        sampled_any = True
+                        sampled.append("側面")
 
-                if sampled_any:
-                    print(f"📸 採樣成功 -> 正面相機: {len(objpoints_f)} 張, 側面相機: {len(objpoints_s)} 張")
+                if sampled:
+                    # 只有一台偵測到時仍可用於內參，但另一邊沒有同名檔案，不會被 PnP.py 當成外參配對
+                    tag = "雙機配對" if len(sampled) == 2 else f"僅{sampled[0]}，不會用於外參"
+                    print(f"📸 第 {saved_count} 組採樣成功（{tag}）-> "
+                          f"正面相機: {len(objpoints_f)} 張, 側面相機: {len(objpoints_s)} 張")
+                    saved_count += 1
                 else:
                     print("⚠️ 正面與側面皆未捕捉到完整棋盤格，無法採樣。")
+
 
             elif key == ord('r'):
                 objpoints_f.clear()
