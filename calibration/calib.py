@@ -261,6 +261,7 @@ class CalibWindow(QMainWindow):
         try:
             self.camera = FlirCameraSystem(CONFIG_PATH, sn)
             self.connected_sn = sn
+            self._capture_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.log(f"已連接相機 SN={sn}")
             self.btn_connect.setEnabled(False)
             self.btn_disconnect.setEnabled(True)
@@ -491,12 +492,20 @@ class CalibWindow(QMainWindow):
                 self.log(f"未擷取：與上一組幾乎相同（平均位移 {shift:.1f} px），請移動或傾斜板子後再擷取。")
                 return
 
+        # 先存原始照片，存檔失敗就不收這組，確保每組樣本都能回頭重算
+        try:
+            photo_path = self._save_sample_photo(self.last_frame)
+        except (OSError, cv2.error) as exc:
+            self.log(f"未擷取：原始照片儲存失敗 {exc}")
+            return
+
         objp = np.zeros((pattern[0] * pattern[1], 3), np.float32)
         objp[:, :2] = np.mgrid[0:pattern[0], 0:pattern[1]].T.reshape(-1, 2)
         objp *= square
 
         self.objpoints.append(objp)
         self.imgpoints.append(corners)
+        self._photo_paths.append(photo_path)
         self.captured_count += 1
         self.image_size = size
         self._sample_spec = self._board_spec()
@@ -506,6 +515,21 @@ class CalibWindow(QMainWindow):
         if missing:
             msg += f"，尚缺：{'、'.join(missing)}"
         self.log(msg)
+
+    def sample_photo_dir(self):
+        """即時拍攝的原始照片資料夾：每次連接相機一個資料夾（精靈會覆寫成本次校正的資料夾）"""
+        return Path(calib_store.INTRINSIC_DIR) / f"images_SN{self.connected_sn}_{self._capture_stamp}"
+
+    def _save_sample_photo(self, frame):
+        """把擷取的畫面存成灰階 PNG（無損、檔案較小），回傳絕對路徑"""
+        folder = Path(self.sample_photo_dir())
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{datetime.now():%H%M%S_%f}.png"
+        ok, encoded = cv2.imencode(".png", cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+        if not ok:
+            raise OSError(f"無法編碼影像：{path.name}")
+        encoded.tofile(str(path))  # tofile 支援中文路徑
+        return str(path.resolve())
 
     # 品質判斷門檻
     RMS_GOOD = 0.5               # RMS 低於此值為良好

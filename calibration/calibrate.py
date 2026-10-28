@@ -409,29 +409,9 @@ class CalibrationWindow(QMainWindow):
         sample_dir.mkdir(parents=True, exist_ok=True)
 
         class Collector(calib.CalibWindow):
-            def __init__(collector):
-                collector.sample_files = []
-                super().__init__()
-
-            def reset_samples(collector):
-                super().reset_samples()
-                collector.sample_files = []
-
-            def capture_sample(collector):
-                count = collector.captured_count
-                super().capture_sample()
-                if collector.captured_count > count:
-                    try:
-                        # Keep originals for later method comparison/recalibration.
-                        stamp = datetime.now().strftime("%H%M%S_%f")
-                        filename = stamp + ".png"
-                        write_image(sample_dir / filename, collector.last_frame)
-                        collector.sample_files.append(filename)
-                    except Exception as exc:
-                        collector.objpoints.pop()
-                        collector.imgpoints.pop()
-                        collector.captured_count -= 1
-                        collector.log("未接受本組：原始照片儲存失敗 {}".format(exc))
+            def sample_photo_dir(collector):
+                # 原始照片存進本次校正資料夾，供日後重算或比較方法
+                return sample_dir
 
             def keyPressEvent(collector, event):
                 # Window-wide Space shortcut is handled by the wizard.
@@ -534,7 +514,8 @@ class CalibrationWindow(QMainWindow):
             "mean_reproj_err": float(np.mean(errors)), "verdict": verdict,
             "pattern": [self.cols.value(), self.rows.value()], "square_size_mm": self.square.value(),
             "sample_count": panel.captured_count, "calibrated_at": datetime.now().isoformat(timespec="seconds"),
-            "sample_images": ["intrinsic/images_SN{}/{}".format(sn, name) for name in panel.sample_files],
+            "sample_images": [Path(p).relative_to(self.session.resolve()).as_posix()
+                              for p in panel._photo_paths],
             "distortion_locked": panel.chk_lock_dist.isChecked(), "lens_focal_mm": panel.spn_focal.value() or None,
             "calibration_flags": int(panel._last_flags),
         }
