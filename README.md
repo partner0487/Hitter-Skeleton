@@ -90,18 +90,10 @@ python Src\UI_Control\main.py
 - **3D**：用校正結果把正面、側面的 2D 關節點三角化成 3D，計算關節速度、揮棒速度等（單位為公尺、m/s）。
 
 ### 相機校正
-3D 分析需要兩台相機（正面 35mm、側面 8mm）的內參與外參，用同一塊棋盤格完成：
+3D 分析需要兩台相機的內參與外參，校正工具在 [calibration/](calibration/)，可以獨立使用：
 
 ```
-conda activate Pitcher
-python calibration/calibration.py                                  # 校正精靈：正面內參 → 側面內參 → 雙機拍棋盤格 → 外參
-python calibration/calibration.py --single                         # 只校正一台相機的內參
-python calibration/calibration.py --calculate 20261019_legacy      # 用已拍好的照片離線重算（不開相機）
+python calibration/calibration.py
 ```
 
-- 棋盤格預設 **8×7 內角點**（9×8 格）、每格 100 mm，可在精靈或 `--pattern 7x7` 修改。
-- 拍外參需接 GPIO 同步線；兩台都偵測到棋盤格時才能拍，照片同名存檔以確保配對正確。
-- 校正完成會更新 `Db/Calibration/stereo.json`；之後每次錄影都會存一份快照，重新校正不影響舊錄影。
-- 沒有校正檔時，3D 分析會退回程式內寫死的舊參數（沒有真實尺度）。
-
-詳細流程、輸出格式與舊資料重算方式見 [calibration/README.md](calibration/README.md)。
+環境、拍攝方式、品質標準、離線重算與輸出格式請見 **[calibration/README.md](calibration/README.md)**。
