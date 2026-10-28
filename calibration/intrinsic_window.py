@@ -130,7 +130,6 @@ class CalibWindow(QMainWindow):
         # 曝光與增益：連接相機後才能調整，看著畫面調到棋盤格黑白分明、不過曝
         self.camera_controls = CameraControls()
         self.camera_controls.changed.connect(self.apply_camera_settings)
-        self.camera_controls.reload_requested.connect(self.reload_camera)
         layout.addWidget(self.camera_controls)
 
         # 棋盤格參數
@@ -306,27 +305,6 @@ class CalibWindow(QMainWindow):
             self.log(f"調整曝光／增益失敗: {e}")
             return
         self.camera_controls.show_actual(*actual)
-
-    def reload_camera(self):
-        """重新開啟同一台相機並套用目前的曝光／增益，不清空已擷取的樣本"""
-        if self.camera is None:
-            return
-        values = self.camera_controls.values()
-        try:
-            self.camera.release()
-        except Exception as e:
-            self.log(f"釋放相機時發生問題: {e}")
-        self.camera = None
-        self.last_frame = None
-        try:
-            self.camera = FlirCameraSystem(CONFIG_PATH, self.connected_sn)
-        except Exception as e:
-            self.disconnect_camera()
-            self.log(f"重新載入相機失敗: {e}")
-            return
-        self.camera_controls.bind(self.camera.get_exposure_settings(), CONFIG_PATH)
-        self.camera_controls.set_values(*values)
-        self.log(f"已重新載入相機 SN={self.connected_sn}")
 
     # ---------- 畫面 ----------
 

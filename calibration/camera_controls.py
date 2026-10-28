@@ -25,7 +25,6 @@ def save_yaml_defaults(config_path, exposure_time, gain):
 
 class CameraControls(QGroupBox):
     changed = pyqtSignal(float, float)
-    reload_requested = pyqtSignal()
 
     def __init__(self, title="相機曝光"):
         super().__init__(title)
@@ -48,16 +47,12 @@ class CameraControls(QGroupBox):
         self.save_button = QPushButton("存成預設")
         self.save_button.setToolTip("寫回 camera_config 的 yaml，下次開相機就使用這組數值")
         self.save_button.clicked.connect(self.save_default)
-        self.reload_button = QPushButton("重新載入相機")
-        self.reload_button.setToolTip("關閉後重新開啟相機並套用目前數值；畫面卡住或設定沒反應時使用，已拍的照片保留")
-        self.reload_button.clicked.connect(self.reload_requested)
         self.status = QLabel()
         layout.addWidget(QLabel("曝光時間"))
         layout.addWidget(self.exposure)
         layout.addWidget(QLabel("增益"))
         layout.addWidget(self.gain)
         layout.addWidget(self.save_button)
-        layout.addWidget(self.reload_button)
         layout.addWidget(self.status, 1)
         self.setEnabled(False)
 
