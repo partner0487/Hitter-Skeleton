@@ -114,12 +114,30 @@ def save_json(path, data):
     atomic_write(path, json_bytes(data))
 
 
-def publish_stereo(calib_dir, session, roles, entries, report):
-    """發布一次完成的校正，回傳 (report, 是否成為目前使用中)。
+SESSION_NAME = re.compile(r"\d{8}_\d{6}(_.*)?")
 
-    session/stereo.json 加上 published_at，3D 分析依錄影日期挑校正時只用已發布的 session。
-    上層 Db/Calibration/*.json 永遠是日期最新的已發布校正：發布較舊日期的 session
-    （例如重算 _legacy）只會標記為可用，不會蓋掉較新的；被取代的檔案先備份、出錯還原。
+
+def save_rejected(session, report):
+    """不合格的外參報告存成 stereo_failed.json 供檢查，不覆蓋已採用的 stereo.json"""
+    save_json(Path(session) / "stereo_failed.json", report)
+
+
+def _current_session_name(calib_dir):
+    """上層 stereo.json 所屬的 session 名稱；不存在或讀不到回傳 None（視同可被取代，舊檔仍會備份）"""
+    try:
+        data = json.loads((Path(calib_dir) / "stereo.json").read_text(encoding="utf-8"))
+        return Path(data["session"]).name if isinstance(data, dict) and data.get("session") else None
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def publish_stereo(calib_dir, session, roles, entries, report):
+    """採用一次合格的校正，回傳 (report, 是否成為目前使用中)。
+
+    session/stereo.json 加上 published_at，3D 分析依錄影日期挑校正時只用已採用的 session。
+    上層 Db/Calibration/*.json 永遠是日期最新的已採用校正：採用較舊日期的 session
+    （例如重算 _legacy）只會標記為可用，不會蓋掉較新的；被取代的檔案先備份、出錯還原，
+    上層寫入成功後才標記 session，失敗時 session 維持未採用。
     """
     front, side = roles
     validate_roles(front, side)
@@ -131,15 +149,15 @@ def publish_stereo(calib_dir, session, roles, entries, report):
             or not np.allclose(R.T @ R, np.eye(3), atol=1e-5)):
         raise ValueError("外參無效，未更新校正檔。")
     calib_dir, session = Path(calib_dir), Path(session)
+    # 名稱 YYYYMMDD_HHMMSS[_後綴] 的字串順序即時間順序，3D 依日期挑選也靠這個規則
+    if not SESSION_NAME.fullmatch(session.name):
+        raise ValueError(f"session 名稱須為 YYYYMMDD_HHMMSS[_後綴]：{session.name}")
     report = dict(report, session=str(session), published_at=datetime.now().isoformat(timespec="seconds"))
-    save_json(session / "stereo.json", report)
 
-    current_path = calib_dir / "stereo.json"
-    if current_path.exists():
-        current_session = json.loads(current_path.read_text(encoding="utf-8")).get("session")
-        # session 名稱以 YYYYMMDD_HHMMSS 開頭，字串比較即日期先後
-        if current_session and Path(current_session).name > session.name:
-            return report, False
+    current = _current_session_name(calib_dir)
+    if current and current > session.name:
+        save_json(session / "stereo.json", report)
+        return report, False
 
     intrinsics_path = calib_dir / "intrinsics_all.json"
     existing = json.loads(intrinsics_path.read_text(encoding="utf-8")) if intrinsics_path.exists() else {}
@@ -151,6 +169,7 @@ def publish_stereo(calib_dir, session, roles, entries, report):
         "stereo.json": json_bytes(report),
     }
     _write_with_backup(calib_dir, session, roles, outputs)
+    save_json(session / "stereo.json", report)
     return report, True
 
 
