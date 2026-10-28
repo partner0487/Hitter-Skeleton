@@ -6,7 +6,7 @@
                                                       用已拍好的照片離線重算，不開相機、不開視窗
 
 --calculate 讀 Db/Calibration/sessions/<SESSION>/：
-  內參：正面用 intrinsic/images_SN<正面序號>/，沒有就用 cf/；側面同理（images_SN<側面序號>/ 或 cs/）
+  內參：正面用 cf/ 加上只有正面看到的 intrinsic/images_SN<正面序號>/；側面同理（cs/ 加 images_SN<側面序號>/）
   外參：cf/ 與 cs/ 的同名照片
 相機序號、焦距、格子邊長讀該 session 的 session.json；棋盤格規格也是，--pattern 可覆寫。
 結果寫回該 session；Stereo RMS ≤ 3 px 時與精靈一樣直接採用：
@@ -55,36 +55,6 @@ def find_session(name):
     return found[-1]
 
 
-def calculate_intrinsic(session, role, sn, pattern, square, focal, lock):
-    """用一台相機的照片算內參，回傳 intrinsics.json 的 entry；失敗回傳 None"""
-    import intrinsic
-    folder = session / "intrinsic" / f"images_SN{sn}"
-    if not (folder.is_dir() and intrinsic.list_images(folder)):
-        folder = session / ("cf" if role == "front" else "cs")
-    files = intrinsic.list_images(folder)
-    title = "正面" if role == "front" else "側面"
-    print(f"\n== {title} SN{sn}｜{focal or '未填'} mm{'（長焦鎖定）' if lock else ''}｜{folder.relative_to(session)}/ {len(files)} 張")
-    loaded = intrinsic.load_photo_samples(files, pattern)
-    points, paths, size = loaded["points"], loaded["paths"], loaded["image_size"]
-    print(f"   有效 {len(points)} 張，略過 {len(loaded['skipped'])} 張"
-          + (f"（例：{loaded['skipped'][0][0]} {loaded['skipped'][0][1]}）" if loaded["skipped"] else ""))
-    if len(points) < intrinsic.MIN_CALIBRATE_SAMPLES:
-        print(f"   ✘ 有效照片少於 {intrinsic.MIN_CALIBRATE_SAMPLES} 張，無法計算；請確認 --pattern 是否正確")
-        return None
-
-    objpoints = [intrinsic.object_points(pattern, square) for _ in points]
-    fit, verdict, problems, objpoints, points, paths, removed = intrinsic.calibrate_with_outlier_removal(
-        objpoints, points, size, focal, lock, paths)
-    if removed:
-        print(f"   已剔除誤差異常的 {len(removed)} 張：{'、'.join(removed)}")
-    print("   " + intrinsic.report_text(sn, fit, verdict, problems).replace("\n", "\n   "))
-
-    photos = [Path(p).relative_to(session).as_posix() for p in paths]
-    intrinsic.save_npz(session / "intrinsic" / f"calib_SN{sn}.npz", sn, fit, size, pattern, square,
-                       objpoints, points, photos)
-    return intrinsic.make_entry(fit, verdict, size, pattern, square, focal, lock, photos)
-
-
 def calculate(args):
     import intrinsic
     from stereo import MAX_STEREO_RMS, estimate_chessboard_stereo, publish_stereo, save_json, save_rejected
@@ -103,8 +73,8 @@ def calculate(args):
 
     entries = {}
     for role, sn in zip(("front", "side"), roles):
-        focal = focals[role] or 0.0
-        entry = calculate_intrinsic(session, role, sn, pattern, square, focal, intrinsic.is_telephoto(focal))
+        print()
+        entry, _ = intrinsic.calibrate_session_camera(session, role, sn, pattern, square, focals[role] or 0.0)
         if entry is None:
             return 1
         entries[sn] = entry

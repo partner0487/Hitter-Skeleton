@@ -1,8 +1,9 @@
-"""單一入口：兩台棋盤格內參 → 棋盤格雙機同步拍照 → 自動偵測角點 → 外參（R、t，mm）。
+"""校正精靈：兩台相機同步拍棋盤格，同一批照片算兩台內參與外參（R、t，mm）。
 
 啟動：python calibration/calibration.py（可從任何工作目錄執行）
-相機固定後，依畫面指示移動棋盤格；外參照片須兩台同時完整看到棋盤格才會存檔。
-本工具不載入 YOLO / ViTPose。單台相機內參見 intrinsic_window.py（calibration.py --single）。
+兩台都看到棋盤格的照片存成配對（cf/、cs/ 同名），內參與外參都用；
+只有一台看到的照片存進 intrinsic/images_SN<序號>/，只用於那台內參（補畫面四角）。
+本工具不載入 YOLO / ViTPose。單台相機內參另見 intrinsic_window.py（calibration.py --single）。
 """
 
 # Support both python -m and direct file execution from any working directory.
@@ -32,7 +33,7 @@ import numpy as np
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
     QLabel, QMainWindow, QMessageBox, QPushButton, QShortcut, QSpinBox,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
@@ -44,7 +45,7 @@ import storage
 from stereo import (
     MAX_STEREO_RMS, MIN_PAIRS, RECOMMENDED_PAIRS, estimate_chessboard_stereo, match_image_pairs,
     save_rejected,
-    publish_intrinsics, publish_stereo, save_json, validate_intrinsic, validate_roles,
+    publish_stereo, save_json, validate_intrinsic, validate_roles,
 )
 
 
@@ -78,7 +79,7 @@ class Job(QThread):
 
 
 class CaptureWorker(QThread):
-    """Own both cameras in one worker; release them before the next step."""
+    """Own both cameras in one worker; release them before calculating."""
     failed = pyqtSignal(str)
     opened = pyqtSignal(int, object)            # 相機索引、get_exposure_settings()
     applied = pyqtSignal(int, float, float)     # 相機索引、實際曝光 μs、增益 dB
@@ -167,33 +168,39 @@ class ImageView(QGraphicsView):
 
 
 class CalibrationWindow(QMainWindow):
-    # 外參拍照預覽：縮圖偵測 + 每 N 次更新偵測一次，避免全解析度偵測拖慢畫面
-    PREVIEW_SCALE = 0.4
+    # 拍照預覽：縮圖偵測 + 每 N 次更新偵測一次，避免全解析度偵測拖慢畫面。
+    # 側面 8 mm 廣角裡的棋盤格很小，0.4 倍時 20261019 的側面照片只偵測到 10/33 張，0.7 倍全部偵測得到
+    PREVIEW_SCALE = 0.7
     PREVIEW_DETECT_EVERY = 3
+    VIEWS = ("cf", "cs")             # 畫面：正面、側面
+    LENSES = ("front", "side")       # 對應 session.json／內參計算的名稱
+    TITLES = ("正面", "側面")
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("相機校正精靈 — 棋盤格內參 / 外參")
+        self.setWindowTitle("相機校正精靈 — 雙視角棋盤格內參 / 外參")
         self.resize(1200, 900)
         self.state = "setup"
         self.session = None
         self.roles = None
         self.entries = {}
+        self.reused = False
+        self.imported = False
         self.names = []
+        self.reset_samples()
         self.preview_tick = 0
         self.preview_found = {"cf": False, "cs": False}
         self.preview_corners = {"cf": None, "cs": None}
-        self.panel = None
         self.capture = None
         self.job = None
         self.after_capture = None
         self.last_capture_time = None
-        # 每台相機最後的曝光／增益 {序號: (μs, dB)}，帶到下一階段並記入 session.json
+        # 每台相機最後的曝光／增益 {序號: (μs, dB)}，重新連接時沿用並記入 session.json
         self.camera_settings = {}
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        self.step_label = QLabel("1 設定 → 2 正面內參 → 3 側面內參 → 4 雙機拍棋盤格 → 5 計算外參")
+        self.step_label = QLabel("1 設定 → 2 雙機同時拍棋盤格 → 3 計算兩台內參與外參")
         self.step_label.setStyleSheet("font-size: 18px; font-weight: bold; padding: 8px;")
         layout.addWidget(self.step_label)
         self.instructions = QLabel()
@@ -243,8 +250,6 @@ class CalibrationWindow(QMainWindow):
         form.addRow(self.scan_status)
         self.reuse = QCheckBox("沿用這兩台已有內參，只重做外參（鏡頭、焦距、解析度須相同）")
         form.addRow(self.reuse)
-        self.intrinsic_only = QCheckBox("只做內參（相機還沒架到球場位置時使用，外參之後再做）")
-        form.addRow(self.intrinsic_only)
         self.cols, self.rows = QSpinBox(), QSpinBox()
         for spin, value in ((self.cols, 8), (self.rows, 7)):
             spin.setRange(3, 30)
@@ -256,7 +261,7 @@ class CalibrationWindow(QMainWindow):
         form.addRow("棋盤格內角點：寬（格子數 − 1）", self.cols)
         form.addRow("棋盤格內角點：高（格子數 − 1）", self.rows)
         form.addRow("每格實際邊長", self.square)
-        # 鏡頭焦距決定內參初值與長焦鎖定（>= intrinsic_window.CalibWindow.TELEPHOTO_MM 自動鎖光心與高階畸變）
+        # 鏡頭焦距決定內參初值與長焦鎖定（>= intrinsic.TELEPHOTO_MM 自動鎖光心與高階畸變），也用來即時估傾斜角
         self.front_focal, self.side_focal = QDoubleSpinBox(), QDoubleSpinBox()
         for spin, value in ((self.front_focal, 35), (self.side_focal, 8)):
             spin.setRange(0, 500)
@@ -267,11 +272,12 @@ class CalibrationWindow(QMainWindow):
         form.addRow("正面鏡頭焦距", self.front_focal)
         form.addRow("側面鏡頭焦距", self.side_focal)
         layout.addWidget(box)
-        note = QLabel("準備：固定兩台相機與焦距，關閉 main.py / SpinView 等占用相機的程式。\n"
-                      "內參：每台拍至少 15 組不同位置、距離及傾斜角度的棋盤格，涵蓋畫面四角。\n"
-                      f"外參：接 GPIO 同步線，拍 {RECOMMENDED_PAIRS} 組以上兩台都完整看到的棋盤格"
-                      f"（至少 {MIN_PAIRS} 組），涵蓋打擊區不同位置與深度。\n"
-                      "照片可在同一視窗拍攝，也可匯入含 cf / cs 的既有照片資料夾。\n"
+        note = QLabel("準備：固定兩台相機與焦距，接好 GPIO 同步線，關閉 main.py / SpinView 等占用相機的程式。\n"
+                      "拍攝：兩台同時拍，兩台都看到棋盤格存成一組配對（兩台內參＋外參都用），"
+                      "只有一台看到時只當那台的內參照片。\n"
+                      f"每台內參至少 {intrinsic.MIN_SAMPLES} 張、涵蓋畫面四角並往不同方向傾斜；"
+                      f"配對至少 {MIN_PAIRS} 組（建議 {RECOMMENDED_PAIRS} 組），涵蓋打擊區不同位置與深度。\n"
+                      "也可匯入含 cf / cs 的既有照片資料夾。\n"
                       "完成後才更新目前校正值；每次資料獨立保存，供日後方法比較。")
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -284,17 +290,22 @@ class CalibrationWindow(QMainWindow):
         images = QHBoxLayout()
         self.views = {}
         self.view_titles = {}
+        self.camera_status = {}
         self.pair_controls = {}
-        for role, title in (("cf", "正面"), ("cs", "側面")):
+        for index, (role, title) in enumerate(zip(self.VIEWS, self.TITLES)):
             column = QVBoxLayout()
             label = QLabel(title)
             column.addWidget(label)
             self.view_titles[role] = label
             view = ImageView()
-            column.addWidget(view)
+            column.addWidget(view, 1)
             self.views[role] = view
+            # 這台目前的內參樣本數、覆蓋與傾斜，拍攝中即時更新
+            status = QLabel()
+            status.setWordWrap(True)
+            column.addWidget(status)
+            self.camera_status[role] = status
             controls = CameraControls(title + "曝光")
-            index = 0 if role == "cf" else 1
             controls.changed.connect(lambda exposure, gain, index=index: self.request_camera_settings(
                 index, exposure, gain))
             column.addWidget(controls)
@@ -302,13 +313,14 @@ class CalibrationWindow(QMainWindow):
             images.addLayout(column)
         layout.addLayout(images, 1)
         self.pair_status = QLabel()
+        self.pair_status.setStyleSheet("font-weight: bold;")
         layout.addWidget(self.pair_status)
         self.capture_actions = QWidget()
         buttons = QHBoxLayout(self.capture_actions)
         self.connect_button = QPushButton("連接雙相機")
         self.connect_button.clicked.connect(self.connect_pair)
-        self.shot_button = QPushButton("拍一組（空白鍵）")
-        self.shot_button.clicked.connect(self.capture_pair)
+        self.shot_button = QPushButton("拍照（空白鍵）")
+        self.shot_button.clicked.connect(self.capture_shot)
         self.import_button = QPushButton("匯入 cf / cs 照片資料夾")
         self.import_button.clicked.connect(self.import_pairs)
         for button in (self.connect_button, self.shot_button, self.import_button):
@@ -376,16 +388,20 @@ class CalibrationWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         self.instructions.setText("選擇正面、側面相機及棋盤格規格後，按「開始校正」。")
 
+    def reset_samples(self):
+        """本次拍攝的即時統計：每台的內參角點、傾斜估計與影像尺寸"""
+        self.shot_count = 0
+        self.samples = {"cf": [], "cs": []}
+        self.tilts = {"cf": [], "cs": []}
+        self.image_sizes = {"cf": None, "cs": None}
+
     def advance(self):
         try:
             if self.state == "setup":
                 self.start_session()
-            elif self.state.startswith("intrinsic"):
-                self.calculate_intrinsic()
             elif self.state == "capture":
-                if len(self.names) < MIN_PAIRS:
-                    raise ValueError("至少拍攝或匯入 {} 組雙機照片。".format(MIN_PAIRS))
-                self.stop_capture(self.calculate_extrinsic)
+                if self.ready_to_calculate():
+                    self.stop_capture(self.calculate)
             elif self.state == "done":
                 self.reset_ui()
         except Exception as exc:
@@ -394,8 +410,6 @@ class CalibrationWindow(QMainWindow):
     def start_session(self):
         roles = (self.front_combo.currentText().strip(), self.side_combo.currentText().strip())
         validate_roles(*roles)
-        if self.reuse.isChecked() and self.intrinsic_only.isChecked():
-            raise ValueError("「沿用已有內參」與「只做內參」只能擇一。")
         entries = {}
         if self.reuse.isChecked():
             stored = storage.load_intrinsics()
@@ -404,11 +418,12 @@ class CalibrationWindow(QMainWindow):
                     raise ValueError("SN{} 尚無內參，請取消「沿用已有內參」。".format(sn))
                 validate_intrinsic(stored[sn])
                 entries[sn] = stored[sn]
-        self.roles, self.entries = roles, entries
+        self.roles, self.entries, self.reused, self.imported = roles, entries, bool(entries), False
         self.session = Path(storage.new_session_dir())
         for folder in ("cf", "cs", "intrinsic"):
             (self.session / folder).mkdir(parents=True, exist_ok=True)
         self.names = []
+        self.reset_samples()
         self.last_capture_time = None
         self.persist_session("started")
         self.setup_page.setEnabled(False)
@@ -417,91 +432,22 @@ class CalibrationWindow(QMainWindow):
         if entries:
             # 沿用的內參也存一份到本次資料夾，外參報告才知道用的是哪一版
             save_json(self.session / "intrinsics.json", entries)
-            self.begin_capture()
-        else:
-            self.begin_intrinsic(0)
+        self.begin_capture()
 
     def persist_session(self, status):
-        if self.panel is not None and self.panel.camera is not None:
-            self.camera_settings[self.panel.connected_sn] = self.panel.camera_controls.values()
         save_json(self.session / "session.json", {
-            "method": "intrinsic_only" if self.intrinsic_only.isChecked() else "chessboard_stereo_pnp",
+            "method": "chessboard_dual_view",
             "front": self.roles[0], "side": self.roles[1],
-            "status": status, "intrinsics": self.entries,
+            "status": status, "intrinsics": self.entries, "reused_intrinsics": self.reused,
             "pattern": [self.cols.value(), self.rows.value()], "square_size_mm": self.square.value(),
             "lens_focal_mm": {"front": self.front_focal.value() or None,
                               "side": self.side_focal.value() or None},
             "image_names": self.names,
+            "shot_count": self.shot_count,
             "camera_settings": {sn: {"exposure_time_us": exposure, "gain_db": gain}
                                 for sn, (exposure, gain) in self.camera_settings.items()},
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         })
-
-    def begin_intrinsic(self, role_index):
-        import intrinsic_window
-        sample_dir = self.session / "intrinsic" / ("images_SN" + self.roles[role_index])
-        sample_dir.mkdir(parents=True, exist_ok=True)
-
-        class Collector(intrinsic_window.CalibWindow):
-            def sample_photo_dir(collector):
-                # 原始照片存進本次校正資料夾，供日後重算或比較方法
-                return sample_dir
-
-            def keyPressEvent(collector, event):
-                # Window-wide Space shortcut is handled by the wizard.
-                if event.key() != Qt.Key_Escape:
-                    super().keyPressEvent(event)
-
-        # The legacy collector is reused; only this new process's config is changed.
-        intrinsic_window.CONFIG_PATH = str(CAMERA_CONFIGS[role_index])
-        self.state = "intrinsic_{}".format(role_index)
-        self.panel = Collector()
-        self.panel.timer.stop()
-        self.panel.lbl_view.setMinimumHeight(280)
-        self.panel.log_area.setMinimumHeight(80)
-        self.panel.log_area.setMaximumHeight(120)
-        self.panel.cmb_camera.parentWidget().hide()
-        self.panel.cmb_front.parentWidget().hide()
-        self.panel.photo_group.hide()
-        self.panel.btn_calibrate.hide()
-        self.panel.spn_cols.setValue(self.cols.value())
-        self.panel.spn_rows.setValue(self.rows.value())
-        self.panel.spn_square.setValue(self.square.value())
-        self.panel.spn_cols.parentWidget().setEnabled(False)
-        # 設定焦距會連動勾選長焦鎖定；面板上仍可手動改勾
-        focal = (self.front_focal if role_index == 0 else self.side_focal).value()
-        self.panel.spn_focal.setValue(focal)
-        sn = self.roles[role_index]
-        index = self.panel.cmb_camera.findData(sn)
-        if index < 0:
-            self.dispose_panel()
-            self.reset_ui()
-            raise ValueError("未偵測到 SN{}，請接上相機後重新開始。".format(sn))
-        self.panel.cmb_camera.setCurrentIndex(index)
-        self.panel.connect_camera()
-        if self.panel.camera is None:
-            self.dispose_panel()
-            self.reset_ui()
-            raise ValueError("無法連接 SN{}，請關閉其他相機程式後重試。".format(sn))
-        if sn in self.camera_settings:
-            self.panel.camera_controls.set_values(*self.camera_settings[sn])
-        self.pages.addWidget(self.panel)
-        self.pages.setCurrentWidget(self.panel)
-        self.panel.timer.start(60)
-        title = "正面" if role_index == 0 else "側面"
-        self.instructions.setText("{} SN{}：移動、傾斜棋盤格，按空白鍵擷取至少 15 組；完成後按右下角計算。"
-                                  .format(title, sn))
-        self.next_button.setText("計算{}內參並繼續".format(title))
-
-    def dispose_panel(self):
-        if self.panel is not None:
-            self.panel.timer.stop()
-            if self.panel.camera is not None:
-                self.camera_settings[self.panel.connected_sn] = self.panel.camera_controls.values()
-            self.panel.disconnect_camera()
-            self.pages.removeWidget(self.panel)
-            self.panel.deleteLater()
-            self.panel = None
 
     def start_job(self, function, success, failure=None):
         self.next_button.setEnabled(False)
@@ -515,8 +461,6 @@ class CalibrationWindow(QMainWindow):
             self.next_button.setEnabled(True)
             self.cancel_button.setEnabled(True)
             self.pages.setEnabled(True)
-            if self.panel is not None:
-                self.panel.timer.start(60)
             try:
                 if job.error:
                     raise ValueError(job.error)
@@ -528,94 +472,112 @@ class CalibrationWindow(QMainWindow):
         job.finished.connect(finished)
         job.start()
 
-    def calculate_intrinsic(self):
-        if self.panel.captured_count < 15:
-            raise ValueError("目前 {} 組，請擷取至少 15 組不同角度的棋盤格。".format(self.panel.captured_count))
-        self.panel.timer.stop()
-        self.log("正在計算內參…")
-        self.start_job(self.panel._calibrate, self.intrinsic_finished)
-
-    def intrinsic_finished(self, result):
-        rms, K, dist, errors, tilts = result
-        panel = self.panel
-        verdict, problems, _ = panel._assess(rms, errors, tilts, K)
-        if not np.isfinite(rms) or rms > panel.RMS_MAX:
-            raise ValueError("內參 RMS {:.3f} px，須低於或等於 {} px。請清空樣本後改善光線、清晰度再拍。"
-                             .format(rms, panel.RMS_MAX))
-        role_index = int(self.state.rsplit("_", 1)[1])
-        sn = self.roles[role_index]
-        pattern = (self.cols.value(), self.rows.value())
-        # 照片路徑記成相對本次 session，整個資料夾搬家也找得到
-        photos = [Path(p).relative_to(self.session.resolve()).as_posix() for p in panel._photo_paths]
-        entry = intrinsic.make_entry(panel._last_fit, verdict, panel.image_size, pattern, self.square.value(),
-                                     panel.spn_focal.value(), panel.chk_lock_dist.isChecked(), photos)
-        validate_intrinsic(entry)
-        intrinsic.save_npz(self.session / "intrinsic" / "calib_SN{}.npz".format(sn), sn, panel._last_fit,
-                           panel.image_size, pattern, self.square.value(),
-                           panel.objpoints, panel.imgpoints, photos)
-        self.entries[sn] = entry
-        self.persist_session("intrinsic_{}_complete".format(role_index))
-        self.log("SN{} 內參完成，RMS {:.3f} px。{}".format(sn, rms, "；".join(problems)))
-        self.dispose_panel()
-        if role_index == 0:
-            self.begin_intrinsic(1)
-            return
-        save_json(self.session / "intrinsics.json", self.entries)
-        if self.intrinsic_only.isChecked():
-            self.finish_intrinsic_only()
-        else:
-            self.begin_capture()
-
-    def finish_intrinsic_only(self):
-        """兩台內參完成就發布（內參＋正面／側面角色），不拍外參；相機架好後再勾「沿用已有內參」做外參。"""
-        publish_intrinsics(storage.CALIB_DIR, self.session, self.roles, self.entries,
-                           datetime.now().isoformat(timespec="seconds"))
-        self.state = "done"
-        try:
-            self.persist_session("complete")
-        except OSError as exc:
-            self.log("內參已套用，但工作階段狀態無法更新：{}".format(exc))
-        self.instructions.setText("內參完成，已更新 Db/Calibration。相機架好後，勾選「沿用已有內參」再做一次外參。")
-        self.log("兩台內參與正面／側面角色已更新；外參（stereo.json）沒有改動，若相機有移動請重新做外參。")
-        self.log("照片與內參樣本：{}".format(self.session))
-        self.next_button.setText("開始另一次校正")
-        self.cancel_button.setEnabled(False)
-
     def begin_capture(self):
         self.state = "capture"
         self.pages.setCurrentWidget(self.pair_page)
         self.capture_actions.show()
-        self.connect_button.setEnabled(True)
-        self.import_button.setEnabled(True)
+        self.connect_button.setEnabled(not self.imported)
+        self.import_button.setEnabled(not self.imported and not self.names)
         self.shot_button.setEnabled(False)
-        self.next_button.setText("計算外參並儲存")
-        self.instructions.setText(f"接好 GPIO 同步線後連接雙相機。棋盤格每個位置停穩、兩台畫面都出現彩色角點後按空白鍵；"
-                                  f"建議 {RECOMMENDED_PAIRS} 組以上（至少 {MIN_PAIRS} 組），"
-                                  "涵蓋打擊區的左右、前後、高低，並讓板子朝不同方向傾斜。")
-        self.pair_status.setText("已拍 0 組；也可匯入既有 cf / cs 照片。")
+        self.next_button.setText("計算內參與外參並儲存")
+        if self.reused:
+            self.instructions.setText(
+                f"沿用已有內參，只拍外參：接好 GPIO 同步線後連接雙相機，兩台畫面都出現彩色角點時按空白鍵。"
+                f"建議 {RECOMMENDED_PAIRS} 組以上（至少 {MIN_PAIRS} 組），涵蓋打擊區的左右、前後、高低並朝不同方向傾斜。")
+        else:
+            self.instructions.setText(
+                "接好 GPIO 同步線後連接雙相機，按空白鍵兩台同時拍：兩台都出現彩色角點存成一組配對；"
+                "只有一台看到時只存那台，當作內參照片（用來補畫面四角）。"
+                f"每台內參至少 {intrinsic.MIN_SAMPLES} 張，配對至少 {MIN_PAIRS} 組（建議 {RECOMMENDED_PAIRS} 組）；"
+                "依下方提示補拍缺少的角落與傾斜方向。")
         self.preview_found = {"cf": False, "cs": False}
         self.preview_corners = {"cf": None, "cs": None}
         for role, view in self.views.items():
             view.scene().clear()
             view.image_shape = None
         self.update_view_titles()
+        self.update_capture_status()
 
     def update_view_titles(self):
-        for role, label in self.view_titles.items():
-            title = ("正面 SN" if role == "cf" else "側面 SN") + self.roles[0 if role == "cf" else 1]
+        for index, role in enumerate(self.VIEWS):
+            title = "{} SN{}".format(self.TITLES[index], self.roles[index])
             found = self.preview_found[role]
-            label.setText("{}　{}".format(title, "✔ 偵測到棋盤格" if found else "✘ 未偵測到棋盤格"))
-            label.setStyleSheet("color: {}; font-weight: bold;".format("#15803d" if found else "#b91c1c"))
+            self.view_titles[role].setText("{}　{}".format(title, "✔ 偵測到棋盤格" if found else "✘ 未偵測到棋盤格"))
+            self.view_titles[role].setStyleSheet(
+                "color: {}; font-weight: bold;".format("#15803d" if found else "#b91c1c"))
 
-    def detect_preview(self, image):
+    def camera_problems(self, role):
+        """這台目前內參樣本的問題（覆蓋、傾斜、張數），與校正後的品質判斷同一套門檻"""
+        tilts = [t for t, _ in self.tilts[role]]
+        axes = [a for _, a in self.tilts[role]]
+        return intrinsic.sample_problems(self.samples[role], self.image_sizes[role], tilts, axes)
+
+    def update_capture_status(self):
+        for index, role in enumerate(self.VIEWS):
+            label = self.camera_status[role]
+            if self.reused:
+                label.setText("沿用已有內參")
+                label.setStyleSheet("color: #475569;")
+                continue
+            if self.imported:
+                label.setText("已匯入照片，計算時才會檢查內參樣本")
+                label.setStyleSheet("color: #475569;")
+                continue
+            count = len(self.samples[role])
+            covered, _ = intrinsic.coverage(self.samples[role], self.image_sizes[role])
+            tilted = sum(t >= intrinsic.MIN_TILT_DEG for t, _ in self.tilts[role])
+            problems = self.camera_problems(role)
+            text = "內參 {}/{} 張｜畫面覆蓋 {}/9｜傾斜 ≥{:.0f}° {} 張".format(
+                count, intrinsic.MIN_SAMPLES, covered, intrinsic.MIN_TILT_DEG, tilted)
+            if problems:
+                text += "\n" + "\n".join("• " + p for p in problems)
+            else:
+                text += "\n✔ 張數、覆蓋與傾斜都足夠"
+            label.setText(text)
+            label.setStyleSheet("color: {};".format("#b45309" if problems else "#15803d"))
+        enough = len(self.names) >= RECOMMENDED_PAIRS
+        self.pair_status.setText("配對 {} 組（至少 {}、建議 {}）｜已拍 {} 次{}".format(
+            len(self.names), MIN_PAIRS, RECOMMENDED_PAIRS, self.shot_count,
+            "" if self.imported else "；請移動、傾斜棋盤格後再拍"))
+        self.pair_status.setStyleSheet("font-weight: bold; color: {};".format(
+            "#15803d" if enough else "#b45309" if len(self.names) >= MIN_PAIRS else "#b91c1c"))
+
+    def ready_to_calculate(self):
+        """數量不足就擋下；數量夠但覆蓋、傾斜有問題時讓使用者決定是否補拍"""
+        blocking = []
+        if len(self.names) < MIN_PAIRS:
+            blocking.append("配對 {} 組，至少需要 {} 組兩台都看到棋盤格的照片。".format(len(self.names), MIN_PAIRS))
+        check_samples = not self.reused and not self.imported
+        if check_samples:
+            for index, role in enumerate(self.VIEWS):
+                if len(self.samples[role]) < intrinsic.MIN_SAMPLES:
+                    blocking.append("{}內參 {} 張，至少需要 {} 張。".format(
+                        self.TITLES[index], len(self.samples[role]), intrinsic.MIN_SAMPLES))
+        if blocking:
+            raise ValueError("\n".join(blocking))
+        warnings = []
+        if check_samples:
+            for index, role in enumerate(self.VIEWS):
+                warnings += ["{}：{}".format(self.TITLES[index], p) for p in self.camera_problems(role)]
+        if len(self.names) < RECOMMENDED_PAIRS:
+            warnings.append("配對 {} 組，建議 {} 組以上".format(len(self.names), RECOMMENDED_PAIRS))
+        if not warnings:
+            return True
+        answer = QMessageBox.question(
+            self, "照片品質提醒", "目前還有以下可改善的地方：\n\n" + "\n".join("• " + w for w in warnings)
+            + "\n\n仍要直接計算嗎？（選「否」可繼續補拍）",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
+
+    def detect_preview(self, image, scale=None):
+        scale = scale or self.PREVIEW_SCALE
         pattern = (self.cols.value(), self.rows.value())
-        small = cv2.resize(image, None, fx=self.PREVIEW_SCALE, fy=self.PREVIEW_SCALE,
-                           interpolation=cv2.INTER_AREA)
+        small = image if scale == 1 else cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
         found, corners = cv2.findChessboardCorners(
             gray, pattern,
             flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE | cv2.CALIB_CB_FAST_CHECK)
-        return found, (corners / self.PREVIEW_SCALE if found else None)
+        return found, (corners / scale if found else None)
 
     def connect_pair(self):
         if self.capture is not None:
@@ -640,20 +602,21 @@ class CalibrationWindow(QMainWindow):
             return
         self.preview_tick += 1
         if self.preview_tick % self.PREVIEW_DETECT_EVERY == 0:
-            for role, image in zip(("cf", "cs"), pair[1:]):
+            for role, image in zip(self.VIEWS, pair[1:]):
                 self.preview_found[role], self.preview_corners[role] = self.detect_preview(image)
             self.update_view_titles()
         pattern = (self.cols.value(), self.rows.value())
-        for role, image in zip(("cf", "cs"), pair[1:]):
+        for role, image in zip(self.VIEWS, pair[1:]):
             if self.preview_found[role]:
                 image = image.copy()
                 cv2.drawChessboardCorners(image, pattern, self.preview_corners[role], True)
             self.views[role].set_image(image)
-        # 外參照片必須兩台同時看到完整棋盤格，否則該組無法配對
-        self.shot_button.setEnabled(all(self.preview_found.values()))
+        # 沿用內參時只需要外參配對，必須兩台都看到；否則任一台看到就能當那台的內參照片
+        found = self.preview_found.values()
+        self.shot_button.setEnabled(all(found) if self.reused else any(found))
 
     def pair_camera_opened(self, index, settings):
-        controls = self.pair_controls["cf" if index == 0 else "cs"]
+        controls = self.pair_controls[self.VIEWS[index]]
         controls.bind(settings, str(CAMERA_CONFIGS[index]))
         sn = self.roles[index]
         if sn in self.camera_settings:
@@ -666,7 +629,7 @@ class CalibrationWindow(QMainWindow):
             self.capture.requests[index] = (exposure_time, gain)
 
     def pair_settings_applied(self, index, exposure_time, gain):
-        self.pair_controls["cf" if index == 0 else "cs"].show_actual(exposure_time, gain)
+        self.pair_controls[self.VIEWS[index]].show_actual(exposure_time, gain)
         self.camera_settings[self.roles[index]] = (exposure_time, gain)
 
     def stop_capture(self, callback):
@@ -686,8 +649,8 @@ class CalibrationWindow(QMainWindow):
             self.capture = None
         for controls in self.pair_controls.values():
             controls.unbind()
-        self.connect_button.setEnabled(True)
-        self.import_button.setEnabled(True)
+        self.connect_button.setEnabled(not self.imported)
+        self.import_button.setEnabled(not self.imported and not self.names)
         self.shot_button.setEnabled(False)
         self.next_button.setEnabled(True)
         self.cancel_button.setEnabled(True)
@@ -701,49 +664,89 @@ class CalibrationWindow(QMainWindow):
             self.log("雙相機已停止，可重新連接或匯入照片。")
 
     def capture_sample(self):
-        if self.job is not None or self.after_capture is not None:
-            return
-        if self.state.startswith("intrinsic") and self.panel is not None:
-            self.panel.capture_sample()
-        elif self.state == "capture":
-            self.capture_pair()
+        if self.job is None and self.after_capture is None and self.state == "capture":
+            self.capture_shot()
 
     def check_image_size(self, image, role):
-        sn = self.roles[0 if role == "cf" else 1]
+        sn = self.roles[self.VIEWS.index(role)]
+        if sn not in self.entries:
+            return
         size = (image.shape[1], image.shape[0])
         if tuple(self.entries[sn]["image_size"]) != size:
             raise ValueError("{} 影像尺寸 {} 與內參 {} 不符，請使用同解析度／裁切範圍重新校正。"
                              .format(role, size, self.entries[sn]["image_size"]))
 
-    def capture_pair(self):
+    def capture_shot(self):
+        """兩台同時拍：兩台都偵測到存成配對（cf/、cs/ 同名），只有一台偵測到存進該台的 intrinsic/images_SN<序號>/"""
         try:
             pair = self.capture.latest if self.capture is not None else None
             if pair is None or time.monotonic() - pair[0] > 2:
                 raise ValueError("尚未取得新鮮的雙機畫面，請先連接相機。")
             if pair[0] == self.last_capture_time:
                 return
-            if not all(self.preview_found.values()):
-                missing = "、".join(("正面" if r == "cf" else "側面") for r, ok in self.preview_found.items() if not ok)
-                raise ValueError("{}未偵測到完整棋盤格，這組無法用於外參；請調整板子位置後再拍。".format(missing))
-            # PNG 無損，避免 JPG 壓縮影響亞像素角點
-            name = "{:02d}.png".format(len(self.names) + 1)
-            for role, image in zip(("cf", "cs"), pair[1:]):
-                self.check_image_size(image, role)
-            paths = [self.session / role / name for role in ("cf", "cs")]
+            pattern = (self.cols.value(), self.rows.value())
+            # 預覽是縮圖偵測且每幾張才偵測一次，存檔前用全解析度再確認並取得亞像素角點；
+            # 預覽沒看到的那台也快速檢查一次全解析度，避免漏掉剛移進畫面的板子
+            found = {}
+            for role, image in zip(self.VIEWS, pair[1:]):
+                if self.preview_found[role] or self.detect_preview(image, scale=1)[0]:
+                    corners = intrinsic.find_corners(image, pattern)
+                    if corners is not None:
+                        found[role] = corners
+            if self.reused and len(found) < 2:
+                raise ValueError("沿用內參時只拍外參，兩台都要完整看到棋盤格；請調整板子位置後再拍。")
+            if not found:
+                raise ValueError("兩台都未完整偵測到棋盤格，請調整板子位置後再拍。")
+            # 板子沒移動就重複收，等於同一組資料算好幾次，會讓誤差假性偏低
+            moved = [role for role, corners in found.items()
+                     if not self.samples[role]
+                     or intrinsic.mean_shift(corners, self.samples[role][-1]) >= intrinsic.DUPLICATE_SHIFT_PX]
+            if not moved:
+                raise ValueError("與上一張幾乎相同，請移動或傾斜棋盤格後再拍。")
+            for role, image in zip(self.VIEWS, pair[1:]):
+                if role in found:
+                    self.check_image_size(image, role)
+
+            # PNG 無損，避免 JPG 壓縮影響亞像素角點；配對與單台照片共用編號，檔名不重複
+            name = "{:02d}.png".format(self.shot_count + 1)
+            images = dict(zip(self.VIEWS, pair[1:]))
+            if len(found) == 2:
+                files = {role: self.session / role / name for role in self.VIEWS}
+            else:
+                role = next(iter(found))
+                folder = self.session / "intrinsic" / "images_SN{}".format(self.roles[self.VIEWS.index(role)])
+                folder.mkdir(parents=True, exist_ok=True)
+                files = {role: folder / name}
             try:
-                for file, image in zip(paths, pair[1:]):
-                    write_image(file, image)
+                for role, file in files.items():
+                    write_image(file, images[role])
             except Exception:
-                for file in paths:
+                for file in files.values():
                     if file.exists():
                         file.unlink()
                 raise
+
             self.last_capture_time = pair[0]
-            self.names.append(name)
+            self.shot_count += 1
+            if len(found) == 2:
+                self.names.append(name)
+            square = self.square.value()
+            for role in moved:
+                index = self.VIEWS.index(role)
+                size = (images[role].shape[1], images[role].shape[0])
+                self.samples[role].append(found[role])
+                self.image_sizes[role] = size
+                focal = (self.front_focal, self.side_focal)[index].value()
+                tilt = intrinsic.estimate_tilt(found[role], pattern, square, size, focal)
+                if tilt is not None:
+                    self.tilts[role].append(tilt)
             self.persist_session("capture")
-            remain = max(0, RECOMMENDED_PAIRS - len(self.names))
-            self.pair_status.setText("已拍 {} 組；請移動、傾斜棋盤格再拍下一組{}。".format(
-                len(self.names), "（建議再拍 {} 組）".format(remain) if remain else ""))
+            kind = "配對" if len(found) == 2 else "只有{}（內參）".format(self.TITLES[self.VIEWS.index(next(iter(found)))])
+            self.log("第 {} 張：{}{}".format(self.shot_count, kind, "" if len(moved) == len(found) else
+                                            "；{}與上一張幾乎相同，不計入內參".format(
+                                                "、".join(self.TITLES[self.VIEWS.index(r)]
+                                                         for r in found if r not in moved))))
+            self.update_capture_status()
         except Exception as exc:
             self.fail(str(exc))
 
@@ -753,41 +756,82 @@ class CalibrationWindow(QMainWindow):
         if not folder:
             return
         try:
-            if self.names:
+            if self.names or self.shot_count:
                 raise ValueError("本次已有照片，請取消並開新一次校正後再匯入，避免混用不同相機擺位。")
+            folder = Path(folder)
             names = match_image_pairs(folder)
             # Validate every image before accepting any pair into this session.
             for name in names:
-                for role in ("cf", "cs"):
-                    self.check_image_size(read_image(Path(folder) / role / name), role)
+                for role in self.VIEWS:
+                    self.check_image_size(read_image(folder / role / name), role)
             for name in names:
-                for role in ("cf", "cs"):
-                    shutil.copy2(str(Path(folder) / role / name), str(self.session / role / name))
+                for role in self.VIEWS:
+                    shutil.copy2(str(folder / role / name), str(self.session / role / name))
+            # 來源若是之前的 session，只有單台看到的內參照片也一起帶進來
+            extra = 0
+            for sn in self.roles:
+                source = folder / "intrinsic" / "images_SN{}".format(sn)
+                if not self.reused and source.is_dir():
+                    target = self.session / "intrinsic" / source.name
+                    target.mkdir(parents=True, exist_ok=True)
+                    for file in intrinsic.list_images(source):
+                        shutil.copy2(str(file), str(target / file.name))
+                        extra += 1
             self.names = names
+            self.imported = True
             self.persist_session("capture_imported")
-            self.pair_status.setText("已匯入 {} 組。請確認照片來自所選序號及目前相機擺位。".format(len(names)))
+            self.log("已匯入 {} 組配對{}。請確認照片來自所選序號及目前相機擺位。".format(
+                len(names), "、{} 張單台內參照片".format(extra) if extra else ""))
             # Imported filenames need not be numeric; keep this run import-only.
             self.connect_button.setEnabled(False)
             self.import_button.setEnabled(False)
+            self.update_capture_status()
         except Exception as exc:
             self.fail(str(exc))
 
-    def calculate_extrinsic(self):
+    def calculate(self):
         self.state = "calculate"
         self.capture_actions.hide()
-        self.log("正在偵測 {} 組照片的棋盤格角點並計算外參…".format(len(self.names)))
-        roles, entries = self.roles, dict(self.entries)
+        session, roles, reused = self.session, self.roles, self.reused
         pattern, square = (self.cols.value(), self.rows.value()), self.square.value()
-        self.start_job(lambda: estimate_chessboard_stereo(self.session, roles, entries, pattern, square),
-                       self.extrinsic_finished, self.extrinsic_failed)
+        focals = {"front": self.front_focal.value(), "side": self.side_focal.value()}
+        entries = dict(self.entries)
+        # 計算在背景執行緒，訊息先收集起來，結束後再寫到 log
+        self.job_messages = messages = []
 
-    def extrinsic_failed(self, message):
-        # 計算失敗時回到拍照頁，可補拍後再算；已拍的照片保留在本次資料夾
+        def work():
+            if not reused:
+                for lens, sn in zip(self.LENSES, roles):
+                    entry, _ = intrinsic.calibrate_session_camera(session, lens, sn, pattern, square,
+                                                                  focals[lens], messages.append)
+                    if entry is None:
+                        raise ValueError("SN{} 有效內參照片不足，請補拍。".format(sn))
+                    validate_intrinsic(entry)
+                    if entry["rms"] > intrinsic.RMS_MAX:
+                        raise ValueError("SN{} 內參 RMS {:.3f} px 超過 {} px，請依 log 的提示補拍（模糊、反光、覆蓋不足）。"
+                                         .format(sn, entry["rms"], intrinsic.RMS_MAX))
+                    entries[sn] = entry
+                save_json(session / "intrinsics.json", entries)
+            messages.append("== 外參（cf/、cs/ 同名照片）")
+            return entries, estimate_chessboard_stereo(session, roles, entries, pattern, square)
+
+        self.log("正在計算{}外參（{} 組配對）…".format("" if reused else "兩台內參與", len(self.names)))
+        self.start_job(work, self.calculation_finished, self.calculation_failed)
+
+    def flush_job_messages(self):
+        for message in self.job_messages:
+            self.log(message)
+        self.job_messages = []
+
+    def calculation_failed(self, message):
+        # 計算失敗時回到拍照頁，已拍的照片與統計保留，可補拍後再算
+        self.flush_job_messages()
         self.begin_capture()
-        self.pair_status.setText("已拍 {} 組；外參計算失敗，可補拍後再算。".format(len(self.names)))
         self.fail(message)
 
-    def extrinsic_finished(self, report):
+    def calculation_finished(self, result):
+        self.flush_job_messages()
+        self.entries, report = result
         fit = report["fit"]
         checks = report["held_out_board_checks"]
         held_rmse = float(np.median([c["square_rmse_mm"] for c in checks]))
@@ -806,7 +850,7 @@ class CalibrationWindow(QMainWindow):
         if fit["stereo_rms_px"] > MAX_STEREO_RMS:
             save_rejected(self.session, report)
             raise ValueError("Stereo RMS {:.2f} px 超過 {} px，未更新校正檔（報告已存於 {}）。\n"
-                             "請確認棋盤格規格、兩台內參，並補拍不同位置與深度的照片。"
+                             "請確認棋盤格規格，並補拍不同位置與深度的配對照片。"
                              .format(fit["stereo_rms_px"], MAX_STEREO_RMS, self.session / "stereo_failed.json"))
         _, is_current = publish_stereo(storage.CALIB_DIR, self.session, self.roles, self.entries, report)
         self.state = "done"
@@ -826,7 +870,6 @@ class CalibrationWindow(QMainWindow):
         if self.job is not None:
             return
         def finish():
-            self.dispose_panel()
             if self.session is not None:
                 try:
                     self.persist_session("cancelled")
@@ -845,7 +888,6 @@ class CalibrationWindow(QMainWindow):
             event.ignore()
             self.stop_capture(self.close)
             return
-        self.dispose_panel()
         if self.session is not None and self.state not in ("setup", "done"):
             try:
                 self.persist_session("interrupted")
