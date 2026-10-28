@@ -6,11 +6,25 @@
 
 ```bash
 conda activate Pitcher
-python calibration/calibrate.py   # 校正精靈：內參 → 外參（可從任何目錄執行）
-python calibration/calib.py       # 只校正一台相機的內參（即時拍攝或讀取照片資料夾）
+python calibration/calibration.py            # 校正精靈：內參 → 外參（可從任何目錄執行）
+python calibration/calibration.py --single   # 只校正一台相機的內參（即時拍攝或讀取照片資料夾）
 ```
 
 執行前請關閉 `main.py`、SpinView 等會占用相機的程式。
+
+### 用已拍好的照片離線重算（不開相機、不開視窗）
+
+```bash
+python calibration/calibration.py --calculate                    # 最新的 session
+python calibration/calibration.py --calculate 20261019_legacy    # 指定 session（名稱或路徑）
+python calibration/calibration.py --calculate 20261019_legacy --pattern 7x7 --square 100
+python calibration/calibration.py --calculate 20261019_legacy --publish      # 合格就設為目前使用中
+python calibration/calibration.py --calculate 20261008_legacy --snapshot "Db/handsomeboy/2026-10-08/T座/handsomeboy_H01"   # 存成舊錄影的校正快照
+```
+
+- 棋盤格規格、相機序號、焦距預設讀該 session 的 `session.json`，沒有才用 8x7、100 mm、35／8 mm；參數可覆寫。
+- 內參照片：`intrinsic/images_SN<序號>/`，沒有就用 `cf/`、`cs/`；外參用 `cf/`、`cs/` 的同名照片。
+- 誤差異常的照片會自動剔除（與視窗按「是」相同），結果寫回該 session，不加 `--publish` 不會動到目前使用中的校正。
 
 ## 精靈流程
 
@@ -36,7 +50,7 @@ Db/Calibration/
    │  ├─ corners/                      角點預覽（標出 0 號角點，可檢查方向）
    │  ├─ intrinsics.json  stereo.json  session.json
    │  └─ previous_calibration/         被取代的上一版，可手動還原
-   ├─ <時間>_SN<序號>/      calib.py 單獨校正一台
+   ├─ <時間>_SN<序號>/      --single 單獨校正一台
    └─ <日期>_legacy/        2026-10 舊版 Intrinsic.py／PnP.py 的照片與結果（legacy/）
 ```
 
@@ -47,10 +61,12 @@ Db/Calibration/
 
 | 檔案 | 用途 |
 |---|---|
-| `calibrate.py` | 校正精靈 UI |
-| `calib.py` | 單台內參 UI 與品質檢查（精靈的內參步驟也是它） |
-| `calibration_workflow.py` | 外參計算、驗證與發布（不含 Qt） |
-| `calib_store.py` | `Db/Calibration` 的路徑與讀寫 |
-| `chessboard_cross/` | 角點偵測、角點順序對齊、立體校正、驗證；也可用指令列單獨執行 |
+| `calibration.py` | 入口：開精靈、`--single`、`--calculate` |
+| `wizard.py` | 校正精靈 UI |
+| `intrinsic_window.py` | 單台內參 UI（精靈的內參步驟也是它） |
+| `intrinsic.py` | 內參計算與品質判斷（不含 Qt，視窗與指令列共用） |
+| `stereo.py` | 外參計算、驗證與發布（不含 Qt） |
+| `storage.py` | `Db/Calibration` 的路徑與讀寫 |
+| `chessboard_cross/` | 角點偵測、角點順序對齊、立體校正、驗證 |
 | `camera_objects/`、`camera_config/`、`utils/` | FLIR 相機控制與設定 |
 | `paths.py` | 路徑常數 |
