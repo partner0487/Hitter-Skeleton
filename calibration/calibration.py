@@ -2,15 +2,15 @@
 
     python calibration/calibration.py                 開啟校正精靈（內參 → 外參）
     python calibration/calibration.py --single        開啟單台相機內參視窗
-    python calibration/calibration.py --calculate [SESSION] [--pattern 7x7] ...
+    python calibration/calibration.py --calculate [SESSION] [--pattern 7x7]
                                                       用已拍好的照片離線重算，不開相機、不開視窗
 
 --calculate 讀 Db/Calibration/sessions/<SESSION>/：
   內參：正面用 intrinsic/images_SN<正面序號>/，沒有就用 cf/；側面同理（images_SN<側面序號>/ 或 cs/）
   外參：cf/ 與 cs/ 的同名照片
-結果寫回該 session 的 intrinsics.json、intrinsic/calib_SN*.npz、stereo.json、corners/。
-加 --publish 才會標記為可用：3D 分析依錄影日期，自動使用當天或之前最新的已發布校正；
-若它也是日期最新的，同時更新目前使用中的 Db/Calibration/*.json。
+相機序號、焦距、格子邊長讀該 session 的 session.json；棋盤格規格也是，--pattern 可覆寫。
+結果寫回該 session；Stereo RMS ≤ 3 px 時與精靈一樣直接採用：
+該日期起的錄影做 3D 分析時使用這次校正，若是日期最新的也更新 Db/Calibration/*.json。
 """
 import argparse
 import json
@@ -90,11 +90,10 @@ def calculate(args):
     info_path = session / "session.json"
     info = json.loads(info_path.read_text(encoding="utf-8")) if info_path.exists() else {}
     pattern = args.pattern or tuple(info.get("pattern") or DEFAULT_PATTERN)
-    square = args.square or info.get("square_size_mm") or DEFAULT_SQUARE_MM
-    roles = (str(args.front_sn or info.get("front") or "front"), str(args.side_sn or info.get("side") or "side"))
+    square = info.get("square_size_mm") or DEFAULT_SQUARE_MM
+    roles = (str(info.get("front") or "front"), str(info.get("side") or "side"))
     focal_info = info.get("lens_focal_mm") or {}
-    focals = {"front": args.front_focal if args.front_focal is not None else focal_info.get("front", DEFAULT_FOCAL_MM["front"]),
-              "side": args.side_focal if args.side_focal is not None else focal_info.get("side", DEFAULT_FOCAL_MM["side"])}
+    focals = {role: focal_info.get(role, DEFAULT_FOCAL_MM[role]) for role in ("front", "side")}
     print(f"Session：{session}")
     print(f"棋盤格：內角點 {pattern[0]}x{pattern[1]}，每格 {square:g} mm｜正面 SN{roles[0]}、側面 SN{roles[1]}")
 
@@ -125,17 +124,14 @@ def calculate(args):
         print(f"   REVIEW：{warning}")
     print(f"\n已寫入 {session / 'intrinsics.json'}、{session / 'stereo.json'}")
 
-    if not args.publish:
-        print("（未加 --publish：只寫回 session，3D 分析不會使用這次結果）")
-        return 0
     if fit["stereo_rms_px"] > MAX_STEREO_RMS:
-        print(f"✘ Stereo RMS 超過 {MAX_STEREO_RMS} px，不發布")
+        print(f"✘ Stereo RMS 超過 {MAX_STEREO_RMS} px，不採用；3D 分析不會使用這次結果")
         return 1
     _, is_current = publish_stereo(storage.CALIB_DIR, session, roles, entries, report)
     day = session.name[:8]
-    print(f"✔ 已發布：{day[:4]}-{day[4:6]}-{day[6:]} 起的錄影會使用這次校正（直到下一次較新的校正）")
+    print(f"✔ 已採用：{day[:4]}-{day[4:6]}-{day[6:]} 起的錄影會使用這次校正（直到下一次較新的校正）")
     if is_current:
-        print(f"✔ 也是日期最新的校正，已更新目前使用中的 {storage.STEREO_JSON}")
+        print(f"✔ 也是日期最新的校正，已更新 {storage.STEREO_JSON}")
     return 0
 
 
@@ -144,27 +140,21 @@ def main(argv=None):
         description="雙相機棋盤格校正：不加參數開啟精靈",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="範例：\n"
+               "  python calibration/calibration.py --calculate\n"
                "  python calibration/calibration.py --calculate 20261019_legacy\n"
-               "  python calibration/calibration.py --calculate 20261019_legacy --pattern 7x7 --publish\n"
-               "  python calibration/calibration.py --calculate 20261008_legacy --publish")
+               "  python calibration/calibration.py --calculate 20261019_legacy --pattern 7x7")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--single", action="store_true", help="開啟單台相機內參視窗")
     mode.add_argument("--calculate", nargs="?", const="", metavar="SESSION", dest="session",
                       help="離線重算；SESSION 為 sessions/ 底下的資料夾名稱或路徑，省略則用最新的")
-    parser.add_argument("--pattern", type=parse_pattern, help="棋盤格內角點 寬x高（預設讀 session.json，否則 8x7）")
-    parser.add_argument("--square", type=float, help="每格邊長 mm（預設讀 session.json，否則 100）")
-    parser.add_argument("--front-sn", help="正面相機序號（預設讀 session.json）")
-    parser.add_argument("--side-sn", help="側面相機序號（預設讀 session.json）")
-    parser.add_argument("--front-focal", type=float, help="正面鏡頭焦距 mm，0 表示不給初值（預設 35）")
-    parser.add_argument("--side-focal", type=float, help="側面鏡頭焦距 mm（預設 8）")
-    parser.add_argument("--publish", action="store_true",
-                        help="結果合格時標記為可用，讓該日期起的錄影使用這次校正")
+    parser.add_argument("--pattern", type=parse_pattern,
+                        help="棋盤格內角點 寬x高，例如 7x7（預設讀 session.json，否則 8x7）")
     args = parser.parse_args(argv)
 
     if args.session is not None:
         return calculate(args)
-    if args.publish:
-        parser.error("--publish 只能搭配 --calculate 使用")
+    if args.pattern:
+        parser.error("--pattern 只能搭配 --calculate 使用")
     if args.single:
         import intrinsic_window
         return intrinsic_window.main()
