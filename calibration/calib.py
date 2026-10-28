@@ -133,11 +133,11 @@ class CalibWindow(QMainWindow):
         self.spn_cols.setValue(8)
         self.spn_rows = QSpinBox()
         self.spn_rows.setRange(3, 30)
-        self.spn_rows.setValue(11)
+        self.spn_rows.setValue(7)
         self.spn_square = QDoubleSpinBox()
         self.spn_square.setRange(0.1, 1000.0)
         self.spn_square.setDecimals(2)
-        self.spn_square.setValue(10.0)
+        self.spn_square.setValue(100.0)
         self.spn_square.setSuffix(" mm")
         board_layout.addWidget(QLabel("內角點 寬:"))
         board_layout.addWidget(self.spn_cols)
@@ -148,15 +148,15 @@ class CalibWindow(QMainWindow):
         board_layout.addStretch()
         layout.addWidget(board_group)
 
-        # 鏡頭：用標稱焦距檢查 fx 是否合理；長焦鏡頭鎖住畸變，避免估出不合理的畸變係數
-        lens_group = QGroupBox("鏡頭（選填）")
+        # 鏡頭：標稱焦距用來給 fx 初值並檢查結果；長焦鏡頭鎖住光心與高階畸變，避免估出不合理的係數
+        lens_group = QGroupBox("鏡頭（建議填寫）")
         lens_layout = QHBoxLayout(lens_group)
         self.spn_focal = QDoubleSpinBox()
         self.spn_focal.setRange(0.0, 500.0)
         self.spn_focal.setDecimals(1)
         self.spn_focal.setSpecialValueText("未填")
         self.spn_focal.setSuffix(" mm")
-        self.chk_lock_dist = QCheckBox("長焦：鎖住畸變（畸變係數固定為 0）")
+        self.chk_lock_dist = QCheckBox("長焦：固定光心於畫面中心、k2/k3 為 0（只估 k1）")
         self.spn_focal.valueChanged.connect(
             lambda v: self.chk_lock_dist.setChecked(v >= self.TELEPHOTO_MM))
         lens_layout.addWidget(QLabel("鏡頭焦距:"))
@@ -532,17 +532,36 @@ class CalibWindow(QMainWindow):
         missing = [name for i, name in enumerate(self.REGION_NAMES) if i not in hit]
         return len(hit), missing
 
+    def _calibration_guess(self):
+        """依鏡頭焦距決定 calibrateCamera 的初值與 flags，回傳 (K 初值或 None, flags)"""
+        flags = 0
+        init_K = None
+        focal = self.spn_focal.value()
+        if focal > 0:
+            # 有焦距就用 焦距/像素大小 當 fx 初值、光心放畫面中心；
+            # 切向畸變與 k3 在球場距離下估不準，固定為 0 避免邊緣發散
+            w, h = self.image_size
+            f_px = focal / self.PIXEL_SIZE_MM
+            init_K = np.array([[f_px, 0.0, w / 2.0],
+                               [0.0, f_px, h / 2.0],
+                               [0.0, 0.0, 1.0]], dtype=np.float64)
+            flags = (cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_FIX_ASPECT_RATIO
+                     | cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K3)
+        if self.chk_lock_dist.isChecked():
+            # 長焦鏡頭視角窄，照片裡幾乎沒有光心與高階畸變的資訊，放著不鎖會發散
+            # （2026-10-08 正面 50 mm 的 k2 = 33.5、舊版 35 mm 的 k3 = 274），只留 k1
+            flags |= (cv2.CALIB_FIX_PRINCIPAL_POINT | cv2.CALIB_FIX_K2 | cv2.CALIB_FIX_K3
+                      | cv2.CALIB_ZERO_TANGENT_DIST)
+        return init_K, flags
+
     def _calibrate(self):
         """執行校正並計算每組樣本的誤差與傾斜角"""
-        flags = 0
-        if self.chk_lock_dist.isChecked():
-            # 長焦鏡頭視角窄、幾乎沒有畸變，照片裡沒有足夠資訊估畸變，
-            # 放著不鎖會估出不合理的係數（2026-10-08 正面 50 mm 的 k2 = 33.5），去畸變時反而把影像扭曲
-            flags = (cv2.CALIB_FIX_K1 | cv2.CALIB_FIX_K2 | cv2.CALIB_FIX_K3
-                     | cv2.CALIB_ZERO_TANGENT_DIST)
+        init_K, flags = self._calibration_guess()
+        init_dist = None if init_K is None else np.zeros((5, 1), dtype=np.float64)
         rms, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
-            self.objpoints, self.imgpoints, self.image_size, None, None, flags=flags
+            self.objpoints, self.imgpoints, self.image_size, init_K, init_dist, flags=flags
         )
+        self._last_flags = flags
         per_image_rms = []
         tilts = []
         self._tilt_axes = []     # 每組板子的傾斜轉軸方向（度，影像平面內）
@@ -716,6 +735,7 @@ class CalibWindow(QMainWindow):
             "sample_count": self.captured_count,
             "distortion_locked": self.chk_lock_dist.isChecked(),
             "lens_focal_mm": self.spn_focal.value() or None,
+            "calibration_flags": int(self._last_flags),
             "calibrated_at": datetime.now().isoformat(timespec="seconds"),
         }
         if self._photo_paths:

@@ -252,16 +252,26 @@ class CalibrationWindow(QMainWindow):
         self.intrinsic_only = QCheckBox("只做內參（外參改用 RoMa：在校正中心選 RoMa，不拍校正桿）")
         form.addRow(self.intrinsic_only)
         self.cols, self.rows = QSpinBox(), QSpinBox()
-        for spin, value in ((self.cols, 8), (self.rows, 11)):
+        for spin, value in ((self.cols, 8), (self.rows, 7)):
             spin.setRange(3, 30)
             spin.setValue(value)
         self.square = QDoubleSpinBox()
         self.square.setRange(0.1, 1000)
-        self.square.setValue(10)
+        self.square.setValue(100)
         self.square.setSuffix(" mm")
         form.addRow("棋盤格內角點：寬（格子數 − 1）", self.cols)
         form.addRow("棋盤格內角點：高（格子數 − 1）", self.rows)
         form.addRow("每格實際邊長", self.square)
+        # 鏡頭焦距決定內參初值與長焦鎖定（>= calib.CalibWindow.TELEPHOTO_MM 自動鎖光心與高階畸變）
+        self.front_focal, self.side_focal = QDoubleSpinBox(), QDoubleSpinBox()
+        for spin, value in ((self.front_focal, 35), (self.side_focal, 8)):
+            spin.setRange(0, 500)
+            spin.setDecimals(1)
+            spin.setSpecialValueText("未填")
+            spin.setSuffix(" mm")
+            spin.setValue(value)
+        form.addRow("正面鏡頭焦距", self.front_focal)
+        form.addRow("側面鏡頭焦距", self.side_focal)
         self.threshold = QDoubleSpinBox()
         self.threshold.setRange(0.1, 10)
         self.threshold.setValue(3)
@@ -434,6 +444,8 @@ class CalibrationWindow(QMainWindow):
             "front": self.roles[0], "side": self.roles[1],
             "status": status, "intrinsics": self.entries,
             "pattern": [self.cols.value(), self.rows.value()], "square_size_mm": self.square.value(),
+            "lens_focal_mm": {"front": self.front_focal.value() or None,
+                              "side": self.side_focal.value() or None},
             "threshold_px": self.threshold.value(), "image_names": self.names,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         })
@@ -490,6 +502,9 @@ class CalibrationWindow(QMainWindow):
         self.panel.spn_rows.setValue(self.rows.value())
         self.panel.spn_square.setValue(self.square.value())
         self.panel.spn_cols.parentWidget().setEnabled(False)
+        # 設定焦距會連動勾選長焦鎖定；面板上仍可手動改勾
+        focal = (self.front_focal if role_index == 0 else self.side_focal).value()
+        self.panel.spn_focal.setValue(focal)
         sn = self.roles[role_index]
         index = self.panel.cmb_camera.findData(sn)
         if index < 0:
@@ -568,6 +583,7 @@ class CalibrationWindow(QMainWindow):
             "sample_count": panel.captured_count, "calibrated_at": datetime.now().isoformat(timespec="seconds"),
             "sample_images": ["intrinsic/images_SN{}/{}".format(sn, name) for name in panel.sample_files],
             "distortion_locked": panel.chk_lock_dist.isChecked(), "lens_focal_mm": panel.spn_focal.value() or None,
+            "calibration_flags": int(panel._last_flags),
         }
         validate_intrinsic(entry)
         np.savez(str(self.session / "intrinsic" / ("calib_SN{}.npz".format(sn))),
