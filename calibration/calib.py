@@ -19,8 +19,7 @@
 # Support both python -m and direct file execution from any working directory.
 import sys as _sys
 from pathlib import Path as _Path
-if __package__ in (None, ""):
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 import os
 import sys
@@ -40,10 +39,10 @@ from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QImage, QPixmap
 
 import PySpin
-from Src.cameras.single_camera.flir_camera_system import FlirCameraSystem
-from Src.calibration import calib_store
+from camera_objects import FlirCameraSystem
+import calib_store
 
-from Src.paths import CAMERA_CONFIG_DIR
+from paths import CAMERA_CONFIG_DIR
 CONFIG_PATH = str(CAMERA_CONFIG_DIR / "GH3_camera_config.yaml")
 
 
@@ -300,8 +299,8 @@ class CalibWindow(QMainWindow):
         if not ok or raw is None:
             return
 
-        # 相機輸出為 BayerRG8，轉成 BGR 才能顯示與偵測
-        frame = cv2.cvtColor(raw, cv2.COLOR_BayerBG2BGR)
+        # camera_objects 已把 BayerRG8 轉成灰階，這裡只轉成 BGR 供顯示與偵測
+        frame = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
         self.last_frame = frame
         if self.image_size is None:
             h, w = frame.shape[:2]

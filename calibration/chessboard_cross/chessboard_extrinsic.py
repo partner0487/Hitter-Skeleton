@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from Src.calibration.chessboard_cross.chessboard_metric import (align_pairs, camera_arrays, fit_eight_point,
+from chessboard_cross.chessboard_metric import (align_pairs, camera_arrays, fit_eight_point,
     fit_pnp, object_points, paired_views, read_json, validate_rig)
 
 CONVENTION = "X_cs = R_cs_from_cf @ X_cf + t_cs_from_cf_mm"

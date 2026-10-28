@@ -3,13 +3,12 @@
 # Support both python -m and direct file execution from any working directory.
 import sys as _sys
 from pathlib import Path as _Path
-if __package__ in (None, ""):
-    _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
 import argparse
 from pathlib import Path
 import cv2
-from Src.calibration.chessboard_cross.chessboard_metric import (DEFAULT_IMAGES, DEFAULT_CALIBRATION,
+from chessboard_cross.chessboard_metric import (DEFAULT_IMAGES, DEFAULT_CALIBRATION,
     calibrate_intrinsics, detect_folder, object_points, read_json, write_json)
 
 
