@@ -166,6 +166,55 @@ class FlirCameraSystem(SingleCameraSystem):
 
         return True
 
+    def get_exposure_settings(self) -> dict:
+        """
+        Get current exposure time and gain with their allowed ranges.
+
+        Returns
+        -------
+        dict
+            exposure_time (us), exposure_range, gain (dB), gain_range.
+        """
+        nodemap: PySpin.NodeMap = self.cam.GetNodeMap()
+        exposure = PySpin.CFloatPtr(nodemap.GetNode('ExposureTime'))
+        gain = PySpin.CFloatPtr(nodemap.GetNode('Gain'))
+        return {
+            'exposure_time': exposure.GetValue(),
+            'exposure_range': (exposure.GetMin(), exposure.GetMax()),
+            'gain': gain.GetValue(),
+            'gain_range': (gain.GetMin(), gain.GetMax()),
+        }
+
+    def set_exposure_time(self, exposure_time: float) -> float:
+        """
+        Set exposure time (us) while streaming; clamped to the camera's range.
+
+        Returns
+        -------
+        float
+            Exposure time actually applied.
+        """
+        return self._set_float_node('ExposureTime', exposure_time)
+
+    def set_gain(self, gain: float) -> float:
+        """
+        Set gain (dB) while streaming; clamped to the camera's range.
+
+        Returns
+        -------
+        float
+            Gain actually applied.
+        """
+        return self._set_float_node('Gain', gain)
+
+    def _set_float_node(self, name: str, value: float) -> float:
+        node = PySpin.CFloatPtr(self.cam.GetNodeMap().GetNode(name))
+        if not PySpin.IsWritable(node):
+            raise ValueError(f"{name} of camera {self.serial_number} is not writable")
+        node.SetValue(min(max(float(value), node.GetMin()), node.GetMax()))
+        logging.info('%s of camera %s is set to %s', name, self.serial_number, node.GetValue())
+        return node.GetValue()
+
     def configure_gpio_primary(self) -> None:
         """
         Configure the GPIO settings to primary for single camera.
