@@ -9,12 +9,11 @@
   內參：正面用 intrinsic/images_SN<正面序號>/，沒有就用 cf/；側面同理（images_SN<側面序號>/ 或 cs/）
   外參：cf/ 與 cs/ 的同名照片
 結果寫回該 session 的 intrinsics.json、intrinsic/calib_SN*.npz、stereo.json、corners/。
-加 --publish 才會更新目前使用中的 Db/Calibration/*.json；
-加 --snapshot 可把結果存成舊錄影資料夾的 calibration.json。
+加 --publish 才會標記為可用：3D 分析依錄影日期，自動使用當天或之前最新的已發布校正；
+若它也是日期最新的，同時更新目前使用中的 Db/Calibration/*.json。
 """
 import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -126,20 +125,17 @@ def calculate(args):
         print(f"   REVIEW：{warning}")
     print(f"\n已寫入 {session / 'intrinsics.json'}、{session / 'stereo.json'}")
 
-    ok = fit["stereo_rms_px"] <= MAX_STEREO_RMS
-    if (args.publish or args.snapshot) and not ok:
-        print(f"✘ Stereo RMS 超過 {MAX_STEREO_RMS} px，不發布、不寫快照")
+    if not args.publish:
+        print("（未加 --publish：只寫回 session，3D 分析不會使用這次結果）")
+        return 0
+    if fit["stereo_rms_px"] > MAX_STEREO_RMS:
+        print(f"✘ Stereo RMS 超過 {MAX_STEREO_RMS} px，不發布")
         return 1
-    if args.publish:
-        publish_stereo(storage.CALIB_DIR, session, roles, entries, report)
-        print(f"✔ 已發布為目前使用中的校正：{storage.STEREO_JSON}")
-    for folder in args.snapshot or []:
-        target = Path(folder)
-        if not target.is_dir():
-            print(f"✘ 錄影資料夾不存在：{target}")
-            continue
-        shutil.copy2(session / "stereo.json", target / "calibration.json")
-        print(f"✔ 已寫入錄影快照：{target / 'calibration.json'}")
+    _, is_current = publish_stereo(storage.CALIB_DIR, session, roles, entries, report)
+    day = session.name[:8]
+    print(f"✔ 已發布：{day[:4]}-{day[4:6]}-{day[6:]} 起的錄影會使用這次校正（直到下一次較新的校正）")
+    if is_current:
+        print(f"✔ 也是日期最新的校正，已更新目前使用中的 {storage.STEREO_JSON}")
     return 0
 
 
@@ -150,8 +146,7 @@ def main(argv=None):
         epilog="範例：\n"
                "  python calibration/calibration.py --calculate 20261019_legacy\n"
                "  python calibration/calibration.py --calculate 20261019_legacy --pattern 7x7 --publish\n"
-               "  python calibration/calibration.py --calculate 20261008_legacy "
-               "--snapshot Db/handsomeboy/2026-10-08/T座/handsomeboy_H01")
+               "  python calibration/calibration.py --calculate 20261008_legacy --publish")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--single", action="store_true", help="開啟單台相機內參視窗")
     mode.add_argument("--calculate", nargs="?", const="", metavar="SESSION", dest="session",
@@ -162,15 +157,14 @@ def main(argv=None):
     parser.add_argument("--side-sn", help="側面相機序號（預設讀 session.json）")
     parser.add_argument("--front-focal", type=float, help="正面鏡頭焦距 mm，0 表示不給初值（預設 35）")
     parser.add_argument("--side-focal", type=float, help="側面鏡頭焦距 mm（預設 8）")
-    parser.add_argument("--publish", action="store_true", help="結果合格時更新目前使用中的 Db/Calibration/*.json")
-    parser.add_argument("--snapshot", nargs="+", metavar="RECORD_DIR",
-                        help="把結果存成這些錄影資料夾的 calibration.json（給舊錄影用）")
+    parser.add_argument("--publish", action="store_true",
+                        help="結果合格時標記為可用，讓該日期起的錄影使用這次校正")
     args = parser.parse_args(argv)
 
     if args.session is not None:
         return calculate(args)
-    if args.publish or args.snapshot:
-        parser.error("--publish、--snapshot 只能搭配 --calculate 使用")
+    if args.publish:
+        parser.error("--publish 只能搭配 --calculate 使用")
     if args.single:
         import intrinsic_window
         return intrinsic_window.main()

@@ -1583,7 +1583,7 @@ class Analysis3DWidget(QWidget):
         self.folder = folder
         self.is_dual = False
         print(f"📁 Loading Folder: {folder}")
-        # 錄影資料夾有校正快照就用快照（錄影當下的相機擺位），否則用目前的 stereo.json
+        # 依錄影路徑中的日期，使用當天或之前最新的已發布校正
         self.applyStereoCalibration(load_stereo_params(folder))
 
         # 定義輔助函式，支援根目錄或 CF_ 子目錄 (讀取內部那包)

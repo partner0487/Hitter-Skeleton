@@ -752,13 +752,15 @@ class CalibrationWindow(QMainWindow):
             raise ValueError("Stereo RMS {:.2f} px 超過 {} px，未更新校正檔（報告已存於 {}）。\n"
                              "請確認棋盤格規格、兩台內參，並補拍不同位置與深度的照片。"
                              .format(fit["stereo_rms_px"], MAX_STEREO_RMS, self.session / "stereo.json"))
-        publish_stereo(storage.CALIB_DIR, self.session, self.roles, self.entries, report)
+        _, is_current = publish_stereo(storage.CALIB_DIR, self.session, self.roles, self.entries, report)
         self.state = "done"
         try:
             self.persist_session("complete")
         except OSError as exc:
             self.log("校正檔已套用，但工作階段狀態無法更新：{}".format(exc))
-        self.instructions.setText("校正完成，已更新 Db/Calibration/stereo.json。")
+        self.instructions.setText("校正完成，已更新 Db/Calibration/stereo.json；之後的錄影都會用這次校正。"
+                                  if is_current else
+                                  "校正完成並已標記可用；目前使用中的是日期更新的另一次校正。")
         self.log("照片、角點預覽（corners/）、內參樣本與報告：{}".format(self.session))
         self.log("驗證組與訓練組來自同一批照片，仍建議用已知長度的物體現場驗證實際尺寸。")
         self.next_button.setText("開始另一次校正")

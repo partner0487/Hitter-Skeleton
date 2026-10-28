@@ -110,8 +110,7 @@ python calibration/calibration.py --calculate  # 用已拍好的照片離線重�
 python calibration/calibration.py --calculate                    # 最新一次（有 cf/、cs/ 的 session）
 python calibration/calibration.py --calculate 20261019_legacy    # 指定 session 名稱或完整路徑
 python calibration/calibration.py --calculate 20261019_legacy --pattern 7x7 --square 100
-python calibration/calibration.py --calculate 20261019_legacy --publish
-python calibration/calibration.py --calculate 20261008_legacy --snapshot "Db/handsomeboy/2026-10-08/T座/handsomeboy_H01"
+python calibration/calibration.py --calculate 20261019_legacy --publish    # 合格就讓 2026-10-19 起的錄影使用
 ```
 
 | 參數 | 說明 |
@@ -121,13 +120,12 @@ python calibration/calibration.py --calculate 20261008_legacy --snapshot "Db/han
 | `--square 100` | 每格邊長 mm |
 | `--front-sn`、`--side-sn` | 相機序號 |
 | `--front-focal`、`--side-focal` | 鏡頭焦距 mm；0 表示不給初值 |
-| `--publish` | 結果合格時設為目前使用中的校正（更新 `Db/Calibration/*.json`） |
-| `--snapshot 資料夾…` | 把結果存成這些錄影資料夾的 `calibration.json` |
+| `--publish` | 結果合格（Stereo RMS ≤ 3 px）時發布，讓該日期起的錄影使用這次校正（見第 8 節） |
 
 - 棋盤格規格、序號、焦距**預設讀該 session 的 `session.json`**，沒有才用 8×7、100 mm、35 / 8 mm。
 - 內參照片優先用 `intrinsic/images_SN<序號>/`，沒有就用 `cf/`（正面）、`cs/`（側面）；外參用 `cf/`、`cs/` 的同名照片。
 - 誤差異常的照片會自動剔除後重算。
-- 結果寫回該 session；**不加 `--publish` 不會改動目前使用中的校正**。
+- 結果寫回該 session；**不加 `--publish` 的結果不會被 3D 分析使用**。
 
 ## 7. 輸出
 
@@ -137,7 +135,7 @@ python calibration/calibration.py --calculate 20261008_legacy --snapshot "Db/han
 Db/Calibration/
 ├─ camera_roles.json        目前的正面／側面相機序號
 ├─ intrinsics_all.json      目前各相機的內參（以序號為鍵）
-├─ stereo.json              目前使用中的外參與兩台內參 ← 3D 分析讀這個
+├─ stereo.json              日期最新的已發布校正（外參＋兩台內參）
 └─ sessions/
    ├─ <YYYYMMDD_HHMMSS>/              精靈每次校正一個資料夾
    │  ├─ intrinsic/images_SN<序號>/   內參照片（灰階 PNG）
@@ -145,14 +143,15 @@ Db/Calibration/
    │  ├─ cf/  cs/                      外參照片，同名＝同一時刻
    │  ├─ corners/                      角點預覽，標出 0 號角點，可檢查兩台方向是否一致
    │  ├─ intrinsics.json               本次兩台內參
-   │  ├─ stereo.json                   本次外參完整報告
+   │  ├─ stereo.json                   本次外參完整報告；發布後多一個 published_at
    │  ├─ session.json                  本次設定與進度
    │  └─ previous_calibration/         發布時被取代的上一版，可手動複製回去還原
    ├─ <YYYYMMDD_HHMMSS>_SN<序號>/     --single 單獨校正一台
    └─ <YYYYMMDD>_legacy/              舊版 Intrinsic.py／PnP.py 的照片；舊輸出在 legacy/
 ```
 
-上層三個 json 是**目前使用中**的版本，只在校正完成（或 `--publish`）時更新；`sessions/` 保留每一次的原始資料。
+`sessions/` 保留每一次校正的原始資料。精靈校正成功或 `--calculate --publish` 時「發布」該 session；
+上層三個 json 永遠是**日期最新**的已發布校正，發布較舊日期的 session（例如重算 `_legacy`）不會蓋掉它們。
 
 ### `stereo.json` 主要欄位
 
@@ -165,6 +164,7 @@ Db/Calibration/
 | `held_out_board_checks` | 驗證組的格子邊長誤差 |
 | `training_pairs`、`rejected_pairs` | 參與計算與被剔除的照片 |
 | `front`、`side` | 相機序號 |
+| `published_at` | 發布時間；沒有這個欄位的 session 不會被 3D 分析使用 |
 | `warnings` | 需要人工確認的項目 |
 
 ### 內參 entry（`intrinsics.json`、`intrinsics_all.json`）
@@ -173,14 +173,25 @@ Db/Calibration/
 
 ## 8. 主程式如何使用校正結果
 
-- **錄影時**：`Src/UI_Control` 存影片時會把當下的 `stereo.json` 複製成錄影資料夾的 `calibration.json`。之後重新校正，也不會影響舊錄影的 3D。
-- **3D 分析時**依序讀取：錄影資料夾的 `calibration.json` → 上一層資料夾的 `calibration.json` → `Db/Calibration/stereo.json`。都沒有時才用程式內寫死的舊參數（沒有真實尺度）。
+校正以**日期**為單位：相機有偏差、或 demo／測試前重新校正一次，之後的錄影都用這次的結果。
+
+3D 分析載入錄影時，從路徑中的日期（`Db/<打者>/2026-10-08/...`）挑**當天或之前最新的已發布校正**：
+
+| 錄影日期 | 已發布的校正 | 使用 |
+|---|---|---|
+| 2026-10-30 | 20261008_legacy、20261029_093000 | 20261029_093000 |
+| 2026-10-19 | 同上 | 20261008_legacy |
+| 2026-10-05（早於所有校正）或路徑沒有日期 | | 最新的 `Db/Calibration/stereo.json` |
+
+- 重新校正後，舊錄影仍使用當時的校正，不會被新參數影響。
+- 3D 介面會在終端機印出這次用的是哪個校正檔。
+- 都沒有校正時，才用程式內寫死的舊參數（沒有真實尺度）。
 - 3D 介面以側面相機為世界座標，會自動把外參轉成「側面→正面」、單位換成公尺。
 
-**2026-10-28 以前的錄影**沒有快照，可以用對應日期的舊照片補：
+**2026-10 的舊錄影**要使用當時的校正，用對應日期的舊照片重算並發布即可：
 
 ```bash
-python calibration/calibration.py --calculate 20261008_legacy --snapshot "Db/<打者>/2026-10-08/T座/<打者>_H01"
+python calibration/calibration.py --calculate 20261008_legacy --publish
 ```
 
 ## 9. 常見問題

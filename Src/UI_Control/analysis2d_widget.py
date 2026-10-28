@@ -29,7 +29,6 @@ from utils.phase_detect2d import PhaseDetector, PhaseResult
 from ocr import ocr_capture_1time as ocr
 from utils.paths import DB_DIR, ICON_DIR
 from utils.fps_utils import get_video_fps
-from utils.stereo_calibration import save_snapshot
 
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
@@ -729,12 +728,6 @@ class Analysis2dWidget(QWidget):
                 f.write("frame,time_sec\n")
                 for i, t in enumerate(recorder.frame_times):
                     f.write(f"{i},{t - t0:.6f}\n")
-        # 校正只對錄影當下的相機擺位有效，存一份快照，日後重新校正也不影響這筆的 3D
-        try:
-            if not save_snapshot(output_dir):
-                print("尚未校正（Db/Calibration/stereo.json 不存在），這筆錄影沒有校正快照")
-        except OSError as e:
-            print(f"校正快照儲存失敗：{e}")
 
         print(f"Videos saved: {video_filename}, {video_filename_2}")
 
