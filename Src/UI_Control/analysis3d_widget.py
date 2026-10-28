@@ -292,7 +292,7 @@ class Analysis3DWidget(QWidget):
         self.applyStereoCalibration(load_stereo_params())
 
     def applyStereoCalibration(self, params):
-        """套用 calibration/calibrate.py 的校正結果；params 為 None 時保留寫死的舊參數。"""
+        """套用 calibration/calibration.py 的校正結果；params 為 None 時保留寫死的舊參數。"""
         if params is not None:
             self.side_intrinsic_matrix = params.K_side
             self.side_distortion_coeffs = params.dist_side

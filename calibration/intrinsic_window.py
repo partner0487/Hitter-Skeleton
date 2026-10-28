@@ -5,7 +5,7 @@
 與安裝位置無關，因此一台一台單獨校正即可，不需要雙機同步或 GPIO 觸發線。
 
 使用方式：
-    python calibration/calib.py（可從任何工作目錄執行）
+    python calibration/calibration.py --single（也可直接執行本檔）
 
 流程：下拉選單選相機 → 連接 → 確認棋盤格規格 → 擷取 10~15 組不同角度
       → 執行校正 → 照片、npz 存到 Db/Calibration/sessions/<時間>_SN<序號>/intrinsic/，
@@ -40,7 +40,8 @@ from PyQt5.QtGui import QImage, QPixmap
 
 import PySpin
 from camera_objects import FlirCameraSystem
-import calib_store
+import intrinsic
+import storage
 
 from paths import CAMERA_CONFIG_DIR
 CONFIG_PATH = str(CAMERA_CONFIG_DIR / "GH3_camera_config.yaml")
@@ -352,15 +353,7 @@ class CalibWindow(QMainWindow):
     def _board_spec(self):
         return (self.spn_cols.value(), self.spn_rows.value(), self.spn_square.value())
 
-    @staticmethod
-    def _find_sample_corners(frame, pattern):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        found, corners = cv2.findChessboardCorners(gray, pattern, None)
-        if not found:
-            return None
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-        corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-        return np.asarray(corners, dtype=np.float32).reshape(-1, 1, 2)
+    _find_sample_corners = staticmethod(intrinsic.find_corners)
 
     def choose_photo_folder(self):
         if self.camera is not None:
@@ -371,7 +364,7 @@ class CalibWindow(QMainWindow):
             self.txt_photo_sn.setFocus()
             return
         folder = QFileDialog.getExistingDirectory(self, "選擇單台相機的棋盤格照片資料夾",
-                                                   calib_store.SESSIONS_DIR)
+                                                   storage.SESSIONS_DIR)
         if folder:
             self.load_photo_folder(folder, self.txt_photo_sn.text().strip())
 
@@ -385,9 +378,7 @@ class CalibWindow(QMainWindow):
             self.log("相機序號請使用英文字母或數字。")
             return False
         try:
-            files = sorted(p for p in Path(folder).iterdir()
-                           if p.is_file() and p.suffix.lower() in
-                           {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'})
+            files = intrinsic.list_images(folder)
         except OSError as exc:
             self.log(f"無法讀取照片資料夾：{exc}")
             return False
@@ -397,51 +388,32 @@ class CalibWindow(QMainWindow):
 
         spec = self._board_spec()
         pattern, square = spec[:2], spec[2]
-        points, paths, size, preview = [], [], None, None
         progress = QProgressDialog("正在讀取棋盤格照片…", "取消", 0, len(files), self)
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
-        try:
-            for index, path in enumerate(files):
-                progress.setValue(index)
-                progress.setLabelText(f"偵測棋盤格 {index + 1}/{len(files)}：{path.name}")
-                QApplication.processEvents()
-                if progress.wasCanceled():
-                    self.log("已取消讀取，保留原有樣本。")
-                    return False
-                try:
-                    # imdecode/fromfile supports Chinese Windows paths.
-                    frame = cv2.imdecode(np.fromfile(str(path), np.uint8), cv2.IMREAD_COLOR)
-                    if frame is None:
-                        raise ValueError("無法解碼影像")
-                    current_size = (frame.shape[1], frame.shape[0])
-                    if size is not None and current_size != size:
-                        raise ValueError(f"影像尺寸 {current_size} 與本批 {size} 不同")
-                    corners = self._find_sample_corners(frame, pattern)
-                    if corners is None:
-                        raise ValueError("未完整偵測到棋盤格")
-                    if points:
-                        shift = np.mean(np.linalg.norm(
-                            corners.reshape(-1, 2) - points[-1].reshape(-1, 2), axis=1))
-                        if shift < self.DUPLICATE_SHIFT_PX:
-                            raise ValueError(f"與上一張有效照片幾乎相同（位移 {shift:.1f} px）")
-                    points.append(corners)
-                    paths.append(str(path.resolve()))
-                    size, preview = current_size, frame
-                except (OSError, ValueError, cv2.error) as exc:
-                    self.log(f"略過 {path.name}：{exc}")
+
+        def on_progress(index, total, name):
+            progress.setValue(index)
+            progress.setLabelText(f"偵測棋盤格 {index + 1}/{total}：{name}")
             QApplication.processEvents()
-            if progress.wasCanceled():
-                self.log("已取消讀取，保留原有樣本。")
-                return False
+            return not progress.wasCanceled()
+
+        try:
+            loaded = intrinsic.load_photo_samples(files, pattern, on_progress)
         finally:
             progress.close()
+        if loaded is None:
+            self.log("已取消讀取，保留原有樣本。")
+            return False
+        for name, reason in loaded["skipped"]:
+            self.log(f"略過 {name}：{reason}")
+        points, paths = loaded["points"], loaded["paths"]
+        size, preview = loaded["image_size"], loaded["preview"]
         if not points:
             self.log("沒有可用的棋盤格照片，保留原有樣本；請確認內角點數量與照片。")
             return False
 
-        objp = np.zeros((pattern[0] * pattern[1], 3), np.float32)
-        objp[:, :2] = np.mgrid[0:pattern[0], 0:pattern[1]].T.reshape(-1, 2) * square
+        objp = intrinsic.object_points(pattern, square)
         self.objpoints = [objp.copy() for _ in points]
         self.imgpoints = points
         self.captured_count = len(points)
@@ -488,7 +460,7 @@ class CalibWindow(QMainWindow):
             if current.shape != previous.shape:
                 self.log("未擷取：棋盤格角點數與既有樣本不同，請恢復原規格或清空樣本後重拍。")
                 return
-            shift = np.mean(np.linalg.norm(current - previous, axis=1))
+            shift = intrinsic.mean_shift(current, previous)
             if shift < self.DUPLICATE_SHIFT_PX:
                 self.log(f"未擷取：與上一組幾乎相同（平均位移 {shift:.1f} px），請移動或傾斜板子後再擷取。")
                 return
@@ -500,11 +472,7 @@ class CalibWindow(QMainWindow):
             self.log(f"未擷取：原始照片儲存失敗 {exc}")
             return
 
-        objp = np.zeros((pattern[0] * pattern[1], 3), np.float32)
-        objp[:, :2] = np.mgrid[0:pattern[0], 0:pattern[1]].T.reshape(-1, 2)
-        objp *= square
-
-        self.objpoints.append(objp)
+        self.objpoints.append(intrinsic.object_points(pattern, square))
         self.imgpoints.append(corners)
         self._photo_paths.append(photo_path)
         self.captured_count += 1
@@ -519,7 +487,7 @@ class CalibWindow(QMainWindow):
 
     def intrinsic_dir(self):
         """本次校正的內參資料夾：每次連接相機或讀取照片資料夾各算一個 session"""
-        return (Path(calib_store.SESSIONS_DIR) / f"{self._capture_stamp}_SN{self.connected_sn}"
+        return (Path(storage.SESSIONS_DIR) / f"{self._capture_stamp}_SN{self.connected_sn}"
                 / "intrinsic")
 
     def sample_photo_dir(self):
@@ -537,131 +505,34 @@ class CalibWindow(QMainWindow):
         encoded.tofile(str(path))  # tofile 支援中文路徑
         return str(path.resolve())
 
-    # 品質判斷門檻
-    RMS_GOOD = 0.5               # RMS 低於此值為良好
-    RMS_MAX = 1.0                # RMS 高於此值判定不合格
-    MIN_SAMPLES = 15             # 建議樣本數
-    MIN_TILT_DEG = 20.0          # 至少要有一組傾斜超過此角度
-    DUPLICATE_SHIFT_PX = 5.0     # 與上一組平均位移小於此值視為重複
-    PIXEL_SIZE_MM = 0.00586      # GS3-U3-23S6C 像素大小 5.86 µm，用來把鏡頭焦距換算成 fx
-    TELEPHOTO_MM = 25.0          # 焦距達此值自動勾選「鎖住畸變」
-    FX_TOLERANCE = 0.15          # fx 與焦距推算值相差超過 15% 就警告
-    AXIS_MIN_TILT_DEG = 10.0     # 傾斜超過此角度的樣本才拿來看「往哪個方向轉」
-    AXIS_CONCENTRATION = 0.8     # 轉軸方向集中度超過此值（1＝全部同一軸）就警告
-    REGION_NAMES = ["左上", "上", "右上", "左", "中", "右", "左下", "下", "右下"]
+    # 品質判斷門檻（定義在 intrinsic.py，精靈也會讀這些屬性）
+    RMS_GOOD = intrinsic.RMS_GOOD
+    RMS_MAX = intrinsic.RMS_MAX
+    MIN_SAMPLES = intrinsic.MIN_SAMPLES
+    DUPLICATE_SHIFT_PX = intrinsic.DUPLICATE_SHIFT_PX
+    TELEPHOTO_MM = intrinsic.TELEPHOTO_MM
 
     def _coverage(self):
         """把畫面切成 3x3 九宮格，回傳 (已覆蓋區數, 未覆蓋的區名)"""
-        if self.image_size is None or not self.imgpoints:
-            return 0, list(self.REGION_NAMES)
-        w, h = self.image_size
-        pts = np.vstack([c.reshape(-1, 2) for c in self.imgpoints])
-        col = np.clip((pts[:, 0] / w * 3).astype(int), 0, 2)
-        row = np.clip((pts[:, 1] / h * 3).astype(int), 0, 2)
-        hit = set((row * 3 + col).tolist())
-        missing = [name for i, name in enumerate(self.REGION_NAMES) if i not in hit]
-        return len(hit), missing
-
-    def _calibration_guess(self):
-        """依鏡頭焦距決定 calibrateCamera 的初值與 flags，回傳 (K 初值或 None, flags)"""
-        flags = 0
-        init_K = None
-        focal = self.spn_focal.value()
-        if focal > 0:
-            # 有焦距就用 焦距/像素大小 當 fx 初值、光心放畫面中心；
-            # 切向畸變與 k3 在球場距離下估不準，固定為 0 避免邊緣發散
-            w, h = self.image_size
-            f_px = focal / self.PIXEL_SIZE_MM
-            init_K = np.array([[f_px, 0.0, w / 2.0],
-                               [0.0, f_px, h / 2.0],
-                               [0.0, 0.0, 1.0]], dtype=np.float64)
-            flags = (cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_FIX_ASPECT_RATIO
-                     | cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K3)
-        if self.chk_lock_dist.isChecked():
-            # 長焦鏡頭視角窄，照片裡幾乎沒有光心與高階畸變的資訊，放著不鎖會發散
-            # （2026-10-08 正面 50 mm 的 k2 = 33.5、舊版 35 mm 的 k3 = 274），只留 k1
-            flags |= (cv2.CALIB_FIX_PRINCIPAL_POINT | cv2.CALIB_FIX_K2 | cv2.CALIB_FIX_K3
-                      | cv2.CALIB_ZERO_TANGENT_DIST)
-        return init_K, flags
+        return intrinsic.coverage(self.imgpoints, self.image_size)
 
     def _calibrate(self):
-        """執行校正並計算每組樣本的誤差與傾斜角"""
-        init_K, flags = self._calibration_guess()
-        init_dist = None if init_K is None else np.zeros((5, 1), dtype=np.float64)
-        rms, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
-            self.objpoints, self.imgpoints, self.image_size, init_K, init_dist, flags=flags
-        )
-        self._last_flags = flags
-        per_image_rms = []
-        tilts = []
-        self._tilt_axes = []     # 每組板子的傾斜轉軸方向（度，影像平面內）
-        for i in range(len(self.objpoints)):
-            proj, _ = cv2.projectPoints(self.objpoints[i], rvecs[i], tvecs[i], mtx, dist)
-            d = np.linalg.norm(self.imgpoints[i].reshape(-1, 2) - proj.reshape(-1, 2), axis=1)
-            per_image_rms.append(float(np.sqrt(np.mean(d ** 2))))
-            # 板子法向量與相機光軸的夾角
-            R, _ = cv2.Rodrigues(rvecs[i])
-            tilts.append(float(np.degrees(np.arccos(min(1.0, abs(R[2, 2]))))))
-            # 板子是繞哪個軸轉離正對相機：轉軸 = 光軸 × 板子法向量（落在影像平面內）
-            normal = R[:, 2] * np.sign(R[2, 2] or 1.0)
-            self._tilt_axes.append(float(np.degrees(np.arctan2(normal[0], -normal[1]))))
-        return rms, mtx, dist, np.array(per_image_rms), np.array(tilts)
+        """執行校正，回傳 (rms, K, dist, 每組誤差, 每組傾斜角)；完整結果留在 self._last_fit"""
+        fit = intrinsic.calibrate(self.objpoints, self.imgpoints, self.image_size,
+                                  self.spn_focal.value(), self.chk_lock_dist.isChecked())
+        self._last_fit = fit
+        self._last_flags = fit.flags
+        return fit.rms, fit.K, fit.dist, fit.per_image_rms, fit.tilts
 
     def _assess(self, rms, per_image_rms, tilts, mtx=None):
-        """依門檻判斷品質，回傳 (結論, 問題清單, 異常樣本索引)"""
-        problems = []
-        # RMS 小不代表 fx 對：長焦時 fx 與距離可以互相抵消，RMS 照樣很小，所以另外用鏡頭焦距檢查
-        focal = self.spn_focal.value()
-        if mtx is not None and focal > 0:
-            expected = focal / self.PIXEL_SIZE_MM
-            ratio = mtx[0, 0] / expected
-            if abs(ratio - 1) > self.FX_TOLERANCE:
-                problems.append(f"fx={mtx[0, 0]:.0f}，與 {focal:g} mm 鏡頭推算的 {expected:.0f} 相差 "
-                                f"{(ratio - 1) * 100:+.0f}%：請確認鏡頭焦距，並讓板子往上下、左右不同方向傾斜 30° 以上（只朝同一方向轉會讓 fx 算不準）")
-        bad = [i for i, e in enumerate(per_image_rms)
-               if e > self.RMS_MAX and e > 2 * rms]
-
-        if rms > self.RMS_MAX:
-            verdict = "不合格，建議重拍"
-            problems.append(f"整體誤差 {rms:.3f} px 超過 {self.RMS_MAX} px")
-        elif rms > self.RMS_GOOD:
-            verdict = "可用，但建議補拍改善"
-            problems.append(f"整體誤差 {rms:.3f} px 介於 {self.RMS_GOOD}～{self.RMS_MAX} px")
-        else:
-            verdict = "良好"
-
-        if bad:
-            problems.append(f"{len(bad)} 組樣本誤差異常（第 {', '.join(str(i + 1) for i in bad)} 組），"
-                            "可能是模糊或晃動")
-        covered, missing = self._coverage()
-        if missing:
-            problems.append(f"畫面覆蓋 {covered}/9 區，缺：{'、'.join(missing)}（邊角沒拍到，畸變會校不準）")
-        axis_concentration = self._axis_concentration(tilts)
-        if axis_concentration is not None and axis_concentration > self.AXIS_CONCENTRATION:
-            problems.append(f"板子幾乎都朝同一個方向轉（集中度 {axis_concentration:.2f}），fx 可能算不準："
-                            "請讓板子上下、左右、斜向都傾斜（不要為了讓另一台相機看到而只朝一個方向轉）")
-        if tilts.max() < self.MIN_TILT_DEG:
-            problems.append(f"最大傾斜僅 {tilts.max():.0f}°，請加入傾斜 {self.MIN_TILT_DEG:.0f}° 以上的樣本")
-        if self.captured_count < self.MIN_SAMPLES:
-            problems.append(f"樣本僅 {self.captured_count} 組，建議至少 {self.MIN_SAMPLES} 組")
-
-        if verdict == "良好" and problems:
-            verdict = "良好，但有改善空間"
-        return verdict, problems, bad
-
-    def _axis_concentration(self, tilts):
-        """傾斜轉軸方向的集中度（0～1）。轉軸沒有正負之分，所以角度先乘 2 再取平均向量長度；
-        只朝同一方向轉（轉軸互相平行）時接近 1，這時焦距與距離分不開，fx 會算不準。"""
-        axes = np.radians([a for a, t in zip(getattr(self, "_tilt_axes", []), tilts) if t >= self.AXIS_MIN_TILT_DEG])
-        if len(axes) < 3:
-            return None
-        return float(np.hypot(np.mean(np.cos(2 * axes)), np.mean(np.sin(2 * axes))))
+        """依門檻判斷最近一次 _calibrate 的品質，回傳 (結論, 問題清單, 異常樣本索引)"""
+        return intrinsic.assess(self._last_fit, self.imgpoints, self.image_size, self.spn_focal.value())
 
     def run_calibration(self):
         if self._sample_spec is not None and self._sample_spec != self._board_spec():
             self.log("棋盤格規格與樣本不符，請恢復原規格或重新讀取／擷取照片。")
             return
-        if self.captured_count < 10:
+        if self.captured_count < intrinsic.MIN_CALIBRATE_SAMPLES:
             self.log(f"樣本僅 {self.captured_count} 組，建議至少 10 組不同角度再校正。")
             return
         if self.image_size is None:
@@ -675,7 +546,7 @@ class CalibWindow(QMainWindow):
         verdict, problems, bad = self._assess(rms, per_image_rms, tilts, mtx)
 
         # 有異常樣本時，詢問是否剔除後重算
-        if bad and self.captured_count - len(bad) >= 10:
+        if bad and self.captured_count - len(bad) >= intrinsic.MIN_CALIBRATE_SAMPLES:
             reply = QMessageBox.question(
                 self, "發現異常樣本",
                 f"第 {', '.join(str(i + 1) for i in bad)} 組樣本誤差明顯偏高"
@@ -695,18 +566,7 @@ class CalibWindow(QMainWindow):
                 verdict, problems, bad = self._assess(rms, per_image_rms, tilts, mtx)
 
         # 結果合成一則訊息，避免「最新在上」時多行順序顛倒
-        report = (
-            f"校正完成 SN={self.connected_sn}｜判定：{verdict}\n"
-            f"  重投影誤差 RMS: {rms:.4f} px  (< {self.RMS_GOOD} 良好，> {self.RMS_MAX} 須重拍)\n"
-            f"  單組誤差範圍: {per_image_rms.min():.3f} ~ {per_image_rms.max():.3f} px\n"
-            f"  板子傾斜範圍: {tilts.min():.0f}° ~ {tilts.max():.0f}°\n"
-            f"  fx={mtx[0,0]:.2f}  fy={mtx[1,1]:.2f}\n"
-            f"  cx={mtx[0,2]:.2f}  cy={mtx[1,2]:.2f}\n"
-            f"  畸變係數: {np.round(dist.ravel(), 6)}"
-        )
-        if problems:
-            report += "\n  待改善：\n" + "\n".join(f"   - {p}" for p in problems)
-        self.log(report)
+        self.log(intrinsic.report_text(self.connected_sn, self._last_fit, verdict, problems))
 
         # 不合格時先確認，避免蓋掉之前較好的結果
         if rms > self.RMS_MAX:
@@ -726,67 +586,31 @@ class CalibWindow(QMainWindow):
                 f"重投影誤差 {rms:.3f} px。結果已儲存，但以下項目可以改善：\n\n"
                 + "\n".join(f"・{p}" for p in problems))
 
-        mean_err = float(np.mean(per_image_rms))
-        self.intrinsic_dir().mkdir(parents=True, exist_ok=True)
-        out_name = str(self.intrinsic_dir() / f"calib_SN{self.connected_sn}.npz")
-        np.savez(
-            out_name,
-            mtx=mtx, dist=dist,
-            image_size=np.array(self.image_size),
-            rms=rms, mean_reproj_err=mean_err,
-            per_image_rms=per_image_rms, tilt_deg=tilts,
-            pattern=np.array([self.spn_cols.value(), self.spn_rows.value()]),
-            square_size=self.spn_square.value(),
-            serial_number=self.connected_sn,
-            sample_count=self.captured_count,
-            source_images=np.asarray(self._photo_paths, dtype=str),
-        )
+        pattern = (self.spn_cols.value(), self.spn_rows.value())
+        out_name = self.intrinsic_dir() / f"calib_SN{self.connected_sn}.npz"
+        intrinsic.save_npz(out_name, self.connected_sn, self._last_fit, self.image_size, pattern,
+                           self.spn_square.value(), self.objpoints, self.imgpoints, self._photo_paths)
         self.log(f"已儲存至 {out_name}")
 
-        self._append_to_json(mtx, dist, rms, mean_err, verdict)
-
-    def _append_to_json(self, mtx, dist, rms, mean_err, verdict):
-        """把這台相機的內參累積寫入 intrinsics_all.json（以序號為鍵）。
-        3D 計算時再依 camera_roles.json 取出正面/側面各自的內參。
-        """
-        entry = {
-            "intrinsic_matrix": mtx.tolist(),
-            "distortion_coefficients": dist.tolist(),
-            "fx": float(mtx[0, 0]),
-            "fy": float(mtx[1, 1]),
-            "cx": float(mtx[0, 2]),
-            "cy": float(mtx[1, 2]),
-            "image_size": list(self.image_size),
-            "rms": float(rms),
-            "mean_reproj_err": float(mean_err),
-            "verdict": verdict,
-            "pattern": [self.spn_cols.value(), self.spn_rows.value()],
-            "square_size_mm": self.spn_square.value(),
-            "sample_count": self.captured_count,
-            "distortion_locked": self.chk_lock_dist.isChecked(),
-            "lens_focal_mm": self.spn_focal.value() or None,
-            "calibration_flags": int(self._last_flags),
-            "calibrated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        if self._photo_paths:
-            entry["source_images"] = list(self._photo_paths)
-
+        entry = intrinsic.make_entry(self._last_fit, verdict, self.image_size, pattern,
+                                     self.spn_square.value(), self.spn_focal.value(),
+                                     self.chk_lock_dist.isChecked(), self._photo_paths)
         try:
             # 本次 session 留一份，上層 intrinsics_all.json 則是目前使用中的版本
-            calib_store.write_json(str(self.intrinsic_dir().parent / "intrinsics.json"),
-                                   {str(self.connected_sn): entry})
-            count = calib_store.save_intrinsic(self.connected_sn, entry)
+            storage.write_json(str(self.intrinsic_dir().parent / "intrinsics.json"),
+                               {str(self.connected_sn): entry})
+            count = storage.save_intrinsic(self.connected_sn, entry)
         except Exception as e:
-            self.log(f"寫入 {calib_store.INTRINSICS_JSON} 失敗：{e}")
+            self.log(f"寫入 {storage.INTRINSICS_JSON} 失敗：{e}")
             return
 
-        self.log(f"已累積寫入 {calib_store.INTRINSICS_JSON}（目前共 {count} 台）")
+        self.log(f"已累積寫入 {storage.INTRINSICS_JSON}（目前共 {count} 台）")
         self.refresh_role_combos()
 
     def refresh_role_combos(self):
         """更新正面/側面下拉選單：可選「已校正」或「目前連接」的相機，並預選現有角色"""
         try:
-            sns = list(calib_store.load_intrinsics().keys())
+            sns = list(storage.load_intrinsics().keys())
         except Exception:
             sns = []
         for i in range(self.cmb_camera.count()):
@@ -794,7 +618,7 @@ class CalibWindow(QMainWindow):
             if sn and sn not in sns:
                 sns.append(sn)
 
-        roles = calib_store.load_roles()
+        roles = storage.load_roles()
         for cmb, role_idx in ((self.cmb_front, 0), (self.cmb_side, 1)):
             current = cmb.currentText() or (roles[role_idx] if roles else "")
             cmb.clear()
@@ -815,10 +639,10 @@ class CalibWindow(QMainWindow):
             self.log("正面與側面不能是同一台相機。")
             return
 
-        calib_store.save_roles(front_sn, side_sn)
-        intr = calib_store.load_intrinsics()
+        storage.save_roles(front_sn, side_sn)
+        intr = storage.load_intrinsics()
         missing = [sn for sn in (front_sn, side_sn) if sn not in intr]
-        msg = (f"已儲存角色至 {calib_store.ROLES_JSON}\n"
+        msg = (f"已儲存角色至 {storage.ROLES_JSON}\n"
                f"  正面 = SN{front_sn}\n"
                f"  側面 = SN{side_sn}")
         if missing:
