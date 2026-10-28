@@ -50,6 +50,7 @@ class FlirCameraSystem(SingleCameraSystem):
         self.cam.Init()
 
         self._configure_camera()
+        self._configure_stream_buffer()
 
         self.image_processor = PySpin.ImageProcessor()
         self.image_processor.SetColorProcessing(PySpin.SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR)
@@ -71,22 +72,26 @@ class FlirCameraSystem(SingleCameraSystem):
 
         logging.info("Reading Frame for %s...", serial_number)
         image_result: PySpin.ImagePtr = self.cam.GetNextImage(1000)
-        if image_result.IsIncomplete():
-            logging.warning('SN %s: Image incomplete with image status %d',
-                            serial_number,
-                            image_result.GetImageStatus())
-            return False, None
+        try:
+            if image_result.IsIncomplete():
+                logging.warning('SN %s: Image incomplete with image status %d',
+                                serial_number,
+                                image_result.GetImageStatus())
+                return False, None
 
-        logging.info("Grabbed Frame for %s", serial_number)
+            logging.info("Grabbed Frame for %s", serial_number)
 
-        logging.info("Converting Frame for %s...", serial_number)
-        image_converted: PySpin.ImagePtr =  \
-            self.image_processor.Convert(image_result, PySpin.PixelFormat_BayerRG8)
-        image_data = image_converted.GetNDArray()
-        image_data = cv2.cvtColor(image_data, cv2.COLOR_BayerRG2GRAY)
-        logging.info("Conversion Frame for %s done", serial_number)
+            logging.info("Converting Frame for %s...", serial_number)
+            image_converted: PySpin.ImagePtr =  \
+                self.image_processor.Convert(image_result, PySpin.PixelFormat_BayerRG8)
+            image_data = image_converted.GetNDArray()
+            image_data = cv2.cvtColor(image_data, cv2.COLOR_BayerRG2GRAY)
+            logging.info("Conversion Frame for %s done", serial_number)
 
-        return True, image_data
+            return True, image_data
+        finally:
+            # Return the buffer to the camera; otherwise acquisition stalls once all buffers are held.
+            image_result.Release()
 
     def get_rgb_image(self) -> Tuple[bool, np.ndarray]:
         """
@@ -430,6 +435,21 @@ class FlirCameraSystem(SingleCameraSystem):
         self._configure_exposure()
         self._configure_gain()
         self._configure_white_balance()
+
+    def _configure_stream_buffer(self) -> None:
+        """
+        Deliver the newest frame instead of the oldest queued one, so the preview
+        shows exposure/gain changes immediately even when it reads slower than the frame rate.
+
+        Returns
+        -------
+        None
+        """
+        stream_nodemap: PySpin.NodeMap = self.cam.GetTLStreamNodeMap()
+        handling_mode = PySpin.CEnumerationPtr(stream_nodemap.GetNode('StreamBufferHandlingMode'))
+        if PySpin.IsWritable(handling_mode):
+            handling_mode.SetIntValue(handling_mode.GetEntryByName('NewestOnly').GetValue())
+            logging.info("Stream buffer of camera %s is set to NewestOnly", self.serial_number)
 
     def _load_user_set(self, user_set_name: str = "Default") -> None:
         """

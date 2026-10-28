@@ -178,3 +178,4 @@ cython_debug/
 
 Src/mmpose_main/work_dirs
 Src/mmpose_main/data
+calibration/crash.log

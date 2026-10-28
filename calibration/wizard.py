@@ -297,6 +297,7 @@ class CalibrationWindow(QMainWindow):
             index = 0 if role == "cf" else 1
             controls.changed.connect(lambda exposure, gain, index=index: self.request_camera_settings(
                 index, exposure, gain))
+            controls.reload_requested.connect(self.reload_pair)
             column.addWidget(controls)
             self.pair_controls[role] = controls
             images.addLayout(column)
@@ -668,6 +669,11 @@ class CalibrationWindow(QMainWindow):
     def pair_settings_applied(self, index, exposure_time, gain):
         self.pair_controls["cf" if index == 0 else "cs"].show_actual(exposure_time, gain)
         self.camera_settings[self.roles[index]] = (exposure_time, gain)
+
+    def reload_pair(self):
+        """釋放後重新連接雙相機；目前的曝光／增益在 pair_camera_opened 重新套用"""
+        if self.capture is not None and self.after_capture is None:
+            self.stop_capture(self.connect_pair)
 
     def stop_capture(self, callback):
         if self.capture is None:
