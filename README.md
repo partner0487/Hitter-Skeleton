@@ -1,4 +1,6 @@
-# Pitch-Skeleton-User-Interface
+# Hitter-Skeleton
+
+棒球打擊動作分析：雙 FLIR 相機（正面、側面）同步錄影，ViTPose 偵測骨架，分析揮棒、動作階段與 3D 姿態。
 
 ## Usage
 ### Installation
@@ -48,37 +50,58 @@
     ``` 
 
 ### Data Preparation
-To obtain the vitpose、yolo and fast-reid wights, it can be downloaded from the https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing. The resulting data directory should look like this:
-    
-    Pitch-Skeleton-User-Interface
+ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing 下載，放到 `Db/pretrain/`。`Db/` 不進 git，整體結構如下：
+
+    Hitter-Skeleton
     |-- Db
     |   |-- pretrain
     |   |   |-- epoch_210.pth
     |   |   |-- vitpose_Sk26.pth
     |   |   |-- yolo11m-seg.pt
     |   |   `-- yolov7_x_syncbn_fast_8x16b-300e_coco_20221124_215331-ef949a68.pth
-    |   `-- Record
-    |       |-- {video_name}.mp4        # 原始影片
-    |       |-- {video_name}_Sk26.mp4   # 疊加骨架可視化影片
-    |       `-- {video_name}.json       # Bounding box 與 26 個關節點座標
+    |   |-- Calibration                       # 雙相機校正（見下方「相機校正」）
+    |   |   |-- stereo.json                   # 目前使用中的內外參，3D 分析讀這個
+    |   |   |-- intrinsics_all.json
+    |   |   |-- camera_roles.json
+    |   |   `-- sessions/<時間>/              # 每次校正的照片與結果
+    |   `-- <打者>/<YYYY-MM-DD>/<T座|側拋|正投>/<打者>_H01/   # 每一球的錄影
+    |       |-- CF_<打者>_H01.mp4             # 正面影片（60 fps）
+    |       |-- CS_<打者>_H01.mp4             # 側面影片
+    |       |-- frame_times.csv               # 每幀實際擷取時間（掉幀時用來算實際 fps）
+    |       |-- calibration.json              # 錄影當下的校正快照
+    |       `-- person_*.json、bat_*.json …    # 骨架與球棒分析結果
+    |-- calibration                           # 校正工具
     `-- Src
-        |-- UI_Control
+        |-- UI_Control                        # 主程式
         |-- mmpose_main
         |-- mmpretrain_main
         |-- mmyolo_main
         `-- tracker
 
 ### Demo
-1. Demo command
-    ```
-    python Src\UI_Control\main.py
-    ```
-2. 2D 相機
-    ```
-    利用相機去進行骨架偵測
-    ```
-3. 2D 影片
-    ```
-    利用影片進行骨架偵測
-    ```
-    
+```
+conda activate Pitcher
+python Src\UI_Control\main.py
+```
+或直接執行 `start.bat`。
+
+- **2D 相機**：兩台 FLIR 相機即時偵測骨架並錄影。相機 180 fps 擷取、每 3 幀取 1 存成 60 fps，觸發前後各保留一段（共 90 幀）。
+- **2D 影片**：讀取錄好的雙視角影片做骨架、球棒與動作階段分析。
+- **3D**：用校正結果把正面、側面的 2D 關節點三角化成 3D，計算關節速度、揮棒速度等（單位為公尺、m/s）。
+
+### 相機校正
+3D 分析需要兩台相機（正面 35mm、側面 8mm）的內參與外參，用同一塊棋盤格完成：
+
+```
+conda activate Pitcher
+python calibration/calibration.py                                  # 校正精靈：正面內參 → 側面內參 → 雙機拍棋盤格 → 外參
+python calibration/calibration.py --single                         # 只校正一台相機的內參
+python calibration/calibration.py --calculate 20261019_legacy      # 用已拍好的照片離線重算（不開相機）
+```
+
+- 棋盤格預設 **8×7 內角點**（9×8 格）、每格 100 mm，可在精靈或 `--pattern 7x7` 修改。
+- 拍外參需接 GPIO 同步線；兩台都偵測到棋盤格時才能拍，照片同名存檔以確保配對正確。
+- 校正完成會更新 `Db/Calibration/stereo.json`；之後每次錄影都會存一份快照，重新校正不影響舊錄影。
+- 沒有校正檔時，3D 分析會退回程式內寫死的舊參數（沒有真實尺度）。
+
+詳細流程、輸出格式與舊資料重算方式見 [calibration/README.md](calibration/README.md)。
