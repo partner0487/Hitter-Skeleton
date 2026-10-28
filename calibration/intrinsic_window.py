@@ -40,6 +40,7 @@ from PyQt5.QtGui import QImage, QPixmap
 
 import PySpin
 from camera_objects import FlirCameraSystem
+from camera_controls import CameraControls
 import intrinsic
 import storage
 
@@ -125,6 +126,11 @@ class CalibWindow(QMainWindow):
         cam_layout.addWidget(self.btn_connect)
         cam_layout.addWidget(self.btn_disconnect)
         layout.addWidget(cam_group)
+
+        # 曝光與增益：連接相機後才能調整，看著畫面調到棋盤格黑白分明、不過曝
+        self.camera_controls = CameraControls()
+        self.camera_controls.changed.connect(self.apply_camera_settings)
+        layout.addWidget(self.camera_controls)
 
         # 棋盤格參數
         board_group = QGroupBox("2. 棋盤格規格（內角點數量 = 格子數 - 1）")
@@ -267,6 +273,7 @@ class CalibWindow(QMainWindow):
             self.btn_connect.setEnabled(False)
             self.btn_disconnect.setEnabled(True)
             self.cmb_camera.setEnabled(False)
+            self.camera_controls.bind(self.camera.get_exposure_settings(), CONFIG_PATH)
             self.reset_samples()
         except Exception as e:
             self.camera = None
@@ -280,11 +287,22 @@ class CalibWindow(QMainWindow):
                 self.log(f"釋放相機時發生問題: {e}")
             self.camera = None
         self.last_frame = None
+        self.camera_controls.unbind()
         self.lbl_view.setText("已中斷連接")
         self.btn_connect.setEnabled(True)
         self.btn_disconnect.setEnabled(False)
         self.cmb_camera.setEnabled(True)
         self.log("已中斷連接。")
+
+    def apply_camera_settings(self, exposure_time, gain):
+        if self.camera is None:
+            return
+        try:
+            actual = self.camera.set_exposure_time(exposure_time), self.camera.set_gain(gain)
+        except Exception as e:
+            self.log(f"調整曝光／增益失敗: {e}")
+            return
+        self.camera_controls.show_actual(*actual)
 
     # ---------- 畫面 ----------
 

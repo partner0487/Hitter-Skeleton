@@ -18,6 +18,8 @@ import time
 from datetime import datetime
 
 from paths import CAMERA_CONFIG_DIR
+# 正面、側面相機的設定檔（曝光、增益的預設值也在這裡）
+CAMERA_CONFIGS = (CAMERA_CONFIG_DIR / "GH3_camera_config.yaml", CAMERA_CONFIG_DIR / "GH3_camera_config_2.yaml")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "True")
 qt_plugins = Path(os.environ.get("CONDA_PREFIX", sys.prefix)) / "Library/plugins/platforms"
 if qt_plugins.is_dir():
@@ -34,6 +36,7 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from camera_controls import CameraControls
 import intrinsic
 import storage
 from stereo import (
@@ -75,22 +78,35 @@ class Job(QThread):
 class CaptureWorker(QThread):
     """Own both cameras in one worker; release them before the next step."""
     failed = pyqtSignal(str)
+    opened = pyqtSignal(int, object)            # 相機索引、get_exposure_settings()
+    applied = pyqtSignal(int, float, float)     # 相機索引、實際曝光 μs、增益 dB
 
     def __init__(self, roles, parent):
         super().__init__(parent)
         self.roles = roles
         self.latest = None
+        # UI 執行緒放入 {相機索引: (曝光, 增益)}，由本執行緒在兩張畫面之間套用，不與取像同時操作相機
+        self.requests = {}
 
     def run(self):
         cameras = []
         try:
             from camera_objects import DualFlirSystem, FlirCameraSystem
-            for sn, config in zip(self.roles, ("GH3_camera_config.yaml", "GH3_camera_config_2.yaml")):
-                camera = FlirCameraSystem(str(CAMERA_CONFIG_DIR / config), sn)
+            for sn, config in zip(self.roles, CAMERA_CONFIGS):
+                camera = FlirCameraSystem(str(config), sn)
                 cameras.append(camera)
             pair = DualFlirSystem(*cameras)
+            for index, camera in enumerate(cameras):
+                self.opened.emit(index, camera.get_exposure_settings())
             failures = 0
             while not self.isInterruptionRequested():
+                for index in list(self.requests):
+                    exposure_time, gain = self.requests.pop(index)
+                    try:
+                        camera = cameras[index]
+                        self.applied.emit(index, camera.set_exposure_time(exposure_time), camera.set_gain(gain))
+                    except Exception as exc:
+                        self.failed.emit("調整曝光／增益失敗：{}".format(exc))
                 ok, front, side = pair.get_grayscale_images()
                 if not ok:
                     failures += 1
@@ -170,6 +186,8 @@ class CalibrationWindow(QMainWindow):
         self.job = None
         self.after_capture = None
         self.last_capture_time = None
+        # 每台相機最後的曝光／增益 {序號: (μs, dB)}，帶到下一階段並記入 session.json
+        self.camera_settings = {}
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
@@ -264,6 +282,7 @@ class CalibrationWindow(QMainWindow):
         images = QHBoxLayout()
         self.views = {}
         self.view_titles = {}
+        self.pair_controls = {}
         for role, title in (("cf", "正面"), ("cs", "側面")):
             column = QVBoxLayout()
             label = QLabel(title)
@@ -272,6 +291,12 @@ class CalibrationWindow(QMainWindow):
             view = ImageView()
             column.addWidget(view)
             self.views[role] = view
+            controls = CameraControls(title + "曝光")
+            index = 0 if role == "cf" else 1
+            controls.changed.connect(lambda exposure, gain, index=index: self.request_camera_settings(
+                index, exposure, gain))
+            column.addWidget(controls)
+            self.pair_controls[role] = controls
             images.addLayout(column)
         layout.addLayout(images, 1)
         self.pair_status = QLabel()
@@ -395,6 +420,8 @@ class CalibrationWindow(QMainWindow):
             self.begin_intrinsic(0)
 
     def persist_session(self, status):
+        if self.panel is not None and self.panel.camera is not None:
+            self.camera_settings[self.panel.connected_sn] = self.panel.camera_controls.values()
         save_json(self.session / "session.json", {
             "method": "intrinsic_only" if self.intrinsic_only.isChecked() else "chessboard_stereo_pnp",
             "front": self.roles[0], "side": self.roles[1],
@@ -403,6 +430,8 @@ class CalibrationWindow(QMainWindow):
             "lens_focal_mm": {"front": self.front_focal.value() or None,
                               "side": self.side_focal.value() or None},
             "image_names": self.names,
+            "camera_settings": {sn: {"exposure_time_us": exposure, "gain_db": gain}
+                                for sn, (exposure, gain) in self.camera_settings.items()},
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         })
 
@@ -422,8 +451,7 @@ class CalibrationWindow(QMainWindow):
                     super().keyPressEvent(event)
 
         # The legacy collector is reused; only this new process's config is changed.
-        intrinsic_window.CONFIG_PATH = str(CAMERA_CONFIG_DIR /
-                                ("GH3_camera_config.yaml" if role_index == 0 else "GH3_camera_config_2.yaml"))
+        intrinsic_window.CONFIG_PATH = str(CAMERA_CONFIGS[role_index])
         self.state = "intrinsic_{}".format(role_index)
         self.panel = Collector()
         self.panel.timer.stop()
@@ -453,6 +481,8 @@ class CalibrationWindow(QMainWindow):
             self.dispose_panel()
             self.reset_ui()
             raise ValueError("無法連接 SN{}，請關閉其他相機程式後重試。".format(sn))
+        if sn in self.camera_settings:
+            self.panel.camera_controls.set_values(*self.camera_settings[sn])
         self.pages.addWidget(self.panel)
         self.pages.setCurrentWidget(self.panel)
         self.panel.timer.start(60)
@@ -464,6 +494,8 @@ class CalibrationWindow(QMainWindow):
     def dispose_panel(self):
         if self.panel is not None:
             self.panel.timer.stop()
+            if self.panel.camera is not None:
+                self.camera_settings[self.panel.connected_sn] = self.panel.camera_controls.values()
             self.panel.disconnect_camera()
             self.pages.removeWidget(self.panel)
             self.panel.deleteLater()
@@ -590,6 +622,8 @@ class CalibrationWindow(QMainWindow):
         self.import_button.setEnabled(False)
         self.capture = CaptureWorker(self.roles, self)
         self.capture.failed.connect(self.log)
+        self.capture.opened.connect(self.pair_camera_opened)
+        self.capture.applied.connect(self.pair_settings_applied)
         self.capture.finished.connect(self.capture_stopped)
         self.capture.start()
         self.log("正在連接雙相機…")
@@ -616,6 +650,23 @@ class CalibrationWindow(QMainWindow):
         # 外參照片必須兩台同時看到完整棋盤格，否則該組無法配對
         self.shot_button.setEnabled(all(self.preview_found.values()))
 
+    def pair_camera_opened(self, index, settings):
+        controls = self.pair_controls["cf" if index == 0 else "cs"]
+        controls.bind(settings, str(CAMERA_CONFIGS[index]))
+        sn = self.roles[index]
+        if sn in self.camera_settings:
+            controls.set_values(*self.camera_settings[sn])
+        else:
+            self.camera_settings[sn] = controls.values()
+
+    def request_camera_settings(self, index, exposure_time, gain):
+        if self.capture is not None:
+            self.capture.requests[index] = (exposure_time, gain)
+
+    def pair_settings_applied(self, index, exposure_time, gain):
+        self.pair_controls["cf" if index == 0 else "cs"].show_actual(exposure_time, gain)
+        self.camera_settings[self.roles[index]] = (exposure_time, gain)
+
     def stop_capture(self, callback):
         if self.capture is None:
             callback()
@@ -631,6 +682,8 @@ class CalibrationWindow(QMainWindow):
         if self.capture is not None:
             self.capture.deleteLater()
             self.capture = None
+        for controls in self.pair_controls.values():
+            controls.unbind()
         self.connect_button.setEnabled(True)
         self.import_button.setEnabled(True)
         self.shot_button.setEnabled(False)
