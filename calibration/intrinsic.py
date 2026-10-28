@@ -141,6 +141,24 @@ def calibration_guess(image_size, focal_mm=0.0, lock=False):
     return init_K, flags
 
 
+def tilt_and_axis(rvec):
+    """板子的傾斜角（板子法向量與光軸夾角）與傾斜轉軸方向（影像平面內），單位度"""
+    R, _ = cv2.Rodrigues(rvec)
+    tilt = float(np.degrees(np.arccos(min(1.0, abs(R[2, 2])))))
+    # 板子是繞哪個軸轉離正對相機：轉軸 = 光軸 × 板子法向量（落在影像平面內）
+    normal = R[:, 2] * np.sign(R[2, 2] or 1.0)
+    return tilt, float(np.degrees(np.arctan2(normal[0], -normal[1])))
+
+
+def estimate_tilt(corners, pattern, square_mm, image_size, focal_mm):
+    """拍攝當下還沒有內參，用鏡頭焦距推算的 K 估傾斜角與轉軸；沒填焦距回傳 None"""
+    init_K, _ = calibration_guess(image_size, focal_mm)
+    if init_K is None:
+        return None
+    ok, rvec, _ = cv2.solvePnP(object_points(pattern, square_mm), corners, init_K, None)
+    return tilt_and_axis(rvec) if ok else None
+
+
 def calibrate(objpoints, imgpoints, image_size, focal_mm=0.0, lock=False):
     """執行校正並計算每組樣本的誤差、傾斜角與傾斜轉軸"""
     init_K, flags = calibration_guess(image_size, focal_mm, lock)
@@ -152,12 +170,9 @@ def calibrate(objpoints, imgpoints, image_size, focal_mm=0.0, lock=False):
         proj, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], K, dist)
         d = np.linalg.norm(imgpoints[i].reshape(-1, 2) - proj.reshape(-1, 2), axis=1)
         per_image_rms.append(float(np.sqrt(np.mean(d ** 2))))
-        # 板子法向量與相機光軸的夾角
-        R, _ = cv2.Rodrigues(rvecs[i])
-        tilts.append(float(np.degrees(np.arccos(min(1.0, abs(R[2, 2]))))))
-        # 板子是繞哪個軸轉離正對相機：轉軸 = 光軸 × 板子法向量（落在影像平面內）
-        normal = R[:, 2] * np.sign(R[2, 2] or 1.0)
-        tilt_axes.append(float(np.degrees(np.arctan2(normal[0], -normal[1]))))
+        tilt, axis = tilt_and_axis(rvecs[i])
+        tilts.append(tilt)
+        tilt_axes.append(axis)
     return IntrinsicFit(rms=float(rms), K=K, dist=dist, per_image_rms=np.array(per_image_rms),
                         tilts=np.array(tilts), tilt_axes=tilt_axes, flags=int(flags))
 
@@ -169,6 +184,23 @@ def axis_concentration(tilt_axes, tilts):
     if len(axes) < 3:
         return None
     return float(np.hypot(np.mean(np.cos(2 * axes)), np.mean(np.sin(2 * axes))))
+
+
+def sample_problems(imgpoints, image_size, tilts, tilt_axes):
+    """拍攝時就能檢查的問題：畫面覆蓋、傾斜角度與方向、張數。精靈拍攝中即時顯示，校正後 assess 也用同一套"""
+    problems = []
+    covered, missing = coverage(imgpoints, image_size)
+    if missing:
+        problems.append(f"畫面覆蓋 {covered}/9 區，缺：{'、'.join(missing)}（邊角沒拍到，畸變會校不準）")
+    concentration = axis_concentration(tilt_axes, tilts)
+    if concentration is not None and concentration > AXIS_CONCENTRATION:
+        problems.append(f"板子幾乎都朝同一個方向轉（集中度 {concentration:.2f}），fx 可能算不準："
+                        "請讓板子上下、左右、斜向都傾斜（不要為了讓另一台相機看到而只朝一個方向轉）")
+    if len(tilts) and max(tilts) < MIN_TILT_DEG:
+        problems.append(f"最大傾斜僅 {max(tilts):.0f}°，請加入傾斜 {MIN_TILT_DEG:.0f}° 以上的樣本")
+    if len(imgpoints) < MIN_SAMPLES:
+        problems.append(f"樣本僅 {len(imgpoints)} 組，建議至少 {MIN_SAMPLES} 組")
+    return problems
 
 
 def assess(fit, imgpoints, image_size, focal_mm=0.0):
@@ -196,17 +228,7 @@ def assess(fit, imgpoints, image_size, focal_mm=0.0):
     if bad:
         problems.append(f"{len(bad)} 組樣本誤差異常（第 {', '.join(str(i + 1) for i in bad)} 組），"
                         "可能是模糊或晃動")
-    covered, missing = coverage(imgpoints, image_size)
-    if missing:
-        problems.append(f"畫面覆蓋 {covered}/9 區，缺：{'、'.join(missing)}（邊角沒拍到，畸變會校不準）")
-    concentration = axis_concentration(fit.tilt_axes, tilts)
-    if concentration is not None and concentration > AXIS_CONCENTRATION:
-        problems.append(f"板子幾乎都朝同一個方向轉（集中度 {concentration:.2f}），fx 可能算不準："
-                        "請讓板子上下、左右、斜向都傾斜（不要為了讓另一台相機看到而只朝一個方向轉）")
-    if tilts.max() < MIN_TILT_DEG:
-        problems.append(f"最大傾斜僅 {tilts.max():.0f}°，請加入傾斜 {MIN_TILT_DEG:.0f}° 以上的樣本")
-    if len(imgpoints) < MIN_SAMPLES:
-        problems.append(f"樣本僅 {len(imgpoints)} 組，建議至少 {MIN_SAMPLES} 組")
+    problems += sample_problems(imgpoints, image_size, tilts, fit.tilt_axes)
 
     if verdict == "良好" and problems:
         verdict = "良好，但有改善空間"
@@ -279,3 +301,41 @@ def calibrate_with_outlier_removal(objpoints, imgpoints, image_size, focal_mm, l
         fit = calibrate(objpoints, imgpoints, image_size, focal_mm, lock)
         verdict, problems, _ = assess(fit, imgpoints, image_size, focal_mm)
     return fit, verdict, problems, objpoints, imgpoints, paths, removed
+
+
+def session_photos(session, role, sn):
+    """一台相機在 session 中的內參照片：只有這台看到的 intrinsic/images_SN<序號>/，加上雙機配對的 cf/ 或 cs/"""
+    session = Path(session)
+    files = []
+    for folder in (session / "intrinsic" / f"images_SN{sn}", session / ("cf" if role == "front" else "cs")):
+        if folder.is_dir():
+            files += list_images(folder)
+    return files
+
+
+def calibrate_session_camera(session, role, sn, pattern, square_mm, focal_mm, log=print):
+    """用 session 中一台相機的照片算內參並存 npz，回傳 (intrinsics.json 的 entry, fit)；照片不足回傳 (None, None)"""
+    session = Path(session)
+    lock = is_telephoto(focal_mm)
+    files = session_photos(session, role, sn)
+    title = "正面" if role == "front" else "側面"
+    log(f"== {title} SN{sn}｜{focal_mm or '未填'} mm{'（長焦鎖定）' if lock else ''}｜{len(files)} 張照片")
+    loaded = load_photo_samples(files, pattern)
+    points, paths, size = loaded["points"], loaded["paths"], loaded["image_size"]
+    log(f"   有效 {len(points)} 張，略過 {len(loaded['skipped'])} 張"
+        + (f"（例：{loaded['skipped'][0][0]} {loaded['skipped'][0][1]}）" if loaded["skipped"] else ""))
+    if len(points) < MIN_CALIBRATE_SAMPLES:
+        log(f"   ✘ 有效照片少於 {MIN_CALIBRATE_SAMPLES} 張，無法計算；請確認棋盤格規格是否正確")
+        return None, None
+
+    objpoints = [object_points(pattern, square_mm) for _ in points]
+    fit, verdict, problems, objpoints, points, paths, removed = calibrate_with_outlier_removal(
+        objpoints, points, size, focal_mm, lock, paths)
+    if removed:
+        log(f"   已剔除誤差異常的 {len(removed)} 張：{'、'.join(removed)}")
+    log("   " + report_text(sn, fit, verdict, problems).replace("\n", "\n   "))
+
+    photos = [Path(p).relative_to(session.resolve()).as_posix() for p in paths]
+    save_npz(session / "intrinsic" / f"calib_SN{sn}.npz", sn, fit, size, pattern, square_mm,
+             objpoints, points, photos)
+    return make_entry(fit, verdict, size, pattern, square_mm, focal_mm, lock, photos), fit

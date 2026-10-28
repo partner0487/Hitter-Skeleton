@@ -73,7 +73,7 @@ def list_cameras():
 class CalibWindow(QMainWindow):
     # 預覽效能參數：全解析度做角點偵測太慢，預覽改用縮圖且降低偵測頻率。
     # 實際擷取樣本時仍使用全解析度，不影響校正精度。
-    PREVIEW_SCALE = 0.4          # 偵測用縮圖比例
+    PREVIEW_SCALE = 0.7          # 偵測用縮圖比例；0.4 倍時側面 8 mm 廣角的小棋盤格常偵測不到
     PREVIEW_DETECT_EVERY = 3     # 每 N 次畫面更新才偵測一次
 
     def __init__(self):

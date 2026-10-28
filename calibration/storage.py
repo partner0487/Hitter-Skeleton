@@ -8,9 +8,9 @@
     ├─ intrinsics_all.json      目前各相機內參，以序號為鍵
     ├─ stereo.json              目前的外參：正面→側面 R、t（mm），X_cs = R @ X_cf + t，含兩台內參
     └─ sessions/<時間>/         每次校正一個資料夾，內參、外參共用
-        ├─ intrinsic/images_SN<序號>/  內參照片（一台一台拍）
+        ├─ intrinsic/images_SN<序號>/  只有這台看到的內參照片
         ├─ intrinsic/calib_SN<序號>.npz 內參完整資料（角點、每張誤差、傾斜角）
-        ├─ cf/ cs/                   外參照片，同名＝同一時刻
+        ├─ cf/ cs/                   配對照片，同名＝同一時刻；內參與外參都用
         ├─ corners/                  外參角點預覽
         ├─ intrinsics.json           本次兩台內參
         ├─ stereo.json               本次外參報告
