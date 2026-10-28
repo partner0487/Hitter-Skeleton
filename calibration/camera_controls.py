@@ -3,6 +3,7 @@
 數值改變時發出 changed(曝光 μs, 增益 dB)，由持有相機的一方套用後呼叫 show_actual 顯示實際值
 （超出相機範圍時會被夾住）。「存成預設」寫回 calibration/camera_config/*.yaml，下次開相機就用這組。
 """
+import math
 import re
 
 from PyQt5.QtCore import pyqtSignal
@@ -66,10 +67,13 @@ class CameraControls(QGroupBox):
         for spin, value, (low, high) in ((self.exposure, settings["exposure_time"], settings["exposure_range"]),
                                          (self.gain, settings["gain"], settings["gain_range"])):
             spin.blockSignals(True)
-            spin.setRange(low, high)
+            # 欄位只顯示到 spin.decimals() 位，直接 setRange 會把上限四捨五入（5497.99 → 5498）而超過相機上限
+            step = 10 ** -spin.decimals()
+            spin.setRange(math.ceil(low / step) * step, math.floor(high / step) * step)
             spin.setValue(value)
             spin.blockSignals(False)
-        self.exposure.setToolTip("相機允許 {:.0f} ~ {:.0f} μs（上限受幀率限制）".format(*settings["exposure_range"]))
+        self.exposure.setToolTip("相機允許 {:.2f} ~ {:.2f} μs（上限受幀率限制）".format(*settings["exposure_range"]))
+        self.gain.setToolTip("相機允許 {:.1f} ~ {:.1f} dB".format(*settings["gain_range"]))
         self.status.setText("")
         self.setEnabled(True)
 
