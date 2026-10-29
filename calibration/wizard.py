@@ -44,7 +44,7 @@ import intrinsic
 import storage
 from stereo import (
     MAX_STEREO_RMS, MIN_PAIRS, RECOMMENDED_PAIRS, estimate_chessboard_stereo, match_image_pairs,
-    save_rejected,
+    pair_problems, save_rejected,
     publish_stereo, save_json, validate_intrinsic, validate_roles,
 )
 
@@ -399,11 +399,13 @@ class CalibrationWindow(QMainWindow):
         self.instructions.setText("選擇正面、側面相機及棋盤格規格後，按「開始校正」。")
 
     def reset_samples(self):
-        """本次拍攝的即時統計：每台的內參角點、傾斜估計與影像尺寸"""
+        """本次拍攝的即時統計：每台的內參角點、傾斜估計與影像尺寸，以及外參配對在正面畫面的角點與姿態"""
         self.shot_count = 0
         self.samples = {"cf": [], "cs": []}
         self.tilts = {"cf": [], "cs": []}
         self.image_sizes = {"cf": None, "cs": None}
+        self.pair_corners = []
+        self.pair_poses = []
 
     def advance(self):
         try:
@@ -545,12 +547,25 @@ class CalibrationWindow(QMainWindow):
                 text += "\n✔ 張數、覆蓋與傾斜都足夠"
             label.setText(text)
             label.setStyleSheet("color: {};".format("#b45309" if problems else "#15803d"))
-        enough = len(self.names) >= RECOMMENDED_PAIRS
-        self.pair_status.setText("配對 {} 組（至少 {}、建議 {}）｜已拍 {} 次{}".format(
-            len(self.names), MIN_PAIRS, RECOMMENDED_PAIRS, self.shot_count,
-            "" if self.imported else "；請移動、傾斜棋盤格後再拍"))
+        problems = self.pair_problems()
+        text = "外參配對 {} 組（至少 {}、建議 {}）｜已拍 {} 次".format(
+            len(self.names), MIN_PAIRS, RECOMMENDED_PAIRS, self.shot_count)
+        if self.imported:
+            text += "；已匯入照片，計算時才會檢查配對"
+        elif problems:
+            text += "\n" + "\n".join("• " + p for p in problems)
+        elif self.names:
+            text += "\n✔ 組數、分布、前後距離與傾斜都足夠"
+        self.pair_status.setText(text)
         self.pair_status.setStyleSheet("font-weight: bold; color: {};".format(
-            "#15803d" if enough else "#b45309" if len(self.names) >= MIN_PAIRS else "#b91c1c"))
+            "#b91c1c" if len(self.names) < MIN_PAIRS else "#b45309" if problems else "#15803d"))
+
+    def pair_problems(self):
+        """外參配對目前的問題（組數、分布、前後距離、傾斜）；匯入的照片沒有即時統計"""
+        if self.imported:
+            return [] if len(self.names) >= RECOMMENDED_PAIRS else [
+                "配對 {} 組，建議 {} 組以上".format(len(self.names), RECOMMENDED_PAIRS)]
+        return pair_problems(self.pair_corners, self.image_sizes["cf"], self.pair_poses)
 
     def ready_to_calculate(self):
         """數量不足就擋下；數量夠但覆蓋、傾斜有問題時讓使用者決定是否補拍"""
@@ -569,8 +584,7 @@ class CalibrationWindow(QMainWindow):
         if check_samples:
             for index, role in enumerate(self.VIEWS):
                 warnings += ["{}：{}".format(self.TITLES[index], p) for p in self.camera_problems(role)]
-        if len(self.names) < RECOMMENDED_PAIRS:
-            warnings.append("配對 {} 組，建議 {} 組以上".format(len(self.names), RECOMMENDED_PAIRS))
+        warnings += ["外參：{}".format(p) for p in self.pair_problems()]
         if not warnings:
             return True
         answer = QMessageBox.question(
@@ -738,9 +752,17 @@ class CalibrationWindow(QMainWindow):
 
             self.last_capture_time = pair[0]
             self.shot_count += 1
+            square = self.square.value()
             if len(found) == 2:
                 self.names.append(name)
-            square = self.square.value()
+                # 外參的分布、距離與傾斜以正面為準（正面視野窄，大致就是兩台共同看到的區域）
+                front = images["cf"]
+                self.image_sizes["cf"] = (front.shape[1], front.shape[0])
+                self.pair_corners.append(found["cf"])
+                pose = intrinsic.estimate_pose(found["cf"], pattern, square, self.image_sizes["cf"],
+                                               self.front_focal.value())
+                if pose is not None:
+                    self.pair_poses.append(pose)
             for role in moved:
                 index = self.VIEWS.index(role)
                 size = (images[role].shape[1], images[role].shape[0])

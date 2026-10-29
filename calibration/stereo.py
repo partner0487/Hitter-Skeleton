@@ -16,6 +16,35 @@ from chessboard_cross.chessboard_metric import detect_folder
 MIN_PAIRS = 6
 RECOMMENDED_PAIRS = 15
 MAX_STEREO_RMS = 3.0  # px，超過不發布外參（沿用 PnP.py 門檻）
+MIN_DEPTH_SPREAD_MM = 500.0  # 配對的板子與正面相機距離，最遠與最近至少相差這麼多
+
+
+def pair_problems(front_corners, front_size, front_poses):
+    """拍攝時就能檢查的外參配對問題：組數、在正面畫面的分布、前後距離、傾斜角度。
+
+    front_corners：每組配對在正面畫面的角點；front_poses：每組以正面鏡頭焦距推估的 (傾斜角, 轉軸, 距離 mm)。
+    正面 35 mm 視野窄，正面畫面的範圍大致就是兩台共同看到的區域，所以分布以正面為準。
+    傾斜方向不檢查：兩台都要看到板子，能轉的方向本來就有限。
+    """
+    from intrinsic import MIN_TILT_DEG, coverage
+    problems = []
+    if len(front_corners) < RECOMMENDED_PAIRS:
+        problems.append(f"配對 {len(front_corners)} 組，建議 {RECOMMENDED_PAIRS} 組以上")
+    if front_corners:
+        covered, missing = coverage(front_corners, front_size)
+        if missing:
+            problems.append(f"配對在正面畫面覆蓋 {covered}/9 區，缺：{'、'.join(missing)}"
+                            "（打擊區的左右、高低要拍到）")
+    if len(front_poses) >= 2:
+        distances = [pose[2] for pose in front_poses]
+        spread = max(distances) - min(distances)
+        if spread < MIN_DEPTH_SPREAD_MM:
+            problems.append(f"板子前後距離只差 {spread / 1000:.2f} m，請往前、往後移動，"
+                            f"至少相差 {MIN_DEPTH_SPREAD_MM / 1000:.1f} m")
+    if front_poses and max(pose[0] for pose in front_poses) < MIN_TILT_DEG:
+        problems.append(f"配對的最大傾斜僅 {max(pose[0] for pose in front_poses):.0f}°，"
+                        f"請加入傾斜 {MIN_TILT_DEG:.0f}° 以上的配對（例如往前、往後仰）")
+    return problems
 
 
 def validate_roles(front, side):

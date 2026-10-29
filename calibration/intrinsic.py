@@ -150,13 +150,24 @@ def tilt_and_axis(rvec):
     return tilt, float(np.degrees(np.arctan2(normal[0], -normal[1])))
 
 
-def estimate_tilt(corners, pattern, square_mm, image_size, focal_mm):
-    """拍攝當下還沒有內參，用鏡頭焦距推算的 K 估傾斜角與轉軸；沒填焦距回傳 None"""
+def estimate_pose(corners, pattern, square_mm, image_size, focal_mm):
+    """拍攝當下還沒有內參，用鏡頭焦距推算的 K 估板子姿態；回傳 (傾斜角, 轉軸, 板子中心距離 mm)，沒填焦距回傳 None"""
     init_K, _ = calibration_guess(image_size, focal_mm)
     if init_K is None:
         return None
-    ok, rvec, _ = cv2.solvePnP(object_points(pattern, square_mm), corners, init_K, None)
-    return tilt_and_axis(rvec) if ok else None
+    objp = object_points(pattern, square_mm)
+    ok, rvec, tvec = cv2.solvePnP(objp, corners, init_K, None)
+    if not ok:
+        return None
+    R, _ = cv2.Rodrigues(rvec)
+    center = R @ objp.mean(axis=0) + tvec.ravel()
+    return (*tilt_and_axis(rvec), float(np.linalg.norm(center)))
+
+
+def estimate_tilt(corners, pattern, square_mm, image_size, focal_mm):
+    """同 estimate_pose，只回傳 (傾斜角, 轉軸)"""
+    pose = estimate_pose(corners, pattern, square_mm, image_size, focal_mm)
+    return None if pose is None else pose[:2]
 
 
 def calibrate(objpoints, imgpoints, image_size, focal_mm=0.0, lock=False):
