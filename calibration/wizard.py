@@ -880,14 +880,30 @@ class CalibrationWindow(QMainWindow):
         if self.job is not None:
             return
         def finish():
-            if self.session is not None:
+            if self.discard_empty_session():
+                self.log("已取消；本次沒有拍到照片，已刪除空的工作階段資料夾。")
+            else:
                 try:
                     self.persist_session("cancelled")
                 except OSError as exc:
                     self.log("無法更新草稿狀態：{}".format(exc))
-            self.log("已取消；目前使用的校正值未變更，本次草稿保留在工作階段資料夾。")
+                self.log("已取消；目前使用的校正值未變更，本次草稿保留在工作階段資料夾。")
             self.reset_ui()
         self.stop_capture(finish)
+
+    def discard_empty_session(self):
+        """本次一張照片都沒有就刪除 session 資料夾（例如開始後才發現相機沒畫面而取消），回傳是否已刪除"""
+        if self.session is None or not self.session.is_dir():
+            return False
+        if any(p.suffix.lower() in intrinsic.IMAGE_SUFFIXES for p in self.session.rglob("*") if p.is_file()):
+            return False
+        try:
+            shutil.rmtree(str(self.session))
+        except OSError as exc:
+            self.log("無法刪除空的工作階段資料夾 {}：{}".format(self.session, exc))
+            return False
+        self.session = None
+        return True
 
     def closeEvent(self, event):
         if self.job is not None:
@@ -898,7 +914,7 @@ class CalibrationWindow(QMainWindow):
             event.ignore()
             self.stop_capture(self.close)
             return
-        if self.session is not None and self.state not in ("setup", "done"):
+        if self.session is not None and self.state not in ("setup", "done") and not self.discard_empty_session():
             try:
                 self.persist_session("interrupted")
             except OSError:
