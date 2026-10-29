@@ -186,6 +186,18 @@ class FlirCameraSystem(SingleCameraSystem):
 
         return True
 
+    def stop_acquisition(self) -> None:
+        """
+        Stop streaming so trigger/GPIO nodes become writable again;
+        the next get_grayscale_image() restarts acquisition.
+
+        Returns
+        -------
+        None
+        """
+        if self.cam.IsStreaming():
+            self.cam.EndAcquisition()
+
     def get_exposure_settings(self) -> dict:
         """
         Get current exposure time and gain with their allowed ranges.
