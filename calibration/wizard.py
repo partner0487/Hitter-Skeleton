@@ -99,6 +99,7 @@ class CaptureWorker(QThread):
                 camera = FlirCameraSystem(str(config), sn)
                 cameras.append(camera)
             pair = DualFlirSystem(*cameras)
+            self.check_sync(*cameras)
             settings = [camera.get_exposure_settings() for camera in cameras]
             # 側面是 secondary（觸發模式），回報的曝光上限不受幀率限制，但實際跟著正面的幀率觸發，
             # 曝光超過正面的上限就會漏掉觸發，因此兩台都以正面（free-run）的上限為準
@@ -120,7 +121,11 @@ class CaptureWorker(QThread):
                                           camera.set_gain(gain))
                     except Exception as exc:
                         self.failed.emit("調整曝光／增益失敗：{}".format(exc))
-                ok, front, side = pair.get_grayscale_images()
+                try:
+                    ok, front, side = pair.get_grayscale_images()
+                except Exception:
+                    # 取像逾時（例如拍攝中同步線鬆脫）會丟例外，和取到不完整畫面一樣計入失敗
+                    ok = False
                 if not ok:
                     failures += 1
                     if failures >= 3:
@@ -139,6 +144,46 @@ class CaptureWorker(QThread):
                     camera.release()
                 except Exception as exc:
                     self.failed.emit("釋放相機失敗：{}".format(exc))
+
+    @staticmethod
+    def grab(camera, attempts=3):
+        """取一張畫面；逾時或不完整重試幾次，都失敗回傳 False"""
+        for _ in range(attempts):
+            try:
+                if camera.get_grayscale_image()[0]:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def check_sync(self, front, side):
+        """連線後先各取一張，取不到時判斷是相機本身、同步線接反還是沒有觸發訊號，回報可直接處理的原因。
+
+        正面是 primary（自己取像，從 Line2 送出觸發），側面是 secondary（等 Line3 收到觸發才拍）。
+        正面取得到、側面取不到就是同步問題；再把方向對調試一次：
+        對調後正面收得到側面的觸發，代表線接反了，否則是線沒接好或損壞。
+        """
+        if not self.grab(front):
+            raise RuntimeError("正面 SN{} 取不到畫面（與同步線無關）：請確認 USB 連線，"
+                               "並關閉 main.py、SpinView 等占用相機的程式。".format(front.serial_number))
+        if self.grab(side):
+            return
+        # 取像中不能改觸發設定（設定函式遇到不可寫入的節點會直接略過），先停止取像再對調
+        for camera in (front, side):
+            camera.stop_acquisition()
+        side.configure_gpio_primary()
+        side.disable_trigger_mode()
+        front.configure_gpio_secondary()
+        self.grab(side, attempts=1)     # 側面開始取像才會送出觸發
+        if self.grab(front):
+            raise RuntimeError(
+                "同步線接反了：目前是側面 SN{} 送出觸發、正面 SN{} 接收，程式需要正面送出觸發。\n"
+                "請把同步線兩端對調（正面接觸發輸出端），或確認設定頁的正面／側面序號沒有選反，再按「連接雙相機」。"
+                .format(side.serial_number, front.serial_number))
+        raise RuntimeError(
+            "側面 SN{} 收不到正面 SN{} 的同步觸發，對調方向也收不到：同步線沒接好、接錯腳位或損壞。\n"
+            "請檢查兩台相機的 GPIO 接頭是否插緊，再按「連接雙相機」。"
+            .format(side.serial_number, front.serial_number))
 
 
 class ImageView(QGraphicsView):
