@@ -1,7 +1,7 @@
 """曝光時間與增益調整：精靈與單相機視窗共用。
 
 數值改變時發出 changed(曝光 μs, 增益 dB)，由持有相機的一方套用後呼叫 show_actual 顯示實際值
-（超出相機範圍時會被夾住）。「存成預設」寫回 calibration/camera_config/*.yaml，下次開相機就用這組。
+（超出相機範圍時會被夾住）。「存成預設」寫回與主程式共用的 Src/UI_Control/camera_config/*.yaml，下次開相機（校正或主程式）就用這組。
 """
 import math
 import re
@@ -45,7 +45,7 @@ class CameraControls(QGroupBox):
             spin.setKeyboardTracking(False)
             spin.valueChanged.connect(self._emit)
         self.save_button = QPushButton("存成預設")
-        self.save_button.setToolTip("寫回 camera_config 的 yaml，下次開相機就使用這組數值")
+        self.save_button.setToolTip("寫回 Src/UI_Control/camera_config 的 yaml（與主程式共用），下次開相機就使用這組數值")
         self.save_button.clicked.connect(self.save_default)
         self.status = QLabel()
         layout.addWidget(QLabel("曝光時間"))
