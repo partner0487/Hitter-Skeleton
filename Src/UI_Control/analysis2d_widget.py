@@ -27,7 +27,7 @@ import pyqtgraph as pg
 from utils.model import Model
 from utils.phase_detect2d import PhaseDetector, PhaseResult
 from ocr import ocr_capture_1time as ocr
-from utils.paths import DB_DIR, ICON_DIR
+from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS
 from utils.fps_utils import get_video_fps
 
 class AnalysisBar(QWidget):
@@ -1849,7 +1849,7 @@ class Analysis2dWidget(QWidget):
         
         folders = [f for f in os.listdir(db_base_path) 
                    if os.path.isdir(os.path.join(db_base_path, f)) 
-                   and f not in ['pretrain', 'icon']]
+                   and f not in NON_HITTER_DIRS]
         
         folders.sort()
         self.ui.hitterNameInput.addItems(folders)

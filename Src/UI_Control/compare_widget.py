@@ -12,7 +12,7 @@ from utils.vis_image_dual import ImageDrawer as ImageDrawerDual
 from utils.analyze import PoseAnalyzer, BatAnalyzer
 from skeleton.detect_skeleton_dual import PoseEstimater
 from cv_utils.cv_control_dual import VideoLoader as VideoLoaderDual
-from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR
+from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
 from cv_utils.cv_control_dual import DualJsonLoader
 from utils.phase_detect3d import PhaseDetector, PhaseResult
 import pandas as pd
@@ -279,7 +279,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         db_path = str(DB_DIR)
         if not os.path.exists(db_path): return
         
-        hitters = [d for d in os.listdir(db_path) if os.path.isdir(os.path.join(db_path, d)) and d not in ['icon', 'pretrain']]
+        hitters = [d for d in os.listdir(db_path) if os.path.isdir(os.path.join(db_path, d)) and d not in NON_HITTER_DIRS]
         hitters.sort()
         
         for combo in [self.hitterNameInput, self.hitterNameInput_2]:
