@@ -29,8 +29,9 @@ python calibration/calibration.py --help
 
 | 項目 | 說明 |
 |---|---|
-| 正面相機 | 35 mm 鏡頭，設定檔 `camera_config/GH3_camera_config.yaml`，GPIO primary（Line2 輸出觸發） |
-| 側面相機 | 8 mm 鏡頭，設定檔 `camera_config/GH3_camera_config_2.yaml`，GPIO secondary（Line3 接收觸發） |
+| 正面相機 | 35 mm 鏡頭，設定檔 `Src/UI_Control/camera_config/GH3_camera_config.yaml`，GPIO primary（Line2 輸出觸發） |
+| 側面相機 | 8 mm 鏡頭，設定檔 `Src/UI_Control/camera_config/GH3_camera_config_2.yaml`，GPIO secondary（Line3 接收觸發） |
+| 相機設定檔 | 與主程式共用同一份，校正時「存成預設」的曝光、增益，主程式開相機也會沿用 |
 | GPIO 同步線 | **精靈必須接**，否則側面收不到觸發，畫面會顯示「雙機取像失敗」。`--single` 一台一台拍時不需要 |
 | 棋盤格 | 預設 **9×8 格＝8×7 內角點**，每格 100 mm。板子要平、不反光 |
 
@@ -87,7 +88,7 @@ python calibration/calibration.py --calculate  # 用已拍好的照片離線重�
 拍攝要點：
 - **先調曝光**：每台畫面下方有「曝光時間」「增益」，可以邊看邊調（方向鍵／滾輪即時套用，打字則按 Enter 套用）。調到棋盤格黑白分明、白格不過曝即可。優先加長曝光；增益會增加雜訊，盡量維持 0。曝光上限受幀率限制（180 fps 約 5497 μs），超過時會自動夾到上限。
   - 數值記在 `session.json` 的 `camera_settings`；重新連接相機時沿用。
-  - 按「存成預設」會寫回 `camera_config/*.yaml`，下次開相機就使用這組數值（只影響校正工具，Src 錄影用的是 `Src/UI_Control/camera_config/`）。
+  - 按「存成預設」會寫回 `Src/UI_Control/camera_config/*.yaml`。這份與主程式共用，下次開相機（校正工具或主程式錄影）都使用這組數值。
 - **畫面四角都要拍到**：鏡頭畸變在邊角最明顯，只拍中間會校不準。
 - **往不同方向傾斜 30° 以上**：上下、左右、斜向都要有。只朝同一方向轉的話，焦距和距離會分不開，fx 會算錯。
 - **配對涵蓋打擊區的左右、前後、高低**。
@@ -236,5 +237,5 @@ python calibration/calibration.py --calculate 20261008
 | `chessboard_cross/` | 角點偵測、角點順序對齊、立體校正、驗證（源自學長的 calibration_other_version） |
 | `camera_controls.py` | 曝光時間／增益調整元件 |
 | `qt_app.py` | 建立視窗程式（高 DPI、字型、錯誤記錄） |
-| `camera_objects/`、`camera_config/`、`utils/` | FLIR 相機控制與設定 |
+| `camera_objects/`、`utils/` | FLIR 相機控制（設定檔與主程式共用 `Src/UI_Control/camera_config/`） |
 | `paths.py` | 路徑常數 |
