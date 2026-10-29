@@ -290,6 +290,16 @@ class CalibrationWindow(QMainWindow):
     def make_setup_page(self):
         self.setup_page = QWidget()
         layout = QVBoxLayout(self.setup_page)
+        # 相機固定在場地後，被碰到移位只需重做外參；內參只跟機身＋鏡頭有關，鏡頭沒動就能沿用
+        mode = QGroupBox("校正項目")
+        mode_layout = QVBoxLayout(mode)
+        self.reuse = QCheckBox("只校正外參（相機被移動，但鏡頭、焦距、解析度都沒變）")
+        self.reuse.setStyleSheet("font-weight: bold;")
+        mode_layout.addWidget(self.reuse)
+        self.reuse_info = QLabel()
+        self.reuse_info.setWordWrap(True)
+        mode_layout.addWidget(self.reuse_info)
+        layout.addWidget(mode)
         box = QGroupBox("相機與棋盤格設定")
         form = QFormLayout(box)
         self.front_combo, self.side_combo = QComboBox(), QComboBox()
@@ -303,8 +313,6 @@ class CalibrationWindow(QMainWindow):
         self.scan_status = QLabel()
         self.scan_status.setWordWrap(True)
         form.addRow(self.scan_status)
-        self.reuse = QCheckBox("沿用這兩台已有內參，只重做外參（鏡頭、焦距、解析度須相同）")
-        form.addRow(self.reuse)
         self.cols, self.rows = QSpinBox(), QSpinBox()
         for spin, value in ((self.cols, 8), (self.rows, 7)):
             spin.setRange(3, 30)
@@ -327,6 +335,11 @@ class CalibrationWindow(QMainWindow):
         form.addRow("正面鏡頭焦距", self.front_focal)
         form.addRow("側面鏡頭焦距", self.side_focal)
         layout.addWidget(box)
+        for widget in (self.front_combo, self.side_combo):
+            widget.currentTextChanged.connect(self.update_reuse_info)
+        for widget in (self.front_focal, self.side_focal):
+            widget.valueChanged.connect(self.update_reuse_info)
+        self.reuse.toggled.connect(self.update_reuse_info)
         note = QLabel("準備：固定兩台相機與焦距，接好 GPIO 同步線，關閉 main.py / SpinView 等占用相機的程式。\n"
                       "拍攝：兩台同時拍，兩台都看到棋盤格存成一組配對（兩台內參＋外參都用），"
                       "只有一台看到時只當那台的內參照片。\n"
@@ -442,6 +455,40 @@ class CalibrationWindow(QMainWindow):
         self.next_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.instructions.setText("選擇正面、側面相機及棋盤格規格後，按「開始校正」。")
+        self.update_reuse_info()
+
+    def update_reuse_info(self, *_):
+        """顯示「只校正外參」會沿用的內參（Db/Calibration/intrinsics_all.json）；任何一台沒有內參就不能勾選"""
+        roles = (self.front_combo.currentText().strip(), self.side_combo.currentText().strip())
+        try:
+            stored = storage.load_intrinsics()
+        except Exception as exc:
+            stored = {}
+            self.log("既有內參無法讀取：{}".format(exc))
+        lines, missing = [], []
+        for title, sn, spin in zip(self.TITLES, roles, (self.front_focal, self.side_focal)):
+            entry = stored.get(sn) if sn else None
+            if entry is None:
+                missing.append(title)
+                lines.append("{} SN{}：尚無內參".format(title, sn or "（未選）"))
+                continue
+            line = "{} SN{}：沿用 {} 校正的內參｜RMS {:.3f} px｜{} mm｜{}×{}".format(
+                title, sn, (entry.get("calibrated_at") or "時間不明").replace("T", " "), entry["rms"],
+                entry.get("lens_focal_mm") or "焦距未填", *entry["image_size"])
+            # 內參只對同一顆鏡頭、同一個焦距有效
+            if entry.get("lens_focal_mm") and spin.value() and abs(entry["lens_focal_mm"] - spin.value()) > 0.05:
+                line += "　⚠ 與下方填的 {:g} mm 不同，鏡頭若換過請完整校正".format(spin.value())
+            lines.append(line)
+        if missing:
+            self.reuse.setChecked(False)
+            lines.append("{}還沒有內參，需要完整校正（內參＋外參）一次。".format("、".join(missing)))
+        self.reuse.setEnabled(not missing)
+        if self.reuse.isChecked():
+            lines.append("只拍兩台都看到棋盤格的配對，計算時只算外參。")
+        else:
+            lines.append("未勾選：用同一批照片重新校正兩台內參與外參。")
+        self.reuse_info.setText("\n".join(lines))
+        self.reuse_info.setStyleSheet("color: {};".format("#1d4ed8" if self.reuse.isChecked() else "#475569"))
 
     def reset_samples(self):
         """本次拍攝的即時統計：每台的內參角點、傾斜估計與影像尺寸，以及外參配對在正面畫面的角點與姿態"""
