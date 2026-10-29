@@ -24,7 +24,7 @@ from ui.dual_camera_system_video import Ui_hitter_ui_dual
 from utils.phase_detect3d import PhaseDetector, PhaseResult
 from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
-from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR
+from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
 from PyQt5 import QtGui
 from utils.fps_utils import get_video_fps
 from utils.stereo_calibration import load_stereo_params
@@ -1248,7 +1248,7 @@ class Analysis3DWidget(QWidget):
         current_name = self.ui.hitterNameInput.currentText()
         self.ui.hitterNameInput.blockSignals(True)
         self.ui.hitterNameInput.clear()
-        hitters = [d for d in os.listdir(db_path) if os.path.isdir(os.path.join(db_path, d)) and d not in ['icon', 'pretrain']]
+        hitters = [d for d in os.listdir(db_path) if os.path.isdir(os.path.join(db_path, d)) and d not in NON_HITTER_DIRS]
         hitters.sort()
         for hitter in hitters:
             self.ui.hitterNameInput.addItem(hitter)
