@@ -1,9 +1,10 @@
 """讀取 calibration/calibration.py 產生的雙相機校正，轉成 3D 介面使用的慣例。
 
 校正依日期進行，每次一個 Db/Calibration/sessions/<YYYYMMDD_HHMMSS[_後綴]>/。
+右打、左打的側面相機架在不同側，各自校正（後綴 _righthit／_lefthit，或 session.json 的 batter_side）。
 載入錄影時，從路徑中的日期（Db/<打者>/2026-10-08/... 或 .../20260421/...）挑
-「當天或之前最新的已採用校正」，重新校正後舊錄影仍使用當時的參數；
-路徑沒有日期或當天以前沒有校正時，使用最新的 Db/Calibration/stereo.json。
+「當天或之前、打擊方向相符的最新已採用校正」，重新校正後舊錄影仍使用當時的參數；
+沒標打擊方向的舊校正右打、左打都可用。路徑沒有日期時不限日期；都找不到才用 Db/Calibration/stereo.json。
 
 校正檔的外參是正面→側面：X_side = R @ X_front + t，t 單位 mm。
 3D 介面以側面相機為世界座標（P1 = [I|0] 為側面、P2 = [R|t] 為正面），
@@ -25,6 +26,9 @@ SESSIONS_DIR = CALIB_DIR / "sessions"
 _DATE_IN_PATH = re.compile(r"(20\d{2})-?(\d{2})-?(\d{2})")
 # session 名稱 YYYYMMDD_HHMMSS[_後綴]，字串順序即時間順序（與 calibration/stereo.py 相同規則）
 _SESSION_NAME = re.compile(r"\d{8}_\d{6}(_.*)?")
+# 打擊方向與 session 資料夾後綴（與 calibration/stereo.py 的 BATTER_SUFFIX 相同）
+_SIDE_SUFFIX = {"right": "_righthit", "left": "_lefthit"}
+_SIDE_NAME = {"right": "右打", "left": "左打"}
 
 
 @dataclass
@@ -71,21 +75,38 @@ def recording_date(folder):
     return None
 
 
-def _published_sessions(date):
-    """當天或之前已採用的 session 的 stereo.json，由新到舊"""
+def _published_sessions(date=None):
+    """當天或之前（date 為 None 時不限日期）已採用的 session 的 stereo.json，由新到舊"""
     if not SESSIONS_DIR.is_dir():
         return []
     sessions = sorted((p for p in SESSIONS_DIR.iterdir()
-                       if _SESSION_NAME.fullmatch(p.name) and p.name[:8] <= date),
+                       if _SESSION_NAME.fullmatch(p.name) and (date is None or p.name[:8] <= date)),
                       key=lambda p: p.name, reverse=True)
     return [p / "stereo.json" for p in sessions if (p / "stereo.json").exists()]
 
 
-def _load(path, require_published=False):
-    """讀校正檔並轉成 StereoParams；檔案壞掉或（要求時）未採用回傳 None"""
+def batter_side_of(data, session_dir):
+    """校正的打擊方向 right／left：stereo.json 的 batter_side，舊資料看 session.json 或資料夾後綴；
+    都沒有回傳 None（右打、左打都可用）"""
+    if data.get("batter_side") in _SIDE_SUFFIX:
+        return data["batter_side"]
+    try:
+        side = _read_json(Path(session_dir) / "session.json").get("batter_side")
+        if side in _SIDE_SUFFIX:
+            return side
+    except (OSError, ValueError, AttributeError):
+        pass
+    return next((side for side, suffix in _SIDE_SUFFIX.items() if Path(session_dir).name.endswith(suffix)), None)
+
+
+def _load(path, require_published=False, batter_side=None):
+    """讀校正檔並轉成 StereoParams；檔案壞掉、（要求時）未採用或打擊方向不符回傳 None"""
     try:
         data = _read_json(path)
         if not isinstance(data, dict) or (require_published and not data.get("published_at")):
+            return None
+        side = batter_side_of(data, Path(path).parent)
+        if batter_side and side and side != batter_side:
             return None
         return _to_params(data, path)
     except (OSError, ValueError, KeyError, TypeError) as e:
@@ -93,14 +114,19 @@ def _load(path, require_published=False):
         return None
 
 
-def load_stereo_params(folder=None):
-    """依錄影日期挑校正：當天或之前最新且可讀的已採用 session；
-    沒有日期或找不到時用最新的 stereo.json。都沒有回傳 None。"""
+def load_stereo_params(folder=None, batter_side=None):
+    """挑校正：錄影日期當天或之前（沒有日期則不限）、打擊方向相符（batter_side 為 right／left，
+    None 表示不限）的最新已採用 session；都沒有才用 Db/Calibration/stereo.json。都沒有回傳 None。"""
     date = recording_date(folder) if folder else None
-    if date:
-        for path in _published_sessions(date):
-            params = _load(path, require_published=True)
+    side = _SIDE_NAME.get(batter_side, "")
+    # 錄影早於所有校正時，改用同一側最新的校正，避免用到另一側擺位的上層 stereo.json
+    for limit in ((date, None) if date else (None,)):
+        for path in _published_sessions(limit):
+            params = _load(path, require_published=True, batter_side=batter_side)
             if params is not None:
+                if limit is None and date:
+                    print(f"[stereo_calibration] {date} 以前沒有{side}校正，改用最新的{side}校正")
                 return params
-        print(f"[stereo_calibration] {date} 以前沒有可用的校正，改用最新的校正")
+    print(f"[stereo_calibration] 沒有可用的{side}校正，改用 {STEREO_JSON.name}"
+          + ("（可能是另一側的相機擺位）" if side else ""))
     return _load(STEREO_JSON) if STEREO_JSON.exists() else None

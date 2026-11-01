@@ -57,7 +57,8 @@ def find_session(name):
 
 def calculate(args):
     import intrinsic
-    from stereo import MAX_STEREO_RMS, estimate_chessboard_stereo, publish_stereo, save_json, save_rejected
+    from stereo import (BATTER_SIDES, MAX_STEREO_RMS, batter_side_of, estimate_chessboard_stereo, publish_stereo,
+                        save_json, save_rejected)
     import storage
 
     session = find_session(args.session)
@@ -69,7 +70,9 @@ def calculate(args):
     focal_info = info.get("lens_focal_mm") or {}
     focals = {role: focal_info.get(role, DEFAULT_FOCAL_MM[role]) for role in ("front", "side")}
     print(f"Session：{session}")
-    print(f"棋盤格：內角點 {pattern[0]}x{pattern[1]}，每格 {square:g} mm｜正面 SN{roles[0]}、側面 SN{roles[1]}")
+    side = batter_side_of(session)
+    print(f"棋盤格：內角點 {pattern[0]}x{pattern[1]}，每格 {square:g} mm｜正面 SN{roles[0]}、側面 SN{roles[1]}｜"
+          f"{BATTER_SIDES.get(side, '未標打擊方向（右打、左打都可用）')}")
 
     entries = {}
     for role, sn in zip(("front", "side"), roles):
@@ -105,7 +108,8 @@ def calculate(args):
     _, is_current = publish_stereo(storage.CALIB_DIR, session, roles, entries, report)
     print(f"✔ 已寫入 {session / 'stereo.json'}")
     day = session.name[:8]
-    print(f"✔ 已採用：{day[:4]}-{day[4:6]}-{day[6:]} 起的錄影會使用這次校正（直到下一次較新的校正）")
+    who = f"選「{BATTER_SIDES[side]}」的" if side else ""
+    print(f"✔ 已採用：{day[:4]}-{day[4:6]}-{day[6:]} 起{who}錄影會使用這次校正（直到下一次較新的校正）")
     if is_current:
         print(f"✔ 也是日期最新的校正，已更新 {storage.STEREO_JSON}")
     return 0
