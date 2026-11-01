@@ -144,6 +144,21 @@ def save_json(path, data):
 
 
 SESSION_NAME = re.compile(r"\d{8}_\d{6}(_.*)?")
+# 打擊方向：右打、左打的側面相機架在不同側，外參各自校正；session 資料夾以後綴區分
+BATTER_SIDES = {"right": "右打", "left": "左打"}
+BATTER_SUFFIX = {"right": "righthit", "left": "lefthit"}
+
+
+def batter_side_of(session):
+    """session 的打擊方向 right／left：先看 session.json，舊資料看資料夾後綴 _righthit／_lefthit；都沒有回傳 None"""
+    session = Path(session)
+    try:
+        side = json.loads((session / "session.json").read_text(encoding="utf-8")).get("batter_side")
+        if side in BATTER_SIDES:
+            return side
+    except (OSError, ValueError, AttributeError):
+        pass
+    return next((side for side, suffix in BATTER_SUFFIX.items() if session.name.endswith("_" + suffix)), None)
 
 
 def save_rejected(session, report):
@@ -181,7 +196,9 @@ def publish_stereo(calib_dir, session, roles, entries, report):
     # 名稱 YYYYMMDD_HHMMSS[_後綴] 的字串順序即時間順序，3D 依日期挑選也靠這個規則
     if not SESSION_NAME.fullmatch(session.name):
         raise ValueError(f"session 名稱須為 YYYYMMDD_HHMMSS[_後綴]：{session.name}")
-    report = dict(report, session=str(session), published_at=datetime.now().isoformat(timespec="seconds"))
+    # 3D 分析依錄影日期與畫面上選的右打／左打挑校正
+    report = dict(report, session=str(session), batter_side=batter_side_of(session),
+                  published_at=datetime.now().isoformat(timespec="seconds"))
 
     current = _current_session_name(calib_dir)
     if current and current > session.name:

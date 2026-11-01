@@ -289,7 +289,19 @@ class Analysis3DWidget(QWidget):
         #             [ 0.96295190,  0.10745552,  0.24733974]])
         # self.t = np.array([[ 0.99450367], [-0.10454567], [-0.00571446]])
         # 以上寫死的數值只在沒有校正檔時使用（t 長度約 1，沒有真實尺度）
-        self.applyStereoCalibration(load_stereo_params())
+        self.applyStereoCalibration(load_stereo_params(batter_side=self.currentBatterSide()))
+
+    def currentBatterSide(self):
+        """畫面上選的打擊方向，對應校正的 batter_side（right／left）"""
+        return "right" if self.ui.batterInput.currentText() == "右打" else "left"
+
+    def onBatterSideChanged(self):
+        """右打、左打的側面相機擺位不同，換用對應的校正；已載入資料夾時用新校正重算 3D 畫面與指標"""
+        self.applyStereoCalibration(load_stereo_params(self.folder, self.currentBatterSide()))
+        # 影片還在讀取時，讀完的 updateVideoInfo 就會用新校正，不必在這裡重算
+        if self.folder and self.video_loader.video_path and not (
+                self.video_loader.is_loading or self.video_loader_raw.is_loading):
+            self.updateVideoInfo()
 
     def applyStereoCalibration(self, params):
         """套用 calibration/calibration.py 的校正結果；params 為 None 時保留寫死的舊參數。"""
@@ -1212,6 +1224,7 @@ class Analysis3DWidget(QWidget):
         self.ui.sideCameraBtn.clicked.connect(self.change2SideView)
         self.ui.frontCameraBtn.clicked.connect(self.change2FrontView)
         self.ui.frameSlider.valueChanged.connect(self.chooseUpdateFrame)
+        self.ui.batterInput.currentIndexChanged.connect(self.onBatterSideChanged)
 
         self.ui.showSkeletonCheckBox.stateChanged.connect(self.toggleShowSkeleton)
         self.ui.selectCheckBox.stateChanged.connect(self.toggleSelect)
@@ -1583,8 +1596,8 @@ class Analysis3DWidget(QWidget):
         self.folder = folder
         self.is_dual = False
         print(f"📁 Loading Folder: {folder}")
-        # 依錄影路徑中的日期，使用當天或之前最新的已發布校正
-        self.applyStereoCalibration(load_stereo_params(folder))
+        # 依錄影路徑中的日期與畫面上選的右打／左打，使用當天或之前最新的對應校正
+        self.applyStereoCalibration(load_stereo_params(folder, self.currentBatterSide()))
 
         # 定義輔助函式，支援根目錄或 CF_ 子目錄 (讀取內部那包)
         def get_json_df(fname, sub_prefix="CF_"):

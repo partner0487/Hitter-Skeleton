@@ -43,7 +43,8 @@ from camera_controls import CameraControls
 import intrinsic
 import storage
 from stereo import (
-    MAX_STEREO_RMS, MIN_PAIRS, RECOMMENDED_PAIRS, estimate_chessboard_stereo, match_image_pairs,
+    BATTER_SIDES, BATTER_SUFFIX, MAX_STEREO_RMS, MIN_PAIRS, RECOMMENDED_PAIRS, estimate_chessboard_stereo,
+    match_image_pairs,
     pair_problems, save_rejected,
     publish_stereo, save_json, validate_intrinsic, validate_roles,
 )
@@ -293,6 +294,17 @@ class CalibrationWindow(QMainWindow):
         # 相機固定在場地後，被碰到移位只需重做外參；內參只跟機身＋鏡頭有關，鏡頭沒動就能沿用
         mode = QGroupBox("校正項目")
         mode_layout = QVBoxLayout(mode)
+        # 右打、左打的側面相機架在不同側，外參各自校正；3D 分析依畫面上選的右打／左打挑對應的校正
+        side_row = QHBoxLayout()
+        side_row.addWidget(QLabel("打擊方向："))
+        self.batter_side = QComboBox()
+        for side, title in BATTER_SIDES.items():
+            self.batter_side.addItem(title, side)
+        side_row.addWidget(self.batter_side)
+        side_note = QLabel("相機擺位對應的打者；換邊後內參不變，可勾選下方「只校正外參」")
+        side_note.setStyleSheet("color: #475569;")
+        side_row.addWidget(side_note, 1)
+        mode_layout.addLayout(side_row)
         self.reuse = QCheckBox("只校正外參（相機被移動，但鏡頭、焦距、解析度都沒變）")
         self.reuse.setStyleSheet("font-weight: bold;")
         mode_layout.addWidget(self.reuse)
@@ -523,7 +535,7 @@ class CalibrationWindow(QMainWindow):
                 validate_intrinsic(stored[sn])
                 entries[sn] = stored[sn]
         self.roles, self.entries, self.reused, self.imported = roles, entries, bool(entries), False
-        self.session = Path(storage.new_session_dir())
+        self.session = Path(storage.new_session_dir(BATTER_SUFFIX[self.batter_side.currentData()]))
         for folder in ("cf", "cs", "intrinsic"):
             (self.session / folder).mkdir(parents=True, exist_ok=True)
         self.names = []
@@ -541,6 +553,7 @@ class CalibrationWindow(QMainWindow):
     def persist_session(self, status):
         save_json(self.session / "session.json", {
             "method": "chessboard_dual_view",
+            "batter_side": self.batter_side.currentData(),
             "front": self.roles[0], "side": self.roles[1],
             "status": status, "intrinsics": self.entries, "reused_intrinsics": self.reused,
             "pattern": [self.cols.value(), self.rows.value()], "square_size_mm": self.square.value(),
@@ -982,9 +995,9 @@ class CalibrationWindow(QMainWindow):
             self.persist_session("complete")
         except OSError as exc:
             self.log("校正檔已套用，但工作階段狀態無法更新：{}".format(exc))
-        self.instructions.setText("校正完成，已更新 Db/Calibration/stereo.json；之後的錄影都會用這次校正。"
-                                  if is_current else
-                                  "校正完成並已標記可用；目前使用中的是日期更新的另一次校正。")
+        side = BATTER_SIDES[self.batter_side.currentData()]
+        self.instructions.setText("{}校正完成：之後 3D 分析選「{}」的錄影都會用這次校正（直到下一次{}校正）。{}".format(
+            side, side, side, "" if is_current else "目前上層 stereo.json 是日期更新的另一次校正。"))
         self.log("照片、角點預覽（corners/）、內參樣本與報告：{}".format(self.session))
         self.log("驗證組與訓練組來自同一批照片，仍建議用已知長度的物體現場驗證實際尺寸。")
         self.next_button.setText("開始另一次校正")
