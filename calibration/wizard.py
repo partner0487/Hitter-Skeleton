@@ -35,7 +35,7 @@ from PyQt5.QtGui import QColor, QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
-    QLabel, QMainWindow, QMessageBox, QPushButton, QShortcut, QSpinBox,
+    QButtonGroup, QLabel, QMainWindow, QMessageBox, QPushButton, QRadioButton, QShortcut, QSpinBox,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -297,10 +297,14 @@ class CalibrationWindow(QMainWindow):
         # 右打、左打的側面相機架在不同側，外參各自校正；3D 分析依畫面上選的右打／左打挑對應的校正
         side_row = QHBoxLayout()
         side_row.addWidget(QLabel("打擊方向："))
-        self.batter_side = QComboBox()
+        self.batter_side_group = QButtonGroup(self)
+        self.batter_side_buttons = {}
         for side, title in BATTER_SIDES.items():
-            self.batter_side.addItem(title, side)
-        side_row.addWidget(self.batter_side)
+            button = QRadioButton(title)
+            self.batter_side_group.addButton(button)
+            self.batter_side_buttons[side] = button
+            side_row.addWidget(button)
+        self.batter_side_buttons["right"].setChecked(True)
         side_note = QLabel("相機擺位對應的打者；換邊後內參不變，可勾選下方「只校正外參」")
         side_note.setStyleSheet("color: #475569;")
         side_row.addWidget(side_note, 1)
@@ -502,6 +506,10 @@ class CalibrationWindow(QMainWindow):
         self.reuse_info.setText("\n".join(lines))
         self.reuse_info.setStyleSheet("color: {};".format("#1d4ed8" if self.reuse.isChecked() else "#475569"))
 
+    def selected_batter_side(self):
+        """設定頁點選的打擊方向（right／left）"""
+        return next(side for side, button in self.batter_side_buttons.items() if button.isChecked())
+
     def reset_samples(self):
         """本次拍攝的即時統計：每台的內參角點、傾斜估計與影像尺寸，以及外參配對在正面畫面的角點與姿態"""
         self.shot_count = 0
@@ -535,7 +543,7 @@ class CalibrationWindow(QMainWindow):
                 validate_intrinsic(stored[sn])
                 entries[sn] = stored[sn]
         self.roles, self.entries, self.reused, self.imported = roles, entries, bool(entries), False
-        self.session = Path(storage.new_session_dir(BATTER_SUFFIX[self.batter_side.currentData()]))
+        self.session = Path(storage.new_session_dir(BATTER_SUFFIX[self.selected_batter_side()]))
         for folder in ("cf", "cs", "intrinsic"):
             (self.session / folder).mkdir(parents=True, exist_ok=True)
         self.names = []
@@ -553,7 +561,7 @@ class CalibrationWindow(QMainWindow):
     def persist_session(self, status):
         save_json(self.session / "session.json", {
             "method": "chessboard_dual_view",
-            "batter_side": self.batter_side.currentData(),
+            "batter_side": self.selected_batter_side(),
             "front": self.roles[0], "side": self.roles[1],
             "status": status, "intrinsics": self.entries, "reused_intrinsics": self.reused,
             "pattern": [self.cols.value(), self.rows.value()], "square_size_mm": self.square.value(),
@@ -995,7 +1003,7 @@ class CalibrationWindow(QMainWindow):
             self.persist_session("complete")
         except OSError as exc:
             self.log("校正檔已套用，但工作階段狀態無法更新：{}".format(exc))
-        side = BATTER_SIDES[self.batter_side.currentData()]
+        side = BATTER_SIDES[self.selected_batter_side()]
         self.instructions.setText("{}校正完成：之後 3D 分析選「{}」的錄影都會用這次校正（直到下一次{}校正）。{}".format(
             side, side, side, "" if is_current else "目前上層 stereo.json 是日期更新的另一次校正。"))
         self.log("照片、角點預覽（corners/）、內參樣本與報告：{}".format(self.session))
