@@ -45,6 +45,8 @@ class PhaseDetector:
 
         # 從 person_df 抽出 heel_frames, heel_vals
         self.heel_frames, self.heel_vals = self._extract_heel_data(person_df, batter_index)
+        # 雙手腕中點，用來分辨球棒遮罩哪一端是握把
+        self.wrists = self._extract_wrist_centers(person_df)
 
         # 預先平滑
         self.heel_smooth = self._smooth(self.heel_vals)
@@ -118,6 +120,30 @@ class PhaseDetector:
         heights = ground_y - ys_arr
 
         return frames, heights
+
+    @staticmethod
+    def _extract_wrist_centers(df: pd.DataFrame, min_conf: float = 0.3) -> dict:
+        """{frame: 雙手腕中點 [x, y]}；Halpe26 的 9 左腕、10 右腕，只有一手可信時用那一手"""
+        wrists = {}
+        if df is None or df.empty or "keypoints" not in df:
+            return wrists
+        for _, row in df.iterrows():
+            kpts = np.asarray(row["keypoints"], dtype=np.float32)
+            if kpts.ndim != 2 or kpts.shape[0] <= 10:
+                continue
+            pts = [kpts[i, :2] for i in (9, 10)
+                   if kpts[i, 0] > 0 and (kpts.shape[1] < 3 or kpts[i, 2] >= min_conf)]
+            if pts:
+                wrists[int(row["frame_number"])] = np.mean(pts, axis=0)
+        return wrists
+
+    def _wrist_near(self, frame: int, max_gap: int = 3):
+        """該幀的手腕中點；沒有時用前後 max_gap 幀內最近的一幀，都沒有回傳 None"""
+        for d in range(max_gap + 1):
+            for f in (frame - d, frame + d):
+                if f in self.wrists:
+                    return self.wrists[f]
+        return None
 
     def _smooth(self, arr: np.ndarray) -> np.ndarray:
         """簡單 moving average smoothing。"""
@@ -229,8 +255,9 @@ class PhaseDetector:
     def bat_head_track(self) -> pd.DataFrame:
         """每一幀的棒頭位置與速度，_detect_impact 依此挑擊球點，也供 debug 輸出。
 
-        欄位：frame、head_x、head_y、source（head 欄位或 mask）、end1_x/y、end2_x/y（mask 的兩端，
-        y 較小的一端當棒頭）、speed_px_per_frame（與前一個有棒頭的幀相比；間隔超過 3 幀為 NaN，不參與比較）
+        欄位：frame、head_x、head_y、source（head 欄位或 mask）、end1_x/y、end2_x/y（mask 的兩端）、
+        head_rule（wrist：離雙手腕中點較遠的一端是棒頭；higher：該幀附近沒有手腕，退回用 y 較小的一端）、
+        speed_px_per_frame（與前一個有棒頭的幀相比；間隔超過 3 幀為 NaN，不參與比較）
         """
         rows = []
         if self.bat_df is not None and not self.bat_df.empty:
@@ -245,7 +272,14 @@ class PhaseDetector:
                     if ends is None:
                         continue
                     p1, p2 = ends
-                    head = p1 if p1[1] < p2[1] else p2
+                    # 握把在手裡：離手腕較遠的一端是棒頭。只看高低會在球棒接近水平時把握把當棒頭
+                    wrist = self._wrist_near(item["frame"])
+                    if wrist is not None:
+                        head = p1 if np.linalg.norm(p1 - wrist) > np.linalg.norm(p2 - wrist) else p2
+                        item.update(head_rule="wrist", wrist_x=float(wrist[0]), wrist_y=float(wrist[1]))
+                    else:
+                        head = p1 if p1[1] < p2[1] else p2
+                        item.update(head_rule="higher")
                     item.update(source="mask", end1_x=float(p1[0]), end1_y=float(p1[1]),
                                 end2_x=float(p2[0]), end2_y=float(p2[1]))
                 else:
