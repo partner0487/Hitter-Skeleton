@@ -360,7 +360,7 @@ class Analysis3DWidget(QWidget):
     # 有校正時單位是公尺，腳在 y≈0、髖約 -0.9、頭頂約 -1.7，中心放在身體中段；
     # 沒有校正的舊參數沒有真實尺度，沿用原本調好的數值
     # 公尺：預設視角（fov 80）看得到 y -2.6～0.8，側面／正面（fov 60）-2.4～0.4，舉棒時棒頭（約 -2.2）仍在畫面內
-    VIEW_METRIC = {"default": (2.0, -0.9), "side": (2.4, -1.0), "front": (2.4, -1.0)}
+    VIEW_METRIC = {"default": (2.9, -0.9), "side": (3.5, -1.0), "front": (3.5, -1.0)}
     VIEW_LEGACY = {"default": (0.5, -0.10), "side": (0.5, -0.3), "front": (0.5, -0.3)}
 
     def _setTurntableView(self, kind, fov, azimuth):
