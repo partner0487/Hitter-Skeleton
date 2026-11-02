@@ -1735,6 +1735,12 @@ class Analysis3DWidget(QWidget):
             if hasattr(self, 'phase_result') and self.phase_result is not None:
                 print(f"3D Impact override: {self.phase_result.F_impact} -> {self.bat_speed_plot.max_speed_frame}")
                 self.phase_result.F_impact = self.bat_speed_plot.max_speed_frame
+                # 離地、著地以擊球前的抬腿最高點為準，擊球幀改了要跟著重算
+                detector = getattr(self, "phase_detector", None)
+                if detector is not None:
+                    liftoff, landing = detector.detect_foot_phases(self.phase_result.F_impact)
+                    if liftoff is not None and landing is not None:
+                        self.phase_result.F_liftoff, self.phase_result.F_landing = liftoff, landing
                 self.setPhaseResult(self.phase_result) # 重刷 UI 與計算
                 
         if len(bat_head_pts) > 0:
@@ -1763,6 +1769,7 @@ class Analysis3DWidget(QWidget):
             th_land=5.0,
             land_hold=3,
         )
+        self.phase_detector = detector
         self.phase_result = detector.detect_phases()
         
         # --- [NEW] Fallback Mechanism ---

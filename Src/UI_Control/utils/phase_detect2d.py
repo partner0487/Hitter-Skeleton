@@ -478,6 +478,13 @@ class PhaseDetector:
 
     # ----------------- 對外介面 -----------------
 
+    def detect_foot_phases(self, F_impact: Optional[int]):
+        """給定擊球幀，回傳 (離地, 著地)；3D 用 3D 棒頭最高速改了擊球幀後也用這個重算"""
+        if len(self.heel_frames) < self.MIN_FOOT_FRAMES:
+            return None, None
+        F_liftoff = self._detect_liftoff(F_impact)
+        return F_liftoff, self._detect_landing(F_liftoff, F_impact)
+
     def detect_phases(self) -> PhaseResult:
         """主函式：偵測順序為 Impact -> Liftoff -> Landing。"""
         print("====== detect_phases START ======")
@@ -495,12 +502,9 @@ class PhaseDetector:
         F_impact = self._detect_impact(side="right") 
         print(f"_detect_impact 回傳: {F_impact}")
 
-        # 步驟 2: 離地（擊球前抬腿最高點往前找腳尖離地）
-        F_liftoff = self._detect_liftoff(F_impact)
+        # 步驟 2、3: 離地、著地（以擊球前抬腿最高點為準）
+        F_liftoff, F_landing = self.detect_foot_phases(F_impact)
         print(f"F_liftoff: {F_liftoff}")
-
-        # 步驟 3: 在兩者之間找最低位作為著地
-        F_landing = self._detect_landing(F_liftoff, F_impact)
         print(f"F_landing: {F_landing}")
 
         # 若球的 frame 超過腳跟範圍，就把 Fend 往後拉
