@@ -138,7 +138,8 @@ python calibration/calibration.py --calculate 20261019                       # �
 python calibration/calibration.py --calculate 20261019 --pattern 7x7         # 覆寫棋盤格規格（也接受 7*7、7,7）
 ```
 
-- 棋盤格規格、相機序號、焦距、格子邊長都讀該 session 的 `session.json`，沒有才用 8×7、100 mm、35 / 8 mm。
+- 棋盤格規格、焦距、格子邊長讀該 session 的 `session.json`，沒有才用 8×7、100 mm、35 / 8 mm。
+- 相機序號（`front`、`side`）一定要在 `session.json` 裡，沒有就停止，因為採用時會寫進 `camera_roles.json`。
 - 內參照片：正面用 `cf/` 加上 `intrinsic/images_SN<正面序號>/`，側面用 `cs/` 加上 `intrinsic/images_SN<側面序號>/`；外參用 `cf/`、`cs/` 的同名照片。
 - 誤差異常的照片會自動剔除後重算。
 - 內參 RMS 超過 1 px 時和精靈一樣停止，不算外參，避免不合格的內參被採用。
