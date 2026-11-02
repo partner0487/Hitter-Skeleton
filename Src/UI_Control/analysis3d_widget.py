@@ -1433,6 +1433,8 @@ class Analysis3DWidget(QWidget):
 
     def loadVideo4Process(self):
         self.reset4Process()
+        # 畫面已換成新錄影，切換右打／左打時不可再重算、改寫先前資料夾的 3D
+        self.folder = None
         self.is_dual = True
         self.ui.showSkeletonCheckBox.setChecked(False)
         self.ui.selectCheckBox.setChecked(False)
