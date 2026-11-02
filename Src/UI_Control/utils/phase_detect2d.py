@@ -45,6 +45,8 @@ class PhaseDetector:
 
         # 從 person_df 抽出 heel_frames, heel_vals
         self.heel_frames, self.heel_vals = self._extract_heel_data(person_df, batter_index)
+        # 前腳腳尖高度（大、小腳趾平均），用來判斷離地：腳跟會先翹起，腳尖離地才算整隻腳離地
+        self.toe_frames, self.toe_vals = self._extract_toe_data(person_df, batter_index)
         # 雙手腕中點，用來分辨球棒遮罩哪一端是握把
         self.wrists = self._extract_wrist_centers(person_df)
 
@@ -122,6 +124,27 @@ class PhaseDetector:
         return frames, heights
 
     @staticmethod
+    def _extract_toe_data(df: pd.DataFrame, batter_index: int):
+        """前腳腳尖高度：右打左腳（20 大趾、22 小趾），左打右腳（21、23）；地面同腳跟取 95 百分位"""
+        if df is None or df.empty or "keypoints" not in df:
+            return np.array([], dtype=np.int32), np.array([], dtype=np.float32)
+        toe_idx = (20, 22) if batter_index == 0 else (21, 23)
+        frames, ys = [], []
+        for _, row in df.iterrows():
+            kpts = np.asarray(row["keypoints"], dtype=np.float32)
+            if kpts.ndim != 2 or kpts.shape[0] <= max(toe_idx):
+                continue
+            pts = [kpts[i, 1] for i in toe_idx if kpts[i, 1] >= 1e-3]
+            if pts:
+                frames.append(int(row["frame_number"]))
+                ys.append(float(np.mean(pts)))
+        if not ys:
+            return np.array([], dtype=np.int32), np.array([], dtype=np.float32)
+        ys_arr = np.array(ys, dtype=np.float32)
+        ground_y = np.percentile(ys_arr, 95) if len(ys_arr) > 10 else np.max(ys_arr)
+        return np.array(frames, dtype=np.int32), ground_y - ys_arr
+
+    @staticmethod
     def _extract_wrist_centers(df: pd.DataFrame, min_conf: float = 0.3) -> dict:
         """{frame: 雙手腕中點 [x, y]}；Halpe26 的 9 左腕、10 右腕，只有一手可信時用那一手"""
         wrists = {}
@@ -154,8 +177,33 @@ class PhaseDetector:
         return np.convolve(arr, kernel, mode="same")
 
     # ----------------- 事件偵測 -----------------
-    def _detect_liftoff(self) -> Optional[int]:
-        """偵測前腳離地：先用門檻，失敗再用『大跌前最高點』。"""
+    def _lift_peak_frame(self, F_impact: Optional[int]) -> Optional[int]:
+        """抬腿最高點：擊球前（無擊球點時整段）前腳腳跟最高的幀"""
+        sel = np.ones(len(self.heel_vals), dtype=bool)
+        if F_impact is not None:
+            sel &= self.heel_frames <= F_impact
+        if not sel.any():
+            return None
+        idx = np.where(sel)[0]
+        return int(self.heel_frames[idx[int(np.argmax(self.heel_vals[idx]))]])
+
+    def _detect_liftoff(self, F_impact: Optional[int] = None) -> Optional[int]:
+        """
+        偵測前腳離地：從抬腿最高點往前找，腳尖高度最後一次還在「最低點 + LIFT_TOL_PX」以內的幀。
+        腳跟會先翹起（H06 腳跟第 8 幀就開始升高，腳尖第 16 幀才離地），所以用腳尖判斷。
+        影片開始時腳已在空中，會回傳最開頭附近的幀。沒有腳尖資料時退回舊的腳跟門檻法。
+        """
+        peak = self._lift_peak_frame(F_impact)
+        if peak is not None and len(self.toe_vals) > 0:
+            sel = self.toe_frames <= peak
+            if sel.any():
+                frames, heights = self.toe_frames[sel], self.toe_vals[sel]
+                on_ground = np.where(heights <= float(np.min(heights)) + self.LIFT_TOL_PX)[0]
+                return int(frames[on_ground[-1]])
+        return self._detect_liftoff_heel()
+
+    def _detect_liftoff_heel(self) -> Optional[int]:
+        """舊方法（腳跟）：先用門檻，失敗再用『大跌前最高點』。"""
         if len(self.heel_smooth) == 0:
             return None
 
@@ -247,6 +295,10 @@ class PhaseDetector:
     IMPACT_OFFSET = 1
     # 著地：腳跟高度在區間最低點 + LAND_TOL_PX 以內即視為貼地（吸收關節點幾 px 的抖動）
     LAND_TOL_PX = 2.0
+    # 離地：腳尖高度在抬腿前最低點 + LIFT_TOL_PX 以內視為還踩在地上（腳跟翹起時腳尖會被帶高 3～4 px）
+    LIFT_TOL_PX = 4.0
+    # 腳跟資料少於此幀數時不判斷各階段
+    MIN_FOOT_FRAMES = 5
 
     @staticmethod
     def _bat_ends_from_mask(mask_data):
@@ -427,26 +479,25 @@ class PhaseDetector:
     # ----------------- 對外介面 -----------------
 
     def detect_phases(self) -> PhaseResult:
-        """主函式：調整偵測順序為 Liftoff -> Impact -> Landing。"""
+        """主函式：偵測順序為 Impact -> Liftoff -> Landing。"""
         print("====== detect_phases START ======")
         print(f"heel_frames length: {len(self.heel_frames)}")
         
-        if len(self.heel_frames) == 0:
-            print("❌ ERROR: heel_frames is empty! person_df 可能沒有腳跟被偵測到，或是 batter_index 設定錯誤。")
+        if len(self.heel_frames) < self.MIN_FOOT_FRAMES:
+            print(f"❌ ERROR: 腳跟資料只有 {len(self.heel_frames)} 幀！person_df 可能沒有腳跟被偵測到，或是 batter_index 設定錯誤。")
             return PhaseResult(F0=0, F_liftoff=None, F_landing=None, F_impact=None, Fend=None)
 
         F0 = int(self.heel_frames[0])
         Fend = int(self.heel_frames[-1])
 
-        # 步驟 1: 先找離地
-        F_liftoff = self._detect_liftoff()
-        print(f"F_liftoff: {F_liftoff}")
-        
-        # 步驟 2: 先找擊球點 (偵測邏輯內部會判斷是否在 F_liftoff 之後)
-        # 註：此時傳入 F_liftoff 給 _detect_impact 確保擊球在離地後
+        # 步驟 1: 先找擊球點（棒頭最高速，不依賴腳的資料）
         print("準備呼叫 _detect_impact...")
         F_impact = self._detect_impact(side="right") 
         print(f"_detect_impact 回傳: {F_impact}")
+
+        # 步驟 2: 離地（擊球前抬腿最高點往前找腳尖離地）
+        F_liftoff = self._detect_liftoff(F_impact)
+        print(f"F_liftoff: {F_liftoff}")
 
         # 步驟 3: 在兩者之間找最低位作為著地
         F_landing = self._detect_landing(F_liftoff, F_impact)
