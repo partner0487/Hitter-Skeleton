@@ -247,6 +247,7 @@ python calibration/calibration.py --calculate 20261008
 | `intrinsic.py` | 內參計算與品質判斷（不含 Qt，視窗與指令列共用） |
 | `stereo.py` | 外參計算、驗證與採用（不含 Qt） |
 | `storage.py` | `Db/Calibration` 的路徑與讀寫 |
+| `test_session_rules.py` | 檢查本資料夾與主程式 `utils/stereo_calibration.py` 對 session 名稱、打擊方向的判斷一致；改其中一邊後執行 `python calibration/test_session_rules.py` |
 | `chessboard_cross/` | 角點偵測、角點順序對齊、立體校正、驗證（源自學長的 calibration_other_version） |
 | `camera_controls.py` | 曝光時間／增益調整元件 |
 | `qt_app.py` | 建立視窗程式（高 DPI、字型、錯誤記錄） |
