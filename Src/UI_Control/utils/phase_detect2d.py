@@ -243,6 +243,8 @@ class PhaseDetector:
     # 依 WeiShu 2026-10-29 T座 H01、H02：揮棒時最多偏 36 px，誤抓手臂的幀 144 px 以上
     JUMP_WINDOW = 2
     JUMP_MAX_PX = 100.0
+    # 擊球點 = 棒頭最高速幀 + IMPACT_OFFSET（H01、H02 最高速幀比畫面上的擊球早約 1 幀）
+    IMPACT_OFFSET = 1
 
     @staticmethod
     def _bat_ends_from_mask(mask_data):
@@ -483,6 +485,6 @@ class PhaseDetector:
             F0=F0,
             F_liftoff=F_liftoff,
             F_landing=F_landing,
-            F_impact=F_impact + 2 if F_impact is not None else None,
+            F_impact=F_impact + self.IMPACT_OFFSET if F_impact is not None else None,
             Fend=Fend,
         )
