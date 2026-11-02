@@ -6,7 +6,8 @@
 每個資料夾輸出：
   debug_bat_head.csv   每幀棒頭位置、遮罩兩端、速度（px/幀，有 frame_times.csv 時另算 px/s）
   debug_bat_head.png   棒頭 x、y 與速度曲線，標出離地、著地、擊球（原始最高速幀與 +2 後）、偵測到球的幀
-  debug_bat_head.mp4   （加 --video）側面影片畫上遮罩兩端（青）、手腕中點（綠十字）與棒頭（紅圈）
+  debug_bat_head.mp4   （加 --video）側面影片畫上遮罩兩端（青）、手腕中點（綠十字）與棒頭
+                       （紅圈；灰圈為不合理跳動、已排除）
 
 用法（在任何目錄）：
   python Src/UI_Control/tools/debug_bat_head.py "Db/WeiShu/2026-10-29/T座/WeiShu_H01" "Db/WeiShu/2026-10-29/T座/WeiShu_H02"
@@ -74,6 +75,9 @@ def write_plot(path, folder, track, phases, balls):
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
     axes[0].plot(track["frame"], track["head_x"], ".-", label="head x")
     axes[1].plot(track["frame"], track["head_y"], ".-", label="head y", color="tab:orange")
+    rejected = track[track["rejected"]]
+    axes[0].plot(rejected["frame"], rejected["head_x"], "rx", markersize=9, label="rejected (jump)")
+    axes[1].plot(rejected["frame"], rejected["head_y"], "rx", markersize=9, label="rejected (jump)")
     axes[1].invert_yaxis()
     axes[2].plot(track["frame"], track["speed_px_per_frame"], ".-", label="speed (px/frame)", color="tab:green")
     raw_impact = phases.F_impact - IMPACT_OFFSET if phases.F_impact is not None else None
@@ -122,10 +126,12 @@ def write_video(path, folder, track, phases):
                 cv2.circle(img, (int(r.end2_x), int(r.end2_y)), 6, (255, 255, 0), -1)
             if pd.notna(r.get("wrist_x")):
                 cv2.drawMarker(img, (int(r.wrist_x), int(r.wrist_y)), (0, 255, 0), cv2.MARKER_CROSS, 24, 3)
-            cv2.circle(img, (int(r.head_x), int(r.head_y)), 10, (0, 0, 255), 3)
+            cv2.circle(img, (int(r.head_x), int(r.head_y)), 10, (128, 128, 128) if r.rejected else (0, 0, 255), 3)
             speed = r.speed_px_per_frame
             text = f"head ({r.head_x:.0f},{r.head_y:.0f})  speed {speed:.1f} px/f" if pd.notna(speed) else \
                 f"head ({r.head_x:.0f},{r.head_y:.0f})"
+            if r.rejected:
+                text += f"  REJECTED (jump {r.jump_px:.0f} px)"
             cv2.putText(img, text, (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
         label = f"frame {frame_num}"
         for name, frame in (("LIFTOFF", phases.F_liftoff), ("LANDING", phases.F_landing),
@@ -159,6 +165,9 @@ def main():
         if track.empty:
             print("   沒有棒頭資料")
             continue
+        rejected = track.loc[track["rejected"], "frame"].tolist()
+        print(f"   沿用上一幀的遮罩（沒偵測到）：{track.loc[track['repeated'], 'frame'].tolist() or '無'}")
+        print(f"   排除不合理跳動（> {PhaseDetector.JUMP_MAX_PX:g} px）：{rejected or '無'}")
         top = track.nlargest(5, "speed_px_per_frame")[["frame", "head_x", "head_y", "speed_px_per_frame"]]
         print("   速度前 5 名：")
         print(top.to_string(index=False, float_format=lambda v: f"{v:.1f}").replace("\n", "\n   ").join(["   ", ""]))
