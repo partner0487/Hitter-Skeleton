@@ -315,7 +315,7 @@ class Analysis3DWidget(QWidget):
             self.front_intrinsic_matrix = params.K_front
             self.front_distortion_coeffs = params.dist_front
             self.R, self.t = params.R, params.t
-            # 舊參數的 1 單位 ≈ 基線長，3D 視角是依此調的；換成公尺後按基線等比放大，畫面構圖不變
+            # 舊參數的 1 單位 ≈ 基線長，只用來換算揮棒速度的舊算法；3D 視角改用公尺定值（VIEW_METRIC）
             self.view_scale = params.baseline_m
             self.has_metric_scale = True
             print(f"[Analysis3D] 校正來源：{params.source}（基線 {params.baseline_m:.2f} m）")
@@ -356,39 +356,33 @@ class Analysis3DWidget(QWidget):
         self.skeleton_link = self.image_drawer.joints['haple']['skeleton_links']
         self.skeleton_node = scene.Node(parent=self.view.scene)
 
-    def change2DefaultView(self):
-        # distance / center 以舊參數（1 單位 ≈ 基線）調好，乘上 view_scale 換成目前的座標尺度
-        s = getattr(self, "view_scale", 1.0)
+    # 視角的 (距離, 中心 y)。骨架以兩腳趾中點為原點、y 軸朝下：
+    # 有校正時單位是公尺，腳在 y≈0、髖約 -0.9、頭頂約 -1.7，中心放在身體中段；
+    # 沒有校正的舊參數沒有真實尺度，沿用原本調好的數值
+    # 公尺：預設視角（fov 80）看得到 y -2.6～0.8，側面／正面（fov 60）-2.4～0.4，舉棒時棒頭（約 -2.2）仍在畫面內
+    VIEW_METRIC = {"default": (2.0, -0.9), "side": (2.4, -1.0), "front": (2.4, -1.0)}
+    VIEW_LEGACY = {"default": (0.5, -0.10), "side": (0.5, -0.3), "front": (0.5, -0.3)}
+
+    def _setTurntableView(self, kind, fov, azimuth):
+        views = self.VIEW_METRIC if getattr(self, "has_metric_scale", False) else self.VIEW_LEGACY
+        distance, center_y = views[kind]
         self.view.camera = cameras.TurntableCamera(
-            fov=80,
-            distance=0.5 * s,  # 你原本的距離
-            azimuth=90.0,      # 90 度 ≈ 從側面看；如果方向反了可以改成 -90 或 270
-            elevation=10.0,     # 0 度：水平看
+            fov=fov,
+            distance=distance,
+            azimuth=azimuth,   # 90 度 ≈ 從側面看、180 度 ≈ 從前面看；方向反了可以改成 -90 或 270
+            elevation=10.0,    # 0 度：水平看
             up='-y',           # y 軸向上
-            center=(0.0, -0.10 * s, 0.0),
+            center=(0.0, center_y, 0.0),
         )
+
+    def change2DefaultView(self):
+        self._setTurntableView("default", fov=80, azimuth=90.0)
 
     def change2SideView(self):
-        s = getattr(self, "view_scale", 1.0)
-        self.view.camera = cameras.TurntableCamera(
-            fov=60,
-            distance=0.5 * s,  # 你原本的距離
-            azimuth=90.0,      # 90 度 ≈ 從側面看；如果方向反了可以改成 -90 或 270
-            elevation=10.0,     # 0 度：水平看
-            up='-y',           # y 軸向上
-            center=(0.0, -0.3 * s, 0.0),
-        )
+        self._setTurntableView("side", fov=60, azimuth=90.0)
 
     def change2FrontView(self):
-        s = getattr(self, "view_scale", 1.0)
-        self.view.camera = cameras.TurntableCamera(
-            fov=60,
-            distance=0.5 * s,  # 你原本的距離
-            azimuth=180.0,      # 90 度 ≈ 從前面看
-            elevation=10.0,     # 0 度：水平看
-            up='-y',           # y 軸向上
-            center=(0.0, -0.3 * s, 0.0),
-        )
+        self._setTurntableView("front", fov=60, azimuth=180.0)
 
     def computeEssenMatrix(self):
         """Use normalized projection matrices for triangulation."""
