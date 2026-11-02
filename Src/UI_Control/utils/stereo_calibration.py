@@ -91,17 +91,17 @@ def _published_sessions(date=None):
 
 
 def batter_side_of(data, session_dir):
-    """校正的打擊方向 right／left：stereo.json 的 batter_side，舊資料看 session.json 或資料夾後綴；
-    都沒有回傳 None（右打、左打都可用）"""
-    if data.get("batter_side") in _SIDE_SUFFIX:
-        return data["batter_side"]
+    """校正的打擊方向 right／left，順序與 calibration/stereo.py 的 batter_side_of 相同：
+    session.json 的 batter_side、資料夾後綴 _righthit／_lefthit；都沒有才看 stereo.json 的 batter_side
+    （上層 Db/Calibration/stereo.json 不在 session 資料夾裡）。都沒有回傳 None（右打、左打都可用）"""
     try:
         side = _read_json(Path(session_dir) / "session.json").get("batter_side")
         if side in _SIDE_SUFFIX:
             return side
     except (OSError, ValueError, AttributeError):
         pass
-    return next((side for side, suffix in _SIDE_SUFFIX.items() if Path(session_dir).name.endswith(suffix)), None)
+    side = next((side for side, suffix in _SIDE_SUFFIX.items() if Path(session_dir).name.endswith(suffix)), None)
+    return side or (data["batter_side"] if data.get("batter_side") in _SIDE_SUFFIX else None)
 
 
 def _load(path, require_published=False, batter_side=None):
