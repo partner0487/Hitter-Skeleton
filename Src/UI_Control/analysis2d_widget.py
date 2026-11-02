@@ -156,6 +156,10 @@ class Analysis2dWidget(QWidget):
         super().__init__(parent)
         self.ui = Ui_hitter_ui_dual()
         self.ui.setupUi(self)
+        # 肩髖分離角是水平面上的旋轉，單一側面相機只看得到投影、量不準，只在 3D 頁顯示
+        for i in (1, 2, 3):
+            getattr(self.ui, f"hipShoulderLabel{i}").hide()
+            getattr(self.ui, f"hipShoulderEditLabel{i}").hide()
         self.model = model
         self.setupComponents()
         self.initVar()
