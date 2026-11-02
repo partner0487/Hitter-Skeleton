@@ -1743,8 +1743,8 @@ class Analysis3DWidget(QWidget):
             self.bat_speed_plot.graph.resize(800, 400)
             # self.bat_speed_plot.graph.show()  # 獨立視窗暫時關閉（仍用最高速覆寫 Impact）
             
-        # [NEW] 顯示 3D 關節速度圖表
-        self.showJointVelocityChart3D()
+        # [NEW] 顯示 3D 關節速度圖表（獨立視窗暫時關閉）
+        # self.showJointVelocityChart3D()
 
     def detectPhases(self):
         # 這裡直接做階段偵測
