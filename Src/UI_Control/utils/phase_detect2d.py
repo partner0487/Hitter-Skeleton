@@ -213,6 +213,60 @@ class PhaseDetector:
 
         return segments
 
+    @staticmethod
+    def _bat_ends_from_mask(mask_data):
+        """球棒遮罩輪廓上相距最遠的兩點 (p1, p2)；讀不到回傳 None"""
+        if mask_data is None:
+            return None
+        try:
+            contours = np.asarray(mask_data[1][0], dtype=np.float32).reshape(-1, 2)
+            dist_matrix = np.linalg.norm(contours[:, None, :] - contours[None, :, :], axis=-1)
+            i, j = np.unravel_index(np.argmax(dist_matrix), dist_matrix.shape)
+            return contours[i], contours[j]
+        except Exception:
+            return None
+
+    def bat_head_track(self) -> pd.DataFrame:
+        """每一幀的棒頭位置與速度，_detect_impact 依此挑擊球點，也供 debug 輸出。
+
+        欄位：frame、head_x、head_y、source（head 欄位或 mask）、end1_x/y、end2_x/y（mask 的兩端，
+        y 較小的一端當棒頭）、speed_px_per_frame（與前一個有棒頭的幀相比；間隔超過 3 幀為 NaN，不參與比較）
+        """
+        rows = []
+        if self.bat_df is not None and not self.bat_df.empty:
+            for _, row in self.bat_df.iterrows():
+                col = 'frame_number' if 'frame_number' in row else 'frame_num'
+                item = {"frame": int(row[col])}
+                if 'head' in row and row['head'] is not None and len(row['head']) > 0:
+                    head = np.array(row['head'][:3], dtype=np.float32)
+                    item.update(source="head")
+                elif 'mask' in row:
+                    ends = self._bat_ends_from_mask(row['mask'])
+                    if ends is None:
+                        continue
+                    p1, p2 = ends
+                    head = p1 if p1[1] < p2[1] else p2
+                    item.update(source="mask", end1_x=float(p1[0]), end1_y=float(p1[1]),
+                                end2_x=float(p2[0]), end2_y=float(p2[1]))
+                else:
+                    continue
+                item.update(head_x=float(head[0]), head_y=float(head[1]), _head=head)
+                rows.append(item)
+        # 同一幀有多筆時保留最後一筆（與原本以 dict 覆蓋相同）
+        track = pd.DataFrame(rows)
+        if track.empty:
+            return track
+        track = track.drop_duplicates("frame", keep="last").sort_values("frame").reset_index(drop=True)
+        speeds = [np.nan]
+        for i in range(1, len(track)):
+            gap = track.at[i, "frame"] - track.at[i - 1, "frame"]
+            if gap > 3:  # 避免因為斷片掉幀太久造成的計算誤差
+                speeds.append(np.nan)
+                continue
+            speeds.append(float(np.linalg.norm(track.at[i, "_head"] - track.at[i - 1, "_head"]) / gap))
+        track["speed_px_per_frame"] = speeds
+        return track.drop(columns="_head")
+
     def _detect_impact(self, side: str = "right") -> Optional[int]:
         """
         全域搜尋：利用棒頭極速法找出擊球點。取代原本的距離公式。
@@ -222,55 +276,18 @@ class PhaseDetector:
             print("偵測失敗：缺乏球棒資料")
             return None
 
-        def get_bat_head(mask_data):
-            if mask_data is None: return None
-            try:
-                contours = mask_data[1][0].reshape(-1, 2)
-                dist_matrix = np.linalg.norm(contours[:, None, :] - contours[None, :, :], axis=-1)
-                i, j = np.unravel_index(np.argmax(dist_matrix), dist_matrix.shape)
-                p1, p2 = contours[i], contours[j]
-                return p1 if p1[1] < p2[1] else p2
-            except:
-                return None
-
-        bat_heads = {}
-        for _, row in self.bat_df.iterrows():
-            col = 'frame_number' if 'frame_number' in row else 'frame_num'
-            f = int(row[col])
-            
-            if 'head' in row and row['head'] is not None and len(row['head']) > 0:
-                bat_heads[f] = np.array(row['head'][:3], dtype=np.float32)
-            elif 'mask' in row:
-                head = get_bat_head(row['mask'])
-                if head is not None:
-                    bat_heads[f] = np.array(head, dtype=np.float32)
-
-        if len(bat_heads) < 2:
+        track = self.bat_head_track()
+        if len(track) < 2:
             print("偵測失敗：球棒資料不足以計算速度")
             return None
 
-        sorted_frames = sorted(list(bat_heads.keys()))
-        max_speed = -1
-        best_frame = None
-        
-        for i in range(1, len(sorted_frames)):
-            prev_f = sorted_frames[i-1]
-            curr_f = sorted_frames[i]
-            
-            if curr_f - prev_f > 3:  # 避免因為斷片掉幀太久造成的計算誤差
-                continue
-                
-            dist = np.linalg.norm(bat_heads[curr_f] - bat_heads[prev_f])
-            speed = dist / (curr_f - prev_f)
-            
-            if speed > max_speed:
-                max_speed = speed
-                best_frame = curr_f
-                
-        if best_frame is not None:
-            print(f"✅ 成功找到擊球點！影格: {best_frame}, 棒頭最高速: {max_speed:.2f}")
+        speeds = track["speed_px_per_frame"]
+        if speeds.notna().any():
+            best = int(speeds.idxmax())
+            best_frame = int(track.at[best, "frame"])
+            print(f"✅ 成功找到擊球點！影格: {best_frame}, 棒頭最高速: {speeds[best]:.2f}")
             return best_frame
-            
+
         return None
 
     def _point_to_segment_distance(self, p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
