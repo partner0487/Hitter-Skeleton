@@ -5,7 +5,7 @@
 
 每個資料夾輸出：
   debug_bat_head.csv   每幀棒頭位置、遮罩兩端、速度（px/幀，有 frame_times.csv 時另算 px/s）
-  debug_bat_head.png   棒頭 x、y 與速度曲線，標出離地、著地、擊球（原始最高速幀與 + IMPACT_OFFSET 後）、偵測到球的幀
+  debug_bat_head.png   棒頭 x、y、速度與前腳腳跟高度曲線，標出離地、著地、擊球（原始最高速幀與 + IMPACT_OFFSET 後）、偵測到球的幀
   debug_bat_head.mp4   （加 --video）側面影片畫上遮罩兩端（青）、手腕中點（綠十字）與棒頭
                        （紅圈；灰圈為不合理跳動、已排除）
 
@@ -63,16 +63,17 @@ def analyse(folder, batter_index):
         # 與 px/幀 相同：只在間隔 ≤ 3 幀時計算
         step = track["speed_px_per_frame"] * gap
         track["speed_px_per_s"] = (step / dt).where(track["speed_px_per_frame"].notna())
-    return phases, track, ball_frames(ball), len(bat)
+    heel = pd.DataFrame({"frame": detector.heel_frames, "height": detector.heel_vals})
+    return phases, track, ball_frames(ball), len(bat), heel
 
 
-def write_plot(path, folder, track, phases, balls):
+def write_plot(path, folder, track, phases, balls, heel):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     plt.rcParams["font.sans-serif"] = ["Microsoft JhengHei", "DejaVu Sans"]
-    fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(12, 12), sharex=True)
     axes[0].plot(track["frame"], track["head_x"], ".-", label="head x")
     axes[1].plot(track["frame"], track["head_y"], ".-", label="head y", color="tab:orange")
     rejected = track[track["rejected"]]
@@ -92,8 +93,12 @@ def write_plot(path, folder, track, phases, balls):
         ax.grid(alpha=0.3)
     axes[0].legend(loc="upper left", fontsize=8)
     axes[1].legend(loc="upper left", fontsize=8)
+    axes[3].plot(heel["frame"], heel["height"], ".-", label="front heel height (px)", color="tab:brown")
+    axes[3].axhline(heel["height"].min() + PhaseDetector.LAND_TOL_PX if len(heel) else 0, color="gray",
+                    linestyle=":", label=f"min + {PhaseDetector.LAND_TOL_PX:g} px")
     axes[2].legend(loc="upper left", fontsize=8)
-    axes[2].set_xlabel("frame（黃色直條：偵測到球的幀）")
+    axes[3].legend(loc="upper right", fontsize=8)
+    axes[3].set_xlabel("frame（黃色直條：偵測到球的幀）")
     fig.suptitle(f"{folder.name}  bat head (2D side view)")
     fig.tight_layout()
     fig.savefig(path, dpi=110)
@@ -158,7 +163,7 @@ def main():
         if not (folder / "bat_side.json").exists():
             print("   沒有 bat_side.json，略過")
             continue
-        phases, track, balls, bat_rows = analyse(folder, 1 if args.left else 0)
+        phases, track, balls, bat_rows, heel = analyse(folder, 1 if args.left else 0)
         print(f"   bat_side.json {bat_rows} 筆，取得棒頭 {len(track)} 幀")
         print(f"   離地 {phases.F_liftoff}｜著地 {phases.F_landing}｜擊球 {phases.F_impact}"
               f"（最高速幀 + {IMPACT_OFFSET}）｜偵測到球的幀：{balls[:5]}{' …' if len(balls) > 5 else ''}")
@@ -172,7 +177,7 @@ def main():
         print("   速度前 5 名：")
         print(top.to_string(index=False, float_format=lambda v: f"{v:.1f}").replace("\n", "\n   ").join(["   ", ""]))
         track.to_csv(folder / "debug_bat_head.csv", index=False, float_format="%.3f", encoding="utf-8-sig")
-        write_plot(folder / "debug_bat_head.png", folder, track, phases, balls)
+        write_plot(folder / "debug_bat_head.png", folder, track, phases, balls, heel)
         print(f"   已輸出 debug_bat_head.csv、debug_bat_head.png")
         if args.video:
             write_video(folder / "debug_bat_head.mp4", folder, track, phases)
