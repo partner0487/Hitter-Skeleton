@@ -180,7 +180,7 @@ def publish_stereo(calib_dir, session, roles, entries, report):
 
     session/stereo.json 加上 published_at，3D 分析依錄影日期挑校正時只用已採用的 session。
     上層 Db/Calibration/*.json 永遠是日期最新的已採用校正：採用較舊日期的 session
-    （例如重算 _legacy）只會標記為可用，不會蓋掉較新的；被取代的檔案先備份、出錯還原，
+    （例如重算舊版的 000000 session）只會標記為可用，不會蓋掉較新的；被取代的檔案先備份、出錯還原，
     上層寫入成功後才標記 session，失敗時 session 維持未採用。
     """
     front, side = roles
