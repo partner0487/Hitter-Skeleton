@@ -13,6 +13,7 @@
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -22,8 +23,8 @@ from utils.paths import DB_DIR
 CALIB_DIR = DB_DIR / "Calibration"
 STEREO_JSON = CALIB_DIR / "stereo.json"
 SESSIONS_DIR = CALIB_DIR / "sessions"
-# 錄影資料夾的日期：2026-10-08 或 20260421
-_DATE_IN_PATH = re.compile(r"(20\d{2})-?(\d{2})-?(\d{2})")
+# 錄影資料夾的日期：2026-10-08 或 20260421（不接受只有一個連字號的 2026-1008）
+_DATE_IN_PATH = re.compile(r"(20\d{2})(?:-(\d{2})-|(\d{2}))(\d{2})")
 # session 名稱 YYYYMMDD_HHMMSS[_後綴]，字串順序即時間順序（與 calibration/stereo.py 相同規則）
 _SESSION_NAME = re.compile(r"\d{8}_\d{6}(_.*)?")
 # 打擊方向與 session 資料夾後綴（與 calibration/stereo.py 的 BATTER_SUFFIX 相同）
@@ -71,7 +72,11 @@ def recording_date(folder):
     for part in reversed(Path(folder).parts):
         m = _DATE_IN_PATH.fullmatch(part)
         if m:
-            return "".join(m.groups())
+            # 20251234 這類數字資料夾不是日期，繼續往上找
+            try:
+                return datetime.strptime("".join(g for g in m.groups() if g), "%Y%m%d").strftime("%Y%m%d")
+            except ValueError:
+                continue
     return None
 
 
