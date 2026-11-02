@@ -160,6 +160,9 @@ class Analysis2dWidget(QWidget):
         for i in (1, 2, 3):
             getattr(self.ui, f"hipShoulderLabel{i}").hide()
             getattr(self.ui, f"hipShoulderEditLabel{i}").hide()
+        # 揮棒垂直角度（擊球時球棒低於水平的角度）同理：擊球時球棒朝側面相機伸出，2D 投影會失真，只在 3D 頁顯示
+        self.ui.verticalAngleLabel3.hide()
+        self.ui.verticalAngleEditLabel3.hide()
         self.model = model
         self.setupComponents()
         self.initVar()
