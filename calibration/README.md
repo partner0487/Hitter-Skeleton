@@ -141,6 +141,8 @@ python calibration/calibration.py --calculate 20261019 --pattern 7x7         # �
 - 棋盤格規格、相機序號、焦距、格子邊長都讀該 session 的 `session.json`，沒有才用 8×7、100 mm、35 / 8 mm。
 - 內參照片：正面用 `cf/` 加上 `intrinsic/images_SN<正面序號>/`，側面用 `cs/` 加上 `intrinsic/images_SN<側面序號>/`；外參用 `cf/`、`cs/` 的同名照片。
 - 誤差異常的照片會自動剔除後重算。
+- 內參 RMS 超過 1 px 時和精靈一樣停止，不算外參，避免不合格的內參被採用。
+- 「只校正外參」拍的 session 沿用拍攝時記在 `session.json` 的內參，只重算外參。
 - 結果寫回該 session。**Stereo RMS ≤ 3 px 就和精靈一樣直接採用**：該日期起的錄影做 3D 分析時會使用這次校正（見第 8 節）；超過則不採用。
 
 ## 7. 輸出
