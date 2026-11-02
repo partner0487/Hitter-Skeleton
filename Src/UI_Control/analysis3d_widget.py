@@ -1521,7 +1521,7 @@ class Analysis3DWidget(QWidget):
         self.is_play = not self.is_play
         self.ui.playBtn.setText("||" if self.is_play else "▶︎")
         if self.is_play:
-            self.playFrame4Process(self.ui.frameSlider.value())
+            self.playFrame4Process(self._playStartFrame(self.video_loader_dual.total_frames))
 
     def playFrame4Process(self, start_num: int = 0):
         """Play video frames starting from start_num."""
@@ -1714,9 +1714,9 @@ class Analysis3DWidget(QWidget):
             if hasattr(self, 'phase_result') and self.phase_result is not None:
                 self.hip_shoulder_plot.set_phase_result(self.phase_result)
             
-            # 使用獨立視窗顯示圖表
+            # 獨立視窗暫時關閉（圖表仍建立，用於與滑桿同步）
             self.hip_shoulder_plot.graph.resize(800, 400)
-            self.hip_shoulder_plot.graph.show()
+            # self.hip_shoulder_plot.graph.show()
 
         # 棒頭速度與加速度圖表
         bat_frames = []
@@ -1741,7 +1741,7 @@ class Analysis3DWidget(QWidget):
             if hasattr(self, 'phase_result') and self.phase_result is not None:
                 self.bat_speed_plot.set_phase_result(self.phase_result)
             self.bat_speed_plot.graph.resize(800, 400)
-            self.bat_speed_plot.graph.show()
+            # self.bat_speed_plot.graph.show()  # 獨立視窗暫時關閉（仍用最高速覆寫 Impact）
             
         # [NEW] 顯示 3D 關節速度圖表
         self.showJointVelocityChart3D()
@@ -3026,10 +3026,20 @@ class Analysis3DWidget(QWidget):
             return
         self.is_play = not self.is_play
         self.ui.playBtn.setText("||" if self.is_play else "▶︎")
+        if not self.is_play:
+            return
         if self.is_dual== False:
-            self.playFrame(self.ui.frameSlider.value())
+            self.playFrame(self._playStartFrame(self.video_loader.total_frames))
         else:
-            self.playFrame4Process(self.ui.frameSlider.value())
+            self.playFrame4Process(self._playStartFrame(self.video_loader_dual.total_frames))
+
+    def _playStartFrame(self, total_frames) -> int:
+        """播放起點：停在最後一幀（影片已播完）時從頭播放，否則從目前位置繼續。"""
+        current = self.ui.frameSlider.value()
+        if total_frames and current >= int(total_frames) - 1:
+            self.ui.frameSlider.setValue(0)
+            return 0
+        return current
             
     def playFrame(self, start_num: int = 0):
         """Play video frames starting from start_num."""
