@@ -5,7 +5,7 @@
 
 每個資料夾輸出：
   debug_bat_head.csv   每幀棒頭位置、遮罩兩端、速度（px/幀，有 frame_times.csv 時另算 px/s）
-  debug_bat_head.png   棒頭 x、y 與速度曲線，標出離地、著地、擊球（原始最高速幀與 +2 後）、偵測到球的幀
+  debug_bat_head.png   棒頭 x、y 與速度曲線，標出離地、著地、擊球（原始最高速幀與 + IMPACT_OFFSET 後）、偵測到球的幀
   debug_bat_head.mp4   （加 --video）側面影片畫上遮罩兩端（青）、手腕中點（綠十字）與棒頭
                        （紅圈；灰圈為不合理跳動、已排除）
 
@@ -30,7 +30,7 @@ from utils.phase_detect2d import PhaseDetector  # noqa: E402
 
 # 與 analysis2d_widget.detectPhases 相同的參數
 DETECTOR_KWARGS = dict(th_lift=5.0, th_land=5.0, land_hold=3)
-IMPACT_OFFSET = 2  # detect_phases 對最高速幀加的偏移
+IMPACT_OFFSET = PhaseDetector.IMPACT_OFFSET  # detect_phases 對最高速幀加的偏移
 
 
 def read_records(folder, name):
