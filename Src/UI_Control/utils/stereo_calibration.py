@@ -4,7 +4,7 @@
 右打、左打的側面相機架在不同側，各自校正（後綴 _righthit／_lefthit，或 session.json 的 batter_side）。
 載入錄影時，從路徑中的日期（Db/<打者>/2026-10-08/... 或 .../20260421/...）挑
 「當天或之前、打擊方向相符的最新已採用校正」，重新校正後舊錄影仍使用當時的參數；
-沒標打擊方向的舊校正右打、左打都可用。路徑沒有日期時不限日期；都找不到才用 Db/Calibration/stereo.json。
+沒標打擊方向的舊校正右打、左打都可用。路徑沒有日期時不限日期；都找不到才用 Db/Calibration/stereo.json（打擊方向不符時不用）。
 
 校正檔的外參是正面→側面：X_side = R @ X_front + t，t 單位 mm。
 3D 介面以側面相機為世界座標（P1 = [I|0] 為側面、P2 = [R|t] 為正面），
@@ -116,7 +116,7 @@ def _load(path, require_published=False, batter_side=None):
 
 def load_stereo_params(folder=None, batter_side=None):
     """挑校正：錄影日期當天或之前（沒有日期則不限）、打擊方向相符（batter_side 為 right／left，
-    None 表示不限）的最新已採用 session；都沒有才用 Db/Calibration/stereo.json。都沒有回傳 None。"""
+    None 表示不限）的最新已採用 session；都沒有才用打擊方向相符的 Db/Calibration/stereo.json。都沒有回傳 None。"""
     date = recording_date(folder) if folder else None
     side = _SIDE_NAME.get(batter_side, "")
     # 錄影早於所有校正時，改用同一側最新的校正，避免用到另一側擺位的上層 stereo.json
@@ -127,6 +127,8 @@ def load_stereo_params(folder=None, batter_side=None):
                 if limit is None and date:
                     print(f"[stereo_calibration] {date} 以前沒有{side}校正，改用最新的{side}校正")
                 return params
-    print(f"[stereo_calibration] 沒有可用的{side}校正，改用 {STEREO_JSON.name}"
-          + ("（可能是另一側的相機擺位）" if side else ""))
-    return _load(STEREO_JSON) if STEREO_JSON.exists() else None
+    # 上層 stereo.json 是最後採用的那一側，打擊方向不符時不用，免得套到另一側的外參
+    params = _load(STEREO_JSON, batter_side=batter_side) if STEREO_JSON.exists() else None
+    print(f"[stereo_calibration] 沒有可用的{side}校正，"
+          + (f"改用 {STEREO_JSON.name}" if params else "使用程式內寫死的舊參數"))
+    return params
