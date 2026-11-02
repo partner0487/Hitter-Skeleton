@@ -6,7 +6,7 @@
 每個資料夾輸出：
   debug_bat_head.csv   每幀棒頭位置、遮罩兩端、速度（px/幀，有 frame_times.csv 時另算 px/s）
   debug_bat_head.png   棒頭 x、y 與速度曲線，標出離地、著地、擊球（原始最高速幀與 +2 後）、偵測到球的幀
-  debug_bat_head.mp4   （加 --video）側面影片畫上遮罩兩端與棒頭
+  debug_bat_head.mp4   （加 --video）側面影片畫上遮罩兩端（青）、手腕中點（綠十字）與棒頭（紅圈）
 
 用法（在任何目錄）：
   python Src/UI_Control/tools/debug_bat_head.py "Db/WeiShu/2026-10-29/T座/WeiShu_H01" "Db/WeiShu/2026-10-29/T座/WeiShu_H02"
@@ -120,6 +120,8 @@ def write_video(path, folder, track, phases):
                 cv2.line(img, (int(r.end1_x), int(r.end1_y)), (int(r.end2_x), int(r.end2_y)), (255, 255, 0), 2)
                 cv2.circle(img, (int(r.end1_x), int(r.end1_y)), 6, (255, 255, 0), -1)
                 cv2.circle(img, (int(r.end2_x), int(r.end2_y)), 6, (255, 255, 0), -1)
+            if pd.notna(r.get("wrist_x")):
+                cv2.drawMarker(img, (int(r.wrist_x), int(r.wrist_y)), (0, 255, 0), cv2.MARKER_CROSS, 24, 3)
             cv2.circle(img, (int(r.head_x), int(r.head_y)), 10, (0, 0, 255), 3)
             speed = r.speed_px_per_frame
             text = f"head ({r.head_x:.0f},{r.head_y:.0f})  speed {speed:.1f} px/f" if pd.notna(speed) else \
