@@ -5,7 +5,7 @@
 
 每個資料夾輸出：
   debug_bat_head.csv   每幀棒頭位置、遮罩兩端、速度（px/幀，有 frame_times.csv 時另算 px/s）
-  debug_bat_head.png   棒頭 x、y、速度與前腳腳跟高度曲線，標出離地、著地、擊球（原始最高速幀與 + IMPACT_OFFSET 後）、偵測到球的幀
+  debug_bat_head.png   棒頭 x、y、速度與前腳腳跟／腳尖高度曲線，標出離地、著地、擊球（原始最高速幀與 + IMPACT_OFFSET 後）、偵測到球的幀
   debug_bat_head.mp4   （加 --video）側面影片畫上遮罩兩端（青）、手腕中點（綠十字）與棒頭
                        （紅圈；灰圈為不合理跳動、已排除）
 
@@ -64,6 +64,8 @@ def analyse(folder, batter_index):
         step = track["speed_px_per_frame"] * gap
         track["speed_px_per_s"] = (step / dt).where(track["speed_px_per_frame"].notna())
     heel = pd.DataFrame({"frame": detector.heel_frames, "height": detector.heel_vals})
+    toe = pd.DataFrame({"frame": detector.toe_frames, "toe_height": detector.toe_vals})
+    heel = heel.merge(toe, on="frame", how="outer").sort_values("frame")
     return phases, track, ball_frames(ball), len(bat), heel
 
 
@@ -94,6 +96,7 @@ def write_plot(path, folder, track, phases, balls, heel):
     axes[0].legend(loc="upper left", fontsize=8)
     axes[1].legend(loc="upper left", fontsize=8)
     axes[3].plot(heel["frame"], heel["height"], ".-", label="front heel height (px)", color="tab:brown")
+    axes[3].plot(heel["frame"], heel["toe_height"], ".-", label="front toe height (px)", color="tab:olive")
     axes[3].axhline(heel["height"].min() + PhaseDetector.LAND_TOL_PX if len(heel) else 0, color="gray",
                     linestyle=":", label=f"min + {PhaseDetector.LAND_TOL_PX:g} px")
     axes[2].legend(loc="upper left", fontsize=8)
