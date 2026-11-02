@@ -319,8 +319,9 @@ class Analysis3DWidget(QWidget):
             self.view_scale = 1.0
             self.has_metric_scale = False
             print("[Analysis3D] 找不到校正檔，使用程式內寫死的舊參數（沒有真實尺度）")
-        # 換校正等於換座標系，舊的骨架原點不能沿用
+        # 換校正等於換座標系，舊的骨架原點與地面不能沿用（下一幀依新座標重畫地面）
         self.__dict__.pop("origin", None)
+        self.ground_initialized = False
         self.P1 = None
         self.P2 = None
         print("Loading Parameters Success!")
