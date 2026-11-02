@@ -74,14 +74,26 @@ def calculate(args):
     print(f"棋盤格：內角點 {pattern[0]}x{pattern[1]}，每格 {square:g} mm｜正面 SN{roles[0]}、側面 SN{roles[1]}｜"
           f"{BATTER_SIDES.get(side, '未標打擊方向（右打、左打都可用）')}")
 
-    entries = {}
-    for role, sn in zip(("front", "side"), roles):
-        print()
-        entry, _ = intrinsic.calibrate_session_camera(session, role, sn, pattern, square, focals[role] or 0.0)
-        if entry is None:
-            return 1
-        entries[sn] = entry
-    save_json(session / "intrinsics.json", entries)
+    stored = info.get("intrinsics") or {}
+    if info.get("reused_intrinsics") and all(sn in stored for sn in roles):
+        # 只校正外參的 session 只拍了配對照片，沿用拍攝時記下的內參，不重算
+        entries = {sn: stored[sn] for sn in roles}
+        print("\n只校正外參：沿用拍攝時的內參 " + "、".join(
+            f"SN{sn} RMS {entries[sn]['rms']:.3f} px" for sn in roles))
+    else:
+        entries = {}
+        for role, sn in zip(("front", "side"), roles):
+            print()
+            entry, _ = intrinsic.calibrate_session_camera(session, role, sn, pattern, square, focals[role] or 0.0)
+            if entry is None:
+                return 1
+            # 與精靈相同：內參不合格就不算外參，免得採用時蓋掉 intrinsics_all.json 裡較好的內參
+            if entry["rms"] > intrinsic.RMS_MAX:
+                print(f"   ✘ SN{sn} 內參 RMS {entry['rms']:.3f} px 超過 {intrinsic.RMS_MAX} px，未計算外參")
+                return 1
+            entries[sn] = entry
+        save_json(session / "intrinsics.json", entries)
+        print(f"\n已寫入 {session / 'intrinsics.json'}")
 
     print("\n== 外參（cf/、cs/ 同名照片）")
     try:
@@ -98,7 +110,6 @@ def calculate(args):
         print(f"   姿態不一致而剔除：{'、'.join(report['rejected_pairs'])}")
     for warning in report["warnings"]:
         print(f"   REVIEW：{warning}")
-    print(f"\n已寫入 {session / 'intrinsics.json'}")
 
     if fit["stereo_rms_px"] > MAX_STEREO_RMS:
         save_rejected(session, report)
