@@ -66,7 +66,11 @@ def calculate(args):
     info = json.loads(info_path.read_text(encoding="utf-8")) if info_path.exists() else {}
     pattern = args.pattern or tuple(info.get("pattern") or DEFAULT_PATTERN)
     square = info.get("square_size_mm") or DEFAULT_SQUARE_MM
-    roles = (str(info.get("front") or "front"), str(info.get("side") or "side"))
+    # 序號會寫進 camera_roles.json 與 intrinsics_all.json，不能用猜的
+    if not info.get("front") or not info.get("side"):
+        print(f"✘ {info_path} 沒有記錄相機序號，請補上 \"front\"、\"side\"（例如 \"25083472\"、\"24380119\"）後再算")
+        return 1
+    roles = (str(info["front"]), str(info["side"]))
     focal_info = info.get("lens_focal_mm") or {}
     focals = {role: focal_info.get(role, DEFAULT_FOCAL_MM[role]) for role in ("front", "side")}
     print(f"Session：{session}")
