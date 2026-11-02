@@ -245,6 +245,8 @@ class PhaseDetector:
     JUMP_MAX_PX = 100.0
     # 擊球點 = 棒頭最高速幀 + IMPACT_OFFSET（H01、H02 最高速幀比畫面上的擊球早約 1 幀）
     IMPACT_OFFSET = 1
+    # 著地：腳跟高度在區間最低點 + LAND_TOL_PX 以內即視為貼地（吸收關節點幾 px 的抖動）
+    LAND_TOL_PX = 2.0
 
     @staticmethod
     def _bat_ends_from_mask(mask_data):
@@ -394,59 +396,28 @@ class PhaseDetector:
 
     def _detect_landing(self, F_liftoff: Optional[int], F_impact: Optional[int]) -> Optional[int]:
         """
-        偵測前腳著地：
-        先鎖定抬腿最高點，然後往後尋找腳跟高度第一次跌回閾值以下的瞬間（並加上少許偏移來對齊實際踩穩的時刻）。
+        偵測前腳著地：在「離地幀 ～ 擊球幀」之間，腳跟高度（未平滑）回到最低點附近
+        （最低點 + LAND_TOL_PX 以內）且連續 land_hold 幀的第一幀。
+        找不到連續幀時退回區間內的最低點。
         """
-        if F_liftoff is None or len(self.heel_smooth) == 0:
+        if F_liftoff is None or len(self.heel_vals) == 0:
             return None
-
-        # 1. 確定搜尋範圍的起始索引 (Liftoff 之後)
-        try:
-            start_idx = int(np.where(self.heel_frames >= F_liftoff)[0][0])
-        except IndexError:
-            return None
-
-        # 2. 確定搜尋範圍的結束索引 (Impact 之前，若無 Impact 則搜尋到最後)
-        end_idx = len(self.heel_smooth)
+        in_range = self.heel_frames >= F_liftoff
         if F_impact is not None:
-            try:
-                # 找到最後一個小於等於 F_impact 的位置
-                potential_end = np.where(self.heel_frames <= F_impact)[0]
-                if len(potential_end) > 0:
-                    end_idx = int(potential_end[-1]) + 1
-            except IndexError:
-                pass
-
-        # 如果範圍無效則回傳 None
-        if start_idx >= end_idx:
+            in_range &= self.heel_frames <= F_impact
+        idx = np.where(in_range)[0]
+        if len(idx) == 0:
             return None
 
-        # 3. 找抬腿最高點 (在 Liftoff 和 Impact 之間)
-        search_zone = self.heel_smooth[start_idx:end_idx]
-        if len(search_zone) == 0:
-            return None
-        rel_peak_idx = int(np.argmax(search_zone))
-        peak_idx = start_idx + rel_peak_idx
-
-        # 4. 從最高點往後找第一次跌回閾值以下 (不限於 Impact 之前，以防萬一)
-        post_peak_zone = self.heel_smooth[peak_idx:]
-        below_th = (post_peak_zone - self.baseline) < self.th_land
-        below_idxs = np.where(below_th)[0]
-
-        if len(below_idxs) > 0:
-            rel_land_idx = int(below_idxs[0])
-            land_idx = peak_idx + rel_land_idx
-            
-            # 加上少許偏移，對齊實際踩穩
-            offset = 2 
-            land_idx = min(land_idx + offset, len(self.heel_frames) - 1)
-            return int(self.heel_frames[land_idx])
-        else:
-            # Fallback：直接找最低點
-            rel_min_idx = int(np.argmin(post_peak_zone))
-            land_idx = peak_idx + rel_min_idx
-            return int(self.heel_frames[land_idx])
-
+        frames = self.heel_frames[idx]
+        heights = self.heel_vals[idx]
+        low = heights <= float(np.min(heights)) + self.LAND_TOL_PX
+        hold = max(1, self.land_hold)
+        for i in range(len(idx) - hold + 1):
+            # 連續 hold 幀都貼地，且中間沒有缺幀
+            if low[i:i + hold].all() and frames[i + hold - 1] - frames[i] == hold - 1:
+                return int(frames[i])
+        return int(frames[int(np.argmin(heights))])
 
     # ----------------- 對外介面 -----------------
 
