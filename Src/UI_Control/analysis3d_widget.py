@@ -297,7 +297,11 @@ class Analysis3DWidget(QWidget):
 
     def onBatterSideChanged(self):
         """右打、左打的側面相機擺位不同，換用對應的校正；已載入資料夾時用新校正重算 3D 畫面與指標"""
-        self.applyStereoCalibration(load_stereo_params(self.folder, self.currentBatterSide()))
+        params = load_stereo_params(self.folder, self.currentBatterSide())
+        # 兩側挑到同一份校正（例如沒標打擊方向的舊校正）時結果相同，不必重算
+        if (params.source if params else None) == getattr(self, "calibration_source", ""):
+            return
+        self.applyStereoCalibration(params)
         # 影片還在讀取時，讀完的 updateVideoInfo 就會用新校正，不必在這裡重算
         if self.folder and self.video_loader.video_path and not (
                 self.video_loader.is_loading or self.video_loader_raw.is_loading):
@@ -326,8 +330,11 @@ class Analysis3DWidget(QWidget):
         self.P2 = None
         print("Loading Parameters Success!")
         self.computeEssenMatrix()
-        if hasattr(self, "view"):
+        # 校正沒換時保留使用者調整過的視角（例如載入同一天的下一個資料夾）
+        source = params.source if params else None
+        if hasattr(self, "view") and source != getattr(self, "calibration_source", ""):
             self.change2DefaultView()
+        self.calibration_source = source
 
     def initVispyCanvas(self):
         app.use_app('PyQt5')
