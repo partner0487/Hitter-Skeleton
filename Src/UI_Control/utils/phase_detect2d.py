@@ -239,6 +239,11 @@ class PhaseDetector:
 
         return segments
 
+    # 棒頭離前後各 JUMP_WINDOW 幀的中位數超過 JUMP_MAX_PX 像素視為錯誤偵測。
+    # 依 WeiShu 2026-10-29 T座 H01、H02：揮棒時最多偏 36 px，誤抓手臂的幀 144 px 以上
+    JUMP_WINDOW = 2
+    JUMP_MAX_PX = 100.0
+
     @staticmethod
     def _bat_ends_from_mask(mask_data):
         """球棒遮罩輪廓上相距最遠的兩點 (p1, p2)；讀不到回傳 None"""
@@ -257,7 +262,9 @@ class PhaseDetector:
 
         欄位：frame、head_x、head_y、source（head 欄位或 mask）、end1_x/y、end2_x/y（mask 的兩端）、
         head_rule（wrist：離雙手腕中點較遠的一端是棒頭；higher：該幀附近沒有手腕，退回用 y 較小的一端）、
-        speed_px_per_frame（與前一個有棒頭的幀相比；間隔超過 3 幀為 NaN，不參與比較）
+        repeated（遮罩與上一幀完全相同，是沒偵測到時沿用的舊資料）、
+        jump_px（離前後 JUMP_WINDOW 幀棒頭中位數的距離）、rejected（jump_px > JUMP_MAX_PX，視為錯誤偵測）、
+        speed_px_per_frame（與前一個有效幀相比；repeated、rejected 或間隔超過 3 幀為 NaN，不參與比較）
         """
         rows = []
         if self.bat_df is not None and not self.bat_df.empty:
@@ -291,13 +298,38 @@ class PhaseDetector:
         if track.empty:
             return track
         track = track.drop_duplicates("frame", keep="last").sort_values("frame").reset_index(drop=True)
-        speeds = [np.nan]
-        for i in range(1, len(track)):
-            gap = track.at[i, "frame"] - track.at[i - 1, "frame"]
-            if gap > 3:  # 避免因為斷片掉幀太久造成的計算誤差
-                speeds.append(np.nan)
+
+        # 沒偵測到球棒時 mergeBatData 會沿用上一幀的遮罩，兩端完全相同的幀不是新的偵測：
+        # 不參與跳動判斷與速度，否則棒頭像是停住幾幀再一次追上，產生假的高速
+        ends_cols = [c for c in ("end1_x", "end1_y", "end2_x", "end2_y") if c in track] or ["head_x", "head_y"]
+        ends = track[ends_cols].to_numpy()
+        track["repeated"] = np.r_[False, np.all(ends[1:] == ends[:-1], axis=1)]
+
+        # 排除不合理跳動：遮罩誤抓到手臂等物體時，棒頭會跳到別處再跳回來，離前後幾幀的中位數很遠；
+        # 真正揮棒時棒頭連續移動，中位數幾乎就是該幀，再快也不會被排除
+        frames = track["frame"].to_numpy()
+        heads_xy = track[["head_x", "head_y"]].to_numpy()
+        detected = ~track["repeated"].to_numpy()
+        jumps = np.full(len(track), np.nan)
+        for i, f in enumerate(frames):
+            if not detected[i]:
                 continue
-            speeds.append(float(np.linalg.norm(track.at[i, "_head"] - track.at[i - 1, "_head"]) / gap))
+            window = detected & (np.abs(frames - f) <= self.JUMP_WINDOW)
+            if window.sum() >= 3:  # 前後資料太少時無法判斷，不排除
+                jumps[i] = float(np.linalg.norm(heads_xy[i] - np.median(heads_xy[window], axis=0)))
+        track["jump_px"] = jumps
+        track["rejected"] = track["jump_px"] > self.JUMP_MAX_PX
+
+        speeds = [np.nan] * len(track)
+        prev = None
+        for i in range(len(track)):
+            if track.at[i, "rejected"] or track.at[i, "repeated"]:
+                continue
+            if prev is not None:
+                gap = track.at[i, "frame"] - track.at[prev, "frame"]
+                if gap <= 3:  # 避免因為斷片掉幀太久造成的計算誤差
+                    speeds[i] = float(np.linalg.norm(track.at[i, "_head"] - track.at[prev, "_head"]) / gap)
+            prev = i
         track["speed_px_per_frame"] = speeds
         return track.drop(columns="_head")
 
