@@ -396,9 +396,13 @@ class PhaseDetector:
 
     def _detect_landing(self, F_liftoff: Optional[int], F_impact: Optional[int]) -> Optional[int]:
         """
-        偵測前腳著地：在「離地幀 ～ 擊球幀」之間，腳跟高度（未平滑）回到最低點附近
+        偵測前腳著地：在「抬腿最高點 ～ 擊球幀」之間，腳跟高度（未平滑）回到最低點附近
         （最低點 + LAND_TOL_PX 以內）且連續 land_hold 幀的第一幀。
         找不到連續幀時退回區間內的最低點。
+
+        從抬腿最高點（離地～擊球間腳跟最高的幀）開始找，而不是從離地幀：
+        跨步後腳落在不同位置，畫面上的地面高度會變（H06 落地後腳跟仍比起始高約 18 px），
+        若從離地幀開始找，最低點會落在還沒抬腳的幀上。
         """
         if F_liftoff is None or len(self.heel_vals) == 0:
             return None
@@ -408,6 +412,7 @@ class PhaseDetector:
         idx = np.where(in_range)[0]
         if len(idx) == 0:
             return None
+        idx = idx[int(np.argmax(self.heel_vals[idx])):]
 
         frames = self.heel_frames[idx]
         heights = self.heel_vals[idx]
