@@ -908,6 +908,7 @@ class Analysis2dWidget(QWidget):
 
     def detectPhases(self):
         # 這裡直接做階段偵測
+        self.phase_detector = None  # 避免沿用上一支影片的棒頭軌跡
         # 確保獲取到最新的 DataFrame
         self.person_side_df = self.pose_estimater_2.person_df
         # 也要獲取球和球棒的 DataFrame (如果 detectKpt 有更新它們的話)
@@ -929,6 +930,7 @@ class Analysis2dWidget(QWidget):
                 th_land=5.0,
                 land_hold=3,
             )
+            self.phase_detector = detector  # 揮棒速度也用它的棒頭軌跡
             self.phase_result = detector.detect_phases()
             
         if not hasattr(self, 'phase_result') or self.phase_result is None:
@@ -1739,77 +1741,22 @@ class Analysis2dWidget(QWidget):
         attack_angle = np.degrees(np.arctan2(-avg_dy, abs(avg_dx)))
         attack_angle = abs(attack_angle)
 
-        # 2. 揮棒速度
-        fps = get_video_fps(self.video_loader)
-        px_to_meter = 0.0032  # 比例尺
-        
-        # =========================================================================
-        # (原本的計算方式，已註解以供比較)
-        # =========================================================================
-        # speed_mps = (avg_pixel_dist * px_to_meter) * fps
-        # speed_kmh = speed_mps * 3.6
-        # old_min, old_max = 0, 100
-        # new_min, new_max = 93, 130
-        # normalized_val = ((speed_kmh - old_min) / (old_max - old_min)) * (new_max - new_min) + new_min
-        # normalized_val = max(new_min, min(new_max, normalized_val))
-        # speed_kmh_old = normalized_val
-        # =========================================================================
-
-        # =========================================================================
-        # (新的計算方式：基於 landing 到 impact 之間的實際路徑與時間)
-        # =========================================================================
-        landing_frame_to_use = landing_frame if (landing_frame is not None and landing_frame > 0) else max(0, impact_frame - 15)
-        path_heads = {}
-        # 搜尋從 landing 到 impact 的所有幀，直接從已找到的 heads 字典中提取
-        for f in range(int(landing_frame_to_use), int(impact_frame) + 1):
-            if f in heads:
-                path_heads[f] = heads[f]
-                    
-        path_f = sorted(path_heads.keys())
-        
-        # 診斷列印
-        print(f"[DEBUG 2D ALL HEADS]")
-        for k in sorted(heads.keys()):
-            print(f"  - Frame {k}: {heads[k]}")
-        print(f"[DEBUG 2D] landing_frame_to_use={landing_frame_to_use}, impact_frame={impact_frame}")
-        for k in path_f:
-            print(f"  - Path Frame {k}: {path_heads[k]}")
-        
-        # 計算總像素路徑長度
-        total_path_px = 0.0
-        for i in range(len(path_f) - 1):
-            p_prev = path_heads[path_f[i]]
-            p_curr = path_heads[path_f[i+1]]
-            dist = np.linalg.norm(p_curr - p_prev)
-            print(f"    - Frame {path_f[i]} -> {path_f[i+1]} dist: {dist:.4f}")
-            total_path_px += dist
-            
-        # 計算時間差 (秒)
-        frames_diff = max(1, impact_frame - landing_frame_to_use)
-        duration_sec = frames_diff / fps
-        
-        # 計算速度 (m/s) 與速度 (km/h, 原始)
-        new_speed_mps = (total_path_px * px_to_meter) / duration_sec
-        new_speed_kmh_raw = new_speed_mps * 3.6
-        
-        # 新方法改用直接加 80 的偏移量計算最終速度
-        speed_kmh = new_speed_kmh_raw + 80
-        
-        # 計算並輸出舊方法的歸一化結果以供比對
-        old_min, old_max = 0, 100
-        new_min, new_max = 93, 130
-        old_speed_mps = (avg_pixel_dist * px_to_meter) * fps
-        old_speed_kmh_raw = old_speed_mps * 3.6
-        old_normalized_val = ((old_speed_kmh_raw - old_min) / (old_max - old_min)) * (new_max - new_min) + new_min
-        old_normalized_val = max(new_min, min(new_max, old_normalized_val))
-        
-        # 更新 UI
+        # 2. 揮棒速度：棒頭最高速（與擊球點同一幀）× 球棒長度換算的比例尺
+        #    舊做法是「著地到擊球的平均路徑速度 + 80」，+80 為經驗補償、不是實際速度
         self.ui.horizontalAngleEditLabel.setText(f"{attack_angle:.1f}°")
+        detector = getattr(self, "phase_detector", None)
+        peak = detector.peak_bat_speed() if detector is not None else None
+        if peak is None:
+            print("[BatMetrics] 揮棒速度: 沒有棒頭速度資料")
+            self.ui.batSpeedLabel.setText("N/A")
+            return
+        peak_frame, speed_px, bat_px = peak
+        fps = get_video_fps(self.video_loader)
+        m_per_px = detector.BAT_LENGTH_M / bat_px
+        speed_kmh = speed_px * m_per_px * fps * 3.6
         self.ui.batSpeedLabel.setText(f"{speed_kmh:.1f}kmh")
-        
-        print(f"[BatMetrics] 成功 (比較模式):")
-        print(f"  - 舊方法 (前後±10幀平均位移): 原始={old_speed_kmh_raw:.2f} kmh, 歸一化={old_normalized_val:.2f} kmh")
-        print(f"  - 新方法 (landing到impact路徑): 原始={new_speed_kmh_raw:.2f} kmh, 偏移後 (+80)={speed_kmh:.2f} kmh, 總路徑像素={total_path_px:.2f}, 幀數={len(path_f)}/{frames_diff}, 時間={duration_sec:.4f}秒")
+        print(f"[BatMetrics] 揮棒速度 {speed_kmh:.1f} km/h：最高速幀 {peak_frame}，{speed_px:.1f} px/幀，"
+              f"球棒 {bat_px:.0f} px = {detector.BAT_LENGTH_M} m，fps {fps:.1f}")
 
 
 
