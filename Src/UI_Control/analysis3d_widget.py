@@ -145,6 +145,13 @@ class Analysis3DWidget(QWidget):
         super().__init__(parent)
         self.ui = Ui_hitter_ui_dual()
         self.ui.setupUi(self)
+        # 擊球區塊與 2D 頁一致：揮棒速度在上排、揮棒垂直角度在下排
+        grid = self.ui.gridLayout_5
+        for row, widgets in ((0, (self.ui.batSpeed, self.ui.batSpeedLabel, self.ui.label_5)),
+                             (2, (self.ui.verticalAngleLabel, self.ui.verticalAngleEditLabel, self.ui.label_7))):
+            for col, w in enumerate(widgets, start=3):
+                grid.removeWidget(w)
+                grid.addWidget(w, row, col, 1, 1)
         self.folder = None
         self.frame = 0
         self.total_frames = 0
