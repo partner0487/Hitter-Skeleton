@@ -29,7 +29,7 @@ from utils.phase_detect2d import PhaseDetector, PhaseResult
 from ocr import ocr_capture_1time as ocr
 from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS
 from utils.fps_utils import get_video_fps
-from utils.bat_speed2d import bat_speed_2d, read_frame_times
+from utils.bat_speed2d import blast_metrics_2d, read_frame_times
 from utils.stereo_calibration import load_stereo_params
 
 class AnalysisBar(QWidget):
@@ -1653,118 +1653,28 @@ class Analysis2dWidget(QWidget):
 
 
     def calculateBatMetrics2D(self, impact_frame: int, landing_frame: int = None):
-        """基於 2D 軌跡計算攻擊角度與速度 (全相容模式：支援 Mask 與 BBox)"""
-        if impact_frame is None or self.bat_side_df is None or self.bat_side_df.empty:
-            print(f"[BatMetrics] 失敗: impact_frame={impact_frame}, df_empty={self.bat_side_df is None or self.bat_side_df.empty}")
-            return
-
-        print(f"[BatMetrics] 檢查資料欄位: {self.bat_side_df.columns.tolist()}")
-
-        def get_bat_head_2d(df_row):
-            """從資料中提取棒頭座標 (優先 Mask, 次選 BBox)"""
-            # 1. 嘗試從 Mask 提取 (高精度)
-            mask_data = df_row.get("mask")
-            if mask_data is not None:
-                try:
-                    contours = mask_data[1][0].reshape(-1, 2)
-                    dist_matrix = np.linalg.norm(contours[:, None, :] - contours[None, :, :], axis=-1)
-                    i, j = np.unravel_index(np.argmax(dist_matrix), dist_matrix.shape)
-                    p1, p2 = contours[i], contours[j]
-                    return p1 if p1[1] < p2[1] else p2 
-                except: pass
-            
-            # 2. 嘗試從 BBox 提取 (相容模式)
-            bbox = df_row.get("bbox")
-            if bbox is not None:
-                try:
-                    # bbox 格式通常為 [x1, y1, x2, y2]
-                    if isinstance(bbox, (list, np.ndarray)) and len(bbox) >= 4:
-                        x1, y1, x2, y2 = bbox[:4]
-                        # 根據打擊趨勢，棒頭通常在上方或位移前端
-                        # 這裡簡單取 Y 較小的點 (畫面較上方) 作為棒頭估計
-                        return np.array([x1, y1]) if y1 < y2 else np.array([x2, y2])
-                except: pass
-            
-            return None
-
-        # --- 搜尋範圍 ±10 幀 ---
-        frames_to_check = range(impact_frame - 10, impact_frame + 11)
-        heads = {}
-
-        for f in frames_to_check:
-            if f < 0: continue
-            f_df = self.bat_side_df[self.bat_side_df['frame_number'] == f]
-            if not f_df.empty:
-                head_pt = get_bat_head_2d(f_df.iloc[-1])
-                if head_pt is not None:
-                    heads[f] = head_pt
-
-        valid_f = sorted(heads.keys())
-        print(f"[BatMetrics] 找到有效幀: {valid_f}")
-
-        if len(valid_f) < 2:
-            print("[BatMetrics] 失敗: 有效幀少於 2 幀，無法計算位移。")
-            self.ui.batSpeedLabel.setText("N/A")
-            self.ui.horizontalAngleEditLabel.setText("N/A")
-            return
-
-        all_dx = []
-        all_dy = []
-        all_dt = [] # 記錄時間差
-
-        # 計算位移向量，並考慮非連續幀的時間權重
-        for i in range(len(valid_f) - 1):
-            f_curr = valid_f[i+1]
-            f_prev = valid_f[i]
-            gap = f_curr - f_prev # 幀數差
-            
-            p_curr = heads[f_curr]
-            p_prev = heads[f_prev]
-            
-            dx = (p_curr[0] - p_prev[0]) / gap
-            dy = (p_curr[1] - p_prev[1]) / gap
-            
-            if np.sqrt(dx**2 + dy**2) > 0.5: # 降低過濾門檻，確保能算出數字
-                all_dx.append(dx)
-                all_dy.append(dy)
-
-        if not all_dx:
-            print("[BatMetrics] 失敗: 位移過小或無效。")
-            self.ui.batSpeedLabel.setText("0.0kmh")
-            self.ui.horizontalAngleEditLabel.setText("0.0°")
-            return
-
-        # 計算平均單位位移 (每幀位移)
-        avg_dx = np.mean(all_dx)
-        avg_dy = np.mean(all_dy)
-        avg_pixel_dist = np.sqrt(avg_dx**2 + avg_dy**2)
-
-        # 1. 攻擊角度
-        attack_angle = np.degrees(np.arctan2(-avg_dy, abs(avg_dx)))
-        attack_angle = abs(attack_angle)
-
-        # 2. 揮棒速度：前腳著地到擊球點，棒頭路徑 ÷ 實際經過時間（見 utils/bat_speed2d.py）
-        #    舊做法是「平均路徑速度 + 80」，+80 為經驗補償、不是實際速度
-        self.ui.horizontalAngleEditLabel.setText(f"{attack_angle:.1f}°")
+        """揮棒速度與攻擊角度，採 Blast Motion 定義：擊球瞬間甜蜜點（距棒頭 6 吋）的速度與移動方向（見 utils/bat_speed2d.py）"""
         detector = getattr(self, "phase_detector", None)
         folder = os.path.dirname(self.video_loader.video_path) if self.video_loader.video_path else None
         side = "right" if self.ui.batterInput.currentText() == "右打" else "left"
         calib = load_stereo_params(folder, side) if folder else None
-        result = bat_speed_2d(
+        result = blast_metrics_2d(
             detector.bat_head_track() if detector is not None else None,
-            landing_frame, impact_frame,
+            impact_frame,
             fps=get_video_fps(self.video_loader),
             frame_times=read_frame_times(folder),
             K=calib.K_side if calib else None,
             dist=calib.dist_side if calib else None,
         )
         if result is None:
-            print("[BatMetrics] 揮棒速度: 著地到擊球之間的棒頭資料不足")
+            print(f"[BatMetrics] 擊球點 {impact_frame} 附近沒有足夠的棒頭資料")
             self.ui.batSpeedLabel.setText("N/A")
+            self.ui.horizontalAngleEditLabel.setText("N/A")
             return
         self.ui.batSpeedLabel.setText(f"{result.speed_kmh:.1f}kmh")
-        print(f"[BatMetrics] 揮棒速度 {result.speed_kmh:.1f} km/h：幀 {result.first_frame}→{result.last_frame}"
-              f"（{result.n_points} 點），路徑 {result.path_m:.2f} m，{result.duration_s:.3f} s（{result.timed_by}），"
+        self.ui.horizontalAngleEditLabel.setText(f"{result.attack_angle_deg:.1f}°")
+        print(f"[BatMetrics] 揮棒速度 {result.speed_kmh:.1f} km/h、攻擊角度 {result.attack_angle_deg:+.1f}°："
+              f"甜蜜點 幀 {result.from_frame}→{result.to_frame}，{result.duration_s * 1000:.1f} ms（{result.timed_by}），"
               f"球棒 {result.bat_px:.0f} px，{'已' if result.undistorted else '未'}去畸變")
 
 
