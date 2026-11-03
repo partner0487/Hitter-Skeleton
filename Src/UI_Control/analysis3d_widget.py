@@ -22,6 +22,7 @@ from cv_utils.cv_control_dual import VideoLoader as VideoLoaderDual
 from utils.vis_image_3d import ImageDrawer
 from ui.dual_camera_system_video import Ui_hitter_ui_dual 
 from utils.phase_detect3d import PhaseDetector, PhaseResult
+from utils.phase_detect2d import PhaseDetector as PhaseDetector2D
 from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
 from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
@@ -1443,6 +1444,7 @@ class Analysis3DWidget(QWidget):
         self.reset4Process()
         # 畫面已換成新錄影，切換右打／左打時不可再重算、改寫先前資料夾的 3D
         self.folder = None
+        self.bat_side_df = pd.DataFrame()  # 不沿用上一個資料夾的側面球棒遮罩
         self.is_dual = True
         self.ui.showSkeletonCheckBox.setChecked(False)
         self.ui.selectCheckBox.setChecked(False)
@@ -1629,6 +1631,12 @@ class Analysis3DWidget(QWidget):
         self.person_front_df = get_json_df("person_front.json")
         self.batht_side_df   = get_json_df("batht_side.json")
         self.batht_front_df  = get_json_df("batht_front.json")
+        # 側面球棒遮罩：階段偵測與 2D 頁共用。只讀最上層（CF_ 子目錄裡的 bat_side.json 其實是正面相機的）
+        bat_side_path = os.path.join(folder, "bat_side.json")
+        try:
+            self.bat_side_df = pd.read_json(bat_side_path, orient='records') if os.path.exists(bat_side_path) else pd.DataFrame()
+        except ValueError:
+            self.bat_side_df = pd.DataFrame()
         self.ball_side_df    = get_json_df("ball_side.json")
         self.ball_front_df   = get_json_df("ball_front.json")
 
@@ -1767,15 +1775,27 @@ class Analysis3DWidget(QWidget):
             usable_batht = getattr(self, 'batht_front_df', None)
 
         batter_idx = self.ui.batterInput.currentIndex()
-        detector = PhaseDetector(
-            person_df=self.person_side_df,
-            batter_index=batter_idx,
-            ball_df=self.ball_side_df,
-            batht_df=usable_batht,
-            th_lift=5.0,
-            th_land=5.0,
-            land_hold=3,
-        )
+        bat_side_df = getattr(self, "bat_side_df", None)
+        if bat_side_df is not None and not bat_side_df.empty:
+            # 有側面球棒遮罩時與 2D 頁同一套（擊球 = 棒頭最高速、手腕分棒頭、略過孤立尖峰）；
+            # WeiShu 等資料的 batht_side.json 是空的，舊做法找不到擊球點
+            detector = PhaseDetector2D(
+                person_df=self.person_side_df,
+                batter_index=batter_idx,
+                ball_df=self.ball_side_df,
+                bat_df=bat_side_df,
+                land_hold=3,
+            )
+        else:
+            detector = PhaseDetector(
+                person_df=self.person_side_df,
+                batter_index=batter_idx,
+                ball_df=self.ball_side_df,
+                batht_df=usable_batht,
+                th_lift=5.0,
+                th_land=5.0,
+                land_hold=3,
+            )
         self.phase_detector = detector
         self.phase_result = detector.detect_phases()
         
