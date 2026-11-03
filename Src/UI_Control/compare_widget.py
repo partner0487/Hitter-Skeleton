@@ -743,9 +743,16 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         self.playBtn.setText("||" if self.is_playing else "▶︎")
         
         if self.is_playing:
+            # 兩邊都已播到最後一幀時從頭播放（維持兩支影片的相對偏移）
+            if self._is_at_end():
+                self.frameSlider.setValue(0)
             self.update_playback_speed()
         else:
             self.timer.stop()
+
+    def _is_at_end(self):
+        curr = self.frameSlider.value()
+        return curr >= self.frameSlider.maximum() and (curr + self.offset) >= self.frameSlider2.maximum()
 
     def update_playback_speed(self):
         if not self.is_playing:
@@ -763,10 +770,9 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         self.timer.start(interval)
 
     def update_frames_timer(self):
-        curr = self.frameSlider.value()
         # 當任何一個播放器還沒到底的時候，繼續播
-        if curr < self.frameSlider.maximum() or (curr + self.offset) < self.frameSlider2.maximum():
-            self.frameSlider.setValue(curr + 1)
+        if not self._is_at_end():
+            self.frameSlider.setValue(self.frameSlider.value() + 1)
         else:
             self.toggle_play()
 
