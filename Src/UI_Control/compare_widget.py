@@ -260,8 +260,8 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         self.frameSlider2.valueChanged.connect(lambda: self.on_individual_slider_changed(2))
 
         # ============ Master 控制 (同步) ============
-        # 當個別調整時，我們 "紀錄" 變化，一旦按壓主 Slider，以此為參考
-        self.frameSlider.sliderPressed.connect(self.record_offset)
+        # 偏移只在使用者拖動個別拉條時更新（on_individual_slider_changed）；
+        # 按主拉條時不重算，否則播完後兩側都被夾在最後一幀，偏移會被歸零、主拉條跳回
         self.frameSlider.valueChanged.connect(self.sync_scroll)
         
         self.playBtn.clicked.connect(self.toggle_play)
@@ -712,15 +712,6 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
             ends.append(self.p2.total_frames - 1 - self.offset)
         self.frameSlider.setMaximum(max(ends + [0]))
         
-    def record_offset(self):
-        """ 當滑鼠點擊主拉條時，計算 Player 2 相對於 Player 1 的幀數差 """
-        self.offset = self.frameSlider2.value() - self.frameSlider1.value()
-        
-        self.frameSlider.blockSignals(True)
-        self.update_master_slider()
-        self.frameSlider.setValue(self.frameSlider1.value())
-        self.frameSlider.blockSignals(False)
-
     def sync_scroll(self):
         """ 拖動主拉條時，兩邊維持相對偏移量同步移動 """
         self._is_syncing = True
