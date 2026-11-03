@@ -1746,7 +1746,11 @@ class Analysis3DWidget(QWidget):
         self.bat_speed_plot = BatKinematicsGraph(bat_frames, bat_head_pts, total_frames, fps=fps)
         
         # [NEW] 用 3D 真實速度曲線的最高點覆寫 Impact，保證與圖表完美對齊
-        if getattr(self.bat_speed_plot, 'max_speed_frame', None) is not None:
+        # 擊球點已由側面球棒遮罩判斷（與 2D 頁相同）時不覆寫：三角化用的棒頭座標在收棒時常誤判暴衝
+        # （WeiShu T座 H05 側面第 63／64／67 幀、正面第 48 幀），3D 最高速會落在這些幀
+        if getattr(self, "impact_from_masks", False):
+            print(f"3D Impact 沿用側面遮罩判斷的 {self.phase_result.F_impact}（3D 最高速幀 {self.bat_speed_plot.max_speed_frame} 僅供參考）")
+        elif getattr(self.bat_speed_plot, 'max_speed_frame', None) is not None:
             if hasattr(self, 'phase_result') and self.phase_result is not None:
                 print(f"3D Impact override: {self.phase_result.F_impact} -> {self.bat_speed_plot.max_speed_frame}")
                 self.phase_result.F_impact = self.bat_speed_plot.max_speed_frame
@@ -1776,7 +1780,8 @@ class Analysis3DWidget(QWidget):
 
         batter_idx = self.ui.batterInput.currentIndex()
         bat_side_df = getattr(self, "bat_side_df", None)
-        if bat_side_df is not None and not bat_side_df.empty:
+        self.impact_from_masks = bat_side_df is not None and not bat_side_df.empty
+        if self.impact_from_masks:
             # 有側面球棒遮罩時與 2D 頁同一套（擊球 = 棒頭最高速、手腕分棒頭、略過孤立尖峰）；
             # WeiShu 等資料的 batht_side.json 是空的，舊做法找不到擊球點
             detector = PhaseDetector2D(
