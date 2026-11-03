@@ -15,6 +15,7 @@ from cv_utils.cv_control_dual import VideoLoader as VideoLoaderDual
 from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
 from cv_utils.cv_control_dual import DualJsonLoader
 from utils.phase_detect3d import PhaseDetector, PhaseResult
+from utils.phase_detect2d import PhaseDetector as PhaseDetector2D
 import pandas as pd
 from utils.fps_utils import get_video_fps
 
@@ -162,6 +163,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         self.timer.timeout.connect(self.update_frames_timer)
         
         self.init_ui_states()
+        self.init_phase_sync_buttons()
         self.init_signals()
 
     def shutdown(self):
@@ -175,6 +177,53 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
                 p.worker.stop()
                 thread.quit()
                 thread.wait()
+
+    # 關鍵幀同步：按鈕 → PhaseResult 欄位
+    PHASE_SYNC = (("離地", "F_liftoff"), ("著地", "F_landing"), ("擊球", "F_impact"))
+
+    def init_phase_sync_buttons(self):
+        """在 Player 1 打擊者區與 Player 2 檔案區之間加「關鍵幀同步」：兩支影片同時跳到該關鍵幀並以此對齊"""
+        box = QtWidgets.QGroupBox("關鍵幀同步", self.tab)
+        font = QtGui.QFont()
+        font.setPointSize(12)
+        box.setFont(font)
+        row = QtWidgets.QHBoxLayout(box)
+        self.phaseSyncBtns = {}
+        for text, attr in self.PHASE_SYNC:
+            btn = QtWidgets.QPushButton(text, box)
+            btn.clicked.connect(lambda _, a=attr, t=text: self.sync_to_phase(a, t))
+            row.addWidget(btn)
+            self.phaseSyncBtns[attr] = btn
+        # gridLayout_10：第 0 列 Player 1（檔案＋打擊者），第 1 列 Player 2 → 把 Player 2 往下移一列
+        self.gridLayout_10.removeItem(self.gridLayout_14)
+        self.gridLayout_10.addWidget(box, 1, 0, 1, 1)
+        self.gridLayout_10.addLayout(self.gridLayout_14, 2, 0, 1, 1)
+
+    def sync_to_phase(self, attr, name):
+        """兩支影片都跳到同一個關鍵幀，並以此設定偏移（之後拖主拉條、播放都維持對齊）"""
+        frames = {}
+        for idx, p in ((1, self.p1), (2, self.p2)):
+            pr = getattr(p, 'phase_result', None)
+            if p.total_frames > 0 and pr is not None and getattr(pr, attr) is not None:
+                frames[idx] = int(getattr(pr, attr))
+        if not frames:
+            QMessageBox.information(self, "關鍵幀同步", f"兩支影片都沒有{name}幀（需讀取已分析的資料夾）")
+            return
+        if self.is_playing:
+            self.toggle_play()
+
+        if len(frames) == 2:
+            self.offset = frames[2] - frames[1]
+            master = frames[1]
+        elif 1 in frames:
+            master = frames[1]  # 只有 Player 1 有：沿用目前偏移
+        else:
+            master = frames[2] - self.offset
+        self.update_master_slider()
+        self.frameSlider.blockSignals(True)
+        self.frameSlider.setValue(master)
+        self.frameSlider.blockSignals(False)
+        self.sync_scroll()
 
     def init_ui_states(self):
         # 視窗初始分配: 左邊(_1)放 front(CF), 右邊(_2)放 side(CS)
@@ -792,11 +841,22 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
 
         # 1. 執行相位偵測 (偵測 Liftoff, Landing, Impact)
         # 目前預設為右打 (batter_index=0)
-        detector = PhaseDetector(
-            person_df=person_side_df, 
-            batter_index=0,
-            batht_df=p.bat_analyzer_side.batHeadTail_df
-        ) 
+        # 有 bat_side.json 遮罩時與 2D 頁同一套（擊球 = 棒頭最高速，手腕分棒頭）；否則用 batht 的棒頭座標
+        bat_side_df = getattr(p, 'bat_side_df', None)
+        if bat_side_df is not None and not bat_side_df.empty:
+            detector = PhaseDetector2D(
+                person_df=person_side_df,
+                batter_index=0,
+                bat_df=bat_side_df,
+                land_hold=3,
+            )
+        else:
+            detector = PhaseDetector(
+                person_df=person_side_df,
+                batter_index=0,
+                batht_df=p.bat_analyzer_side.batHeadTail_df,
+                land_hold=3,
+            )
         phase_result = detector.detect_phases()
         
         # --- Fallback 找不到 keyphase 時的填補邏輯 ---
