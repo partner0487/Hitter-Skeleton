@@ -29,6 +29,8 @@ from utils.phase_detect2d import PhaseDetector, PhaseResult
 from ocr import ocr_capture_1time as ocr
 from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS
 from utils.fps_utils import get_video_fps
+from utils.bat_speed2d import bat_speed_2d, read_frame_times
+from utils.stereo_calibration import load_stereo_params
 
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
@@ -1741,22 +1743,29 @@ class Analysis2dWidget(QWidget):
         attack_angle = np.degrees(np.arctan2(-avg_dy, abs(avg_dx)))
         attack_angle = abs(attack_angle)
 
-        # 2. 揮棒速度：棒頭最高速（與擊球點同一幀）× 球棒長度換算的比例尺
-        #    舊做法是「著地到擊球的平均路徑速度 + 80」，+80 為經驗補償、不是實際速度
+        # 2. 揮棒速度：前腳著地到擊球點，棒頭路徑 ÷ 實際經過時間（見 utils/bat_speed2d.py）
+        #    舊做法是「平均路徑速度 + 80」，+80 為經驗補償、不是實際速度
         self.ui.horizontalAngleEditLabel.setText(f"{attack_angle:.1f}°")
         detector = getattr(self, "phase_detector", None)
-        peak = detector.peak_bat_speed() if detector is not None else None
-        if peak is None:
-            print("[BatMetrics] 揮棒速度: 沒有棒頭速度資料")
+        folder = os.path.dirname(self.video_loader.video_path) if self.video_loader.video_path else None
+        side = "right" if self.ui.batterInput.currentText() == "右打" else "left"
+        calib = load_stereo_params(folder, side) if folder else None
+        result = bat_speed_2d(
+            detector.bat_head_track() if detector is not None else None,
+            landing_frame, impact_frame,
+            fps=get_video_fps(self.video_loader),
+            frame_times=read_frame_times(folder),
+            K=calib.K_side if calib else None,
+            dist=calib.dist_side if calib else None,
+        )
+        if result is None:
+            print("[BatMetrics] 揮棒速度: 著地到擊球之間的棒頭資料不足")
             self.ui.batSpeedLabel.setText("N/A")
             return
-        peak_frame, speed_px, bat_px = peak
-        fps = get_video_fps(self.video_loader)
-        m_per_px = detector.BAT_LENGTH_M / bat_px
-        speed_kmh = speed_px * m_per_px * fps * 3.6
-        self.ui.batSpeedLabel.setText(f"{speed_kmh:.1f}kmh")
-        print(f"[BatMetrics] 揮棒速度 {speed_kmh:.1f} km/h：最高速幀 {peak_frame}，{speed_px:.1f} px/幀，"
-              f"球棒 {bat_px:.0f} px = {detector.BAT_LENGTH_M} m，fps {fps:.1f}")
+        self.ui.batSpeedLabel.setText(f"{result.speed_kmh:.1f}kmh")
+        print(f"[BatMetrics] 揮棒速度 {result.speed_kmh:.1f} km/h：幀 {result.first_frame}→{result.last_frame}"
+              f"（{result.n_points} 點），路徑 {result.path_m:.2f} m，{result.duration_s:.3f} s（{result.timed_by}），"
+              f"球棒 {result.bat_px:.0f} px，{'已' if result.undistorted else '未'}去畸變")
 
 
 
