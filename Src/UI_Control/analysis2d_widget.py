@@ -163,6 +163,13 @@ class Analysis2dWidget(QWidget):
         # 揮棒垂直角度（擊球時球棒低於水平的角度）同理：擊球時球棒朝側面相機伸出，2D 投影會失真，只在 3D 頁顯示
         self.ui.verticalAngleLabel3.hide()
         self.ui.verticalAngleEditLabel3.hide()
+        # 隱藏後擊球區塊上排空一格：揮棒速度移到上排，揮棒垂直角度（已隱藏）移到下排
+        grid = self.ui.gridLayout_5
+        for row, widgets in ((0, (self.ui.batSpeed, self.ui.batSpeedLabel, self.ui.label_5)),
+                             (2, (self.ui.verticalAngleLabel3, self.ui.verticalAngleEditLabel3, self.ui.label_4))):
+            for col, w in enumerate(widgets, start=3):
+                grid.removeWidget(w)
+                grid.addWidget(w, row, col, 1, 1)
         self.model = model
         self.setupComponents()
         self.initVar()
