@@ -696,22 +696,28 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         # 使用者手動拖曳或點擊獨立拉條時，更新 offset 並同步主拉條
         self.offset = self.frameSlider2.value() - self.frameSlider1.value()
         self.frameSlider.blockSignals(True)
+        self.update_master_slider()
         self.frameSlider.setValue(self.frameSlider1.value())
         self.frameSlider.blockSignals(False)
 
 
     # ================= 同步與播放控制邏輯 =================
     def update_master_slider(self):
-        max1 = self.frameSlider1.maximum()
-        max2 = self.frameSlider2.maximum()
-        # 主 Slider 基準以1為主，也可以單純取最大值
-        self.frameSlider.setMaximum(max(max1, max2))
+        """主拉條範圍：涵蓋已載入影片的最後一幀；Player 2 依偏移換算（偏移為負時要多播幾幀）。
+        未載入的一側不算（其拉條仍是預設的 100）。"""
+        ends = []
+        if self.p1.total_frames > 0:
+            ends.append(self.p1.total_frames - 1)
+        if self.p2.total_frames > 0:
+            ends.append(self.p2.total_frames - 1 - self.offset)
+        self.frameSlider.setMaximum(max(ends + [0]))
         
     def record_offset(self):
         """ 當滑鼠點擊主拉條時，計算 Player 2 相對於 Player 1 的幀數差 """
         self.offset = self.frameSlider2.value() - self.frameSlider1.value()
         
         self.frameSlider.blockSignals(True)
+        self.update_master_slider()
         self.frameSlider.setValue(self.frameSlider1.value())
         self.frameSlider.blockSignals(False)
 
@@ -730,8 +736,8 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
             idx2 = max(0, min(new_side_val, self.p2.total_frames - 1)) if self.p2.total_frames > 0 else 0
             self.frameSlider2.setValue(idx2)
             
-            total_max = max(self.p1.total_frames, self.p2.total_frames)
-            self.frameNumLabel.setText(f"同步幀: {val} / {total_max}")
+            # 與兩側標籤一致用 1-based：最後一幀顯示 N / N
+            self.frameNumLabel.setText(f"同步幀: {val + 1} / {self.frameSlider.maximum() + 1}")
         finally:
             self._is_syncing = False
 
@@ -751,8 +757,8 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
             self.timer.stop()
 
     def _is_at_end(self):
-        curr = self.frameSlider.value()
-        return curr >= self.frameSlider.maximum() and (curr + self.offset) >= self.frameSlider2.maximum()
+        """主拉條已到底（無法再前進）就算播完；主拉條範圍已涵蓋兩支影片的最後一幀"""
+        return self.frameSlider.value() >= self.frameSlider.maximum()
 
     def update_playback_speed(self):
         if not self.is_playing:
