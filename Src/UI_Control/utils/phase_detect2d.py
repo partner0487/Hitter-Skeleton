@@ -299,8 +299,6 @@ class PhaseDetector:
     LIFT_TOL_PX = 4.0
     # 腳跟資料少於此幀數時不判斷各階段
     MIN_FOOT_FRAMES = 5
-    # 揮棒速度換算：球棒實際長度（公尺），對應遮罩兩端在畫面上最長時的像素長度
-    BAT_LENGTH_M = 0.84
 
     @staticmethod
     def _bat_ends_from_mask(mask_data):
@@ -390,23 +388,6 @@ class PhaseDetector:
             prev = i
         track["speed_px_per_frame"] = speeds
         return track.drop(columns="_head")
-
-    def peak_bat_speed(self):
-        """
-        揮棒速度用：(最高速幀, 棒頭最高速 px/幀, 球棒像素長度)，資料不足回傳 None。
-        最高速幀與擊球點判斷相同（擊球點 = 此幀 + IMPACT_OFFSET）。
-        球棒像素長度取有效遮罩（非沿用、非跳動）兩端距離的 95 百分位：揮棒中球棒常朝鏡頭方向而縮短，
-        取接近最長的值才接近與畫面平行時的真實長度。
-        """
-        track = self.bat_head_track()
-        if track.empty or not track["speed_px_per_frame"].notna().any():
-            return None
-        valid = track[(track["source"] == "mask") & ~track["repeated"] & ~track["rejected"]]
-        if valid.empty:
-            return None
-        lengths = np.hypot(valid["end1_x"] - valid["end2_x"], valid["end1_y"] - valid["end2_y"])
-        best = int(track["speed_px_per_frame"].idxmax())
-        return int(track.at[best, "frame"]), float(track.at[best, "speed_px_per_frame"]), float(np.percentile(lengths, 95))
 
     def _detect_impact(self, side: str = "right") -> Optional[int]:
         """
