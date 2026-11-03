@@ -179,7 +179,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
                 thread.wait()
 
     # 關鍵幀同步：按鈕 → PhaseResult 欄位
-    PHASE_SYNC = (("離地", "F_liftoff"), ("著地", "F_landing"), ("擊球", "F_impact"))
+    PHASE_SYNC = (("前腳離地", "F_liftoff"), ("前腳著地", "F_landing"), ("擊球點", "F_impact"))
 
     def init_phase_sync_buttons(self):
         """在 Player 1 打擊者區與 Player 2 檔案區之間加「關鍵幀同步」：兩支影片同時跳到該關鍵幀並以此對齊"""
