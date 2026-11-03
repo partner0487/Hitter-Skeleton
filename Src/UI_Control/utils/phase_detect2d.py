@@ -295,6 +295,10 @@ class PhaseDetector:
     IMPACT_OFFSET = 1
     # 著地：腳跟高度在區間最低點 + LAND_TOL_PX 以內即視為貼地（吸收關節點幾 px 的抖動）
     LAND_TOL_PX = 2.0
+    # 著地容許值至少為抬腿高度（最高點 − 最低點）的此比例：落地後重心轉移，腳跟常再慢慢降幾 px（H05 落地 5 px → 之後 0 px）
+    LAND_TOL_RATIO = 0.05
+    # 擊球點：棒頭最高速的前後幀都低於它的此比例時視為孤立尖峰（遮罩誤判）
+    SPIKE_RATIO = 0.35
     # 離地：腳尖高度在抬腿前最低點 + LIFT_TOL_PX 以內視為還踩在地上（腳跟翹起時腳尖會被帶高 3～4 px）
     LIFT_TOL_PX = 4.0
     # 腳跟資料少於此幀數時不判斷各階段
@@ -389,6 +393,22 @@ class PhaseDetector:
         track["speed_px_per_frame"] = speeds
         return track.drop(columns="_head")
 
+    def _fastest_non_spike(self, speeds: pd.Series):
+        """
+        棒頭最高速的那一列；跳過孤立尖峰：前後兩幀都有速度（非 0、非缺）且都低於它的 SPIKE_RATIO。
+        真正的揮棒前後幀也很快（H06：161／201／130）；收棒時遮罩換位置只會單幀暴衝
+        （H05 第 72 幀 176、前後 6 和 27，真正擊球在第 42 幀 168）。
+        速度 0 多半是影片重複幀（Layia 的片段速度 0／有值交錯），視為沒有資料、不拿來判斷。
+        """
+        valid = speeds.dropna()
+        for i in valid.sort_values(ascending=False).index:
+            nb = [speeds.get(j) for j in (i - 1, i + 1)]
+            if all(v is not None and not np.isnan(v) and v > 0 for v in nb) and max(nb) < self.SPIKE_RATIO * speeds[i]:
+                print(f"略過孤立尖峰：第 {i} 列 {speeds[i]:.1f} px/幀（前後 {nb[0]:.1f}、{nb[1]:.1f}）")
+                continue
+            return int(i)
+        return int(valid.idxmax()) if not valid.empty else None
+
     def _detect_impact(self, side: str = "right") -> Optional[int]:
         """
         全域搜尋：利用棒頭極速法找出擊球點。取代原本的距離公式。
@@ -404,8 +424,8 @@ class PhaseDetector:
             return None
 
         speeds = track["speed_px_per_frame"]
-        if speeds.notna().any():
-            best = int(speeds.idxmax())
+        best = self._fastest_non_spike(speeds)
+        if best is not None:
             best_frame = int(track.at[best, "frame"])
             print(f"✅ 成功找到擊球點！影格: {best_frame}, 棒頭最高速: {speeds[best]:.2f}")
             return best_frame
@@ -449,7 +469,7 @@ class PhaseDetector:
     def _detect_landing(self, F_liftoff: Optional[int], F_impact: Optional[int]) -> Optional[int]:
         """
         偵測前腳著地：在「抬腿最高點 ～ 擊球幀」之間，腳跟高度（未平滑）回到最低點附近
-        （最低點 + LAND_TOL_PX 以內）且連續 land_hold 幀的第一幀。
+        （最低點 + max(LAND_TOL_PX, 抬腿高度 × LAND_TOL_RATIO) 以內）且連續 land_hold 幀的第一幀。
         找不到連續幀時退回區間內的最低點。
 
         從抬腿最高點（離地～擊球間腳跟最高的幀）開始找，而不是從離地幀：
@@ -468,7 +488,9 @@ class PhaseDetector:
 
         frames = self.heel_frames[idx]
         heights = self.heel_vals[idx]
-        low = heights <= float(np.min(heights)) + self.LAND_TOL_PX
+        floor = float(np.min(heights))
+        tol = max(self.LAND_TOL_PX, (float(heights[0]) - floor) * self.LAND_TOL_RATIO)
+        low = heights <= floor + tol
         hold = max(1, self.land_hold)
         for i in range(len(idx) - hold + 1):
             # 連續 hold 幀都貼地，且中間沒有缺幀
