@@ -228,6 +228,7 @@ class CalibrationWindow(QMainWindow):
     # 側面 8 mm 廣角裡的棋盤格很小，0.4 倍時 20261019 的側面照片只偵測到 10/33 張，0.7 倍全部偵測得到
     PREVIEW_SCALE = 0.7
     PREVIEW_DETECT_EVERY = 3
+    SLIDE_INTERVAL_MS = 1000         # 匯入照片後，相機畫面改為輪播匯入的照片
     VIEWS = ("cf", "cs")             # 畫面：正面、側面
     LENSES = ("front", "side")       # 對應 session.json／內參計算的名稱
     TITLES = ("正面", "側面")
@@ -285,6 +286,10 @@ class CalibrationWindow(QMainWindow):
         self.preview = QTimer(self)
         self.preview.timeout.connect(self.update_preview)
         self.preview.start(100)
+        self.slides = []
+        self.slide_index = 0
+        self.slide_timer = QTimer(self)
+        self.slide_timer.timeout.connect(self.show_next_slide)
         self.reset_ui()
         self.scan_cameras()
 
@@ -464,6 +469,7 @@ class CalibrationWindow(QMainWindow):
             combo.setCurrentText(selected[i])
 
     def reset_ui(self):
+        self.stop_slideshow()
         self.state = "setup"
         self.pages.setCurrentWidget(self.setup_page)
         self.setup_page.setEnabled(True)
@@ -622,6 +628,8 @@ class CalibrationWindow(QMainWindow):
             view.image_shape = None
         self.update_view_titles()
         self.update_capture_status()
+        if self.imported:
+            self.start_slideshow()
 
     def update_view_titles(self):
         for index, role in enumerate(self.VIEWS):
@@ -931,10 +939,55 @@ class CalibrationWindow(QMainWindow):
             self.connect_button.setEnabled(False)
             self.import_button.setEnabled(False)
             self.update_capture_status()
+            self.start_slideshow()
         except Exception as exc:
             self.fail(str(exc))
 
+    def start_slideshow(self):
+        """相機畫面改為輪播本次匯入的照片：先是配對（兩邊都有），再是單台內參照片（另一邊顯示黑畫面）"""
+        self.slides = [{role: self.session / role / name for role in self.VIEWS} for name in self.names]
+        for role, sn in zip(self.VIEWS, self.roles):
+            folder = self.session / "intrinsic" / "images_SN{}".format(sn)
+            if folder.is_dir():
+                self.slides += [{role: file} for file in intrinsic.list_images(folder)]
+        self.slide_index = 0
+        if self.slides:
+            self.show_next_slide()
+            self.slide_timer.start(self.SLIDE_INTERVAL_MS)
+
+    def stop_slideshow(self):
+        self.slide_timer.stop()
+        self.slides = []
+
+    def show_next_slide(self):
+        if not self.slides:
+            return
+        number = self.slide_index % len(self.slides)
+        slide = self.slides[number]
+        self.slide_index += 1
+        images = {}
+        for role, file in slide.items():
+            try:
+                images[role] = read_image(file)
+            except (OSError, ValueError):
+                pass
+        shape = next(iter(images.values())).shape if images else (480, 640, 3)
+        for index, role in enumerate(self.VIEWS):
+            view = self.views[role]
+            title = "{} SN{}　匯入照片 {}/{}".format(self.TITLES[index], self.roles[index], number + 1, len(self.slides))
+            if role in images:
+                view.set_image(images[role])
+                text, color = "{}：{}".format(title, slide[role].name), "#15803d"
+            else:
+                # 沒有對應照片：黑畫面，尺寸沿用這台上一張的大小
+                height, width = view.image_shape or shape[:2]
+                view.set_image(np.zeros((height, width, 3), np.uint8))
+                text, color = "{}：無對應照片".format(title), "#475569"
+            self.view_titles[role].setText(text)
+            self.view_titles[role].setStyleSheet("color: {}; font-weight: bold;".format(color))
+
     def calculate(self):
+        self.stop_slideshow()
         self.state = "calculate"
         self.capture_actions.hide()
         session, roles, reused = self.session, self.roles, self.reused
@@ -1055,6 +1108,7 @@ class CalibrationWindow(QMainWindow):
             except OSError:
                 pass
         self.preview.stop()
+        self.slide_timer.stop()
         event.accept()
 
 
