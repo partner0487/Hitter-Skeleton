@@ -12,7 +12,6 @@ import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 from pyqtgraph.opengl import GLLinePlotItem
 from vispy.scene import visuals
-# from OpenGL.GL import *
 
 try:
     colors = np.round(
@@ -76,7 +75,6 @@ class ImageDrawer():
             image = self.drawAngleInfo(image, frame_num)
 
         image = self.draw_bat(image, frame_num)
-        # image = self.drawBatTraj(image, frame_num)
 
         return image
 
@@ -242,7 +240,6 @@ class ImageDrawer():
             ).astype(np.uint8)[:, -2::-1].tolist()
 
         circle_size = max(1, min(image.shape[:2]) // 160)  # ToDo Shape it taking into account the size of the detection
-        # circle_size = max(2, int(np.sqrt(np.max(np.max(points, axis=0) - np.min(points, axis=0)) // 16)))
         for i, pt in enumerate(points):
         
             unlabel = False if pt[0] != 0 and pt[1] != 0 else True
@@ -369,13 +366,6 @@ class ImageDrawer():
 
         # 2. 畫關節點 (blue)
         points = np.array(points3d)
-        # scatter = GLScatterPlotItem(
-        #     pos=points,
-        #     size=2,
-        #     color=(0, 0.2, 0.2, 1),  # cyan
-        #     pxMode=False  # 改為 True 嘗試修正顯示問題
-        # )
-        # gl_widget.addItem(scatter)
 
         # 3. 畫骨架線段 (red)
         skeleton = self.pose_estimater.joints['haple']['skeleton_links']
@@ -391,8 +381,6 @@ class ImageDrawer():
             )
             gl_widget.addItem(line)
 
-
-    
 
     def swapValues(self, kpts):
         return [[item[1], item[0], item[2]] for item in kpts]

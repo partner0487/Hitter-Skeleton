@@ -72,7 +72,6 @@ class VideoCaptureThread(QThread):
         CONFIG = str(CAMERA_CONFIG_DIR / "GH3_camera_config.yaml")
         CONFIG_2 = str(CAMERA_CONFIG_DIR / "GH3_camera_config_2.yaml")
         SN1 = "25083472" # 側面
-        # SN2 = "25083472" # 正面
         SN2 = "21091470"
         self.camera1 = FlirCameraSystem(CONFIG,SN1)
         self.camera2 = FlirCameraSystem(CONFIG_2,SN2)

@@ -39,7 +39,6 @@ from ui_utils.swing_charts import SwingChartsDialog
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
 
-
 class Analysis3DWidget(QWidget):
     """
     -----------------------------------------
@@ -68,7 +67,6 @@ class Analysis3DWidget(QWidget):
         self.setupComponents()
         self.initVar()
         self.bindUI()
-        # self.bindCheckBox()
         self.initVispyCanvas()
 
     def shutdown(self):
@@ -120,16 +118,11 @@ class Analysis3DWidget(QWidget):
 
     def initParameters(self):
         # ---- 256083472 camera ---- front
-        # s_k1, s_k2, s_p1, s_p2, s_k3 = -0.1507604495950069, 0.0992797366428844, -0.00020610385938892725, -0.00036900923582035034, -0.02925990774478617
-        # fx1, fy1, cx1, cy1 = 1040.5555632535795, 1041.692258926554, 950.0364409793515, 530.3984673949892
         # # ---- 256083471 camera ---- side
         # # ---- side camera ---- 6 mm
-        # s_k1, s_k2, s_p1, s_p2, s_k3 = -0.1504238482962934, 0.10046068595508036, 0.0009543802109945303, -0.0019857762932287463, -0.03150633224872767
-        # fx1, fy1, cx1, cy1 = 1056.463741369799, 1055.9566674653763, 936.2691880195921, 552.3062783018795
         # self.side_intrinsic_matrix = np.array([[fx2, 0, cx2],
         #                                         [0, fy2, cy2],
         #                                         [0,   0,   1]])
-        # self.side_distortion_coeffs = np.array([s_k1, s_k2, s_p1, s_p2, s_k3])
         s_k1, s_k2, s_p1, s_p2, s_k3 = -0.1503812176808353, 0.09142073571976807, -0.00042003778401313523, 0.000616947412718863, -0.022943747055243328
         fx1, fy1, cx1, cy1 = 1057.8480015712446, 1058.615115032526, 963.1309477355599, 569.6218934625829
         self.side_intrinsic_matrix = np.array([[fx1, 0, cx1],
@@ -137,13 +130,10 @@ class Analysis3DWidget(QWidget):
                                             [0,   0,   1]])
         self.side_distortion_coeffs = np.array([s_k1, s_k2, s_p1, s_p2, s_k3])
         # ---- side camera ---- 8mm
-        # s_k1, s_k2, s_p1, s_p2, s_k3 = -0.17670068446109766, 0.14033116395467476, 0.0002611678101988233, -0.00042558869821785123, -0.059959390420739854
-        # fx1, fy1, cx1, cy1 = 1417.0645150420887, 1417.9407893921314, 955.4524361261298, 565.8145551025882
 
         # self.side_intrinsic_matrix = np.array([[fx1, 0, cx1],
         #                                     [0, fy1, cy1],
         #                                     [0,   0,   1]])
-        # self.side_distortion_coeffs = np.array([s_k1, s_k2, s_p1, s_p2, s_k3])
         # ---- front camera ----
         f_k1, f_k2, f_p1, f_p2, f_k3 = -0.3297916162340779, -2.73655197213946, -0.005002958001026669, -0.004773074931105136, 274.8547890952684
         fx2, fy2, cx2, cy2 = 5778.35636357731, 5773.276727595934, 912.7316802319106, 488.2090410693327
@@ -152,12 +142,9 @@ class Analysis3DWidget(QWidget):
                                             [0,   0,   1]])
         self.front_distortion_coeffs = np.array([f_k1, f_k2, f_p1, f_p2, f_k3])
         # ---- 256083471 camera ---- side
-        # s_k1, s_k2, s_p1, s_p2, s_k3 = -0.1503812176808353, 0.09142073571976807, -0.00042003778401313523, 0.000616947412718863, -0.022943747055243328
-        # fx2, fy2, cx2, cy2 = 1057.8480015712446, 1058.615115032526, 963.1309477355599, 569.6218934625829
         # self.side_intrinsic_matrix = np.array([[fx2, 0, cx2],
         #                                         [0, fy2, cy2],
         #                                         [0,   0,   1]])
-        # self.side_distortion_coeffs = np.array([s_k1, s_k2, s_p1, s_p2, s_k3])
         # self.R = np.array([[ 0.56247702, 0.01608364, 0.82665647],
         #                     [ 0.15069805, 0.98106936, -0.12162653],
         #                     [-0.81296353, 0.19298764, 0.54940519]])
@@ -198,7 +185,6 @@ class Analysis3DWidget(QWidget):
         # self.R = np.array([[ 0.23179385,  0.13894262, -0.96279102],
         #             [-0.13782324,  0.98445328,  0.10888753],
         #             [ 0.96295190,  0.10745552,  0.24733974]])
-        # self.t = np.array([[ 0.99450367], [-0.10454567], [-0.00571446]])
         # 以上寫死的數值只在沒有校正檔時使用（t 長度約 1，沒有真實尺度）
         self.applyStereoCalibration(load_stereo_params(batter_side=self.currentBatterSide()))
 
@@ -605,11 +591,6 @@ class Analysis3DWidget(QWidget):
         points_3d = (points_4d / points_4d[3])[:3].T  # (N, 3)，側面相機座標系
 
         # ---------- Step 4: 以雙腳趾中點做平移 ----------
-        # left_toe  = points_3d[LEFT_TOE_IDX]
-        # right_toe = points_3d[RIGHT_TOE_IDX]
-        # self.origin = (left_toe + right_toe) / 2.0
-        # points_3d_centered = points_3d - self.origin
-        # return points_3d_centered
         if not hasattr(self, 'origin') or self.origin is None:
             left_toe  = points_3d[LEFT_TOE_IDX]
             right_toe = points_3d[RIGHT_TOE_IDX]
@@ -871,8 +852,6 @@ class Analysis3DWidget(QWidget):
         angle_deg = np.degrees(angle_rad)
         angle_deg = (angle_deg + 180) % 360 - 180
 
-        # text = f"Hip–Shoulder Separation: {angle_deg:.1f}°"
-        # self.ui.hipShoulderEditLabel.setText(f"{angle_deg:.1f}")
 
     def draw_swing_trajectory(self, current_f: int):
         """
@@ -1179,10 +1158,8 @@ class Analysis3DWidget(QWidget):
             QMessageBox.warning(self, "無法處理", "請先讀取影片!")
             return
 
-        # print("skeleton state: "+ str(state))
         # 重置所有分析器狀態以允許重新處理
         self.ui.showSkeletonCheckBox.setChecked(True)
-        # self.ui.selectCheckBox.setChecked(True)
         frame = self.video_loader_dual.getVideoImage(0)
         frame_2 = self.video_loader_dual.getVideoImage2(0)
         self.detectDualKpt(frame, frame_2, 0)
@@ -1191,10 +1168,6 @@ class Analysis3DWidget(QWidget):
     
     def toggleShowSkeleton(self, state:int):
         """Toggle skeleton detection and FPS control."""
-        # if state == 2:
-        #     self.ui.showSkeletonCheckBox.setCheckState(0)
-        #     QMessageBox.warning(self, "無法選擇人", "請選擇顯示人體骨架!")
-        #     return
         is_checked = state == 2
         if not is_checked:
             self.ui.selectCheckBox.setCheckState(0)
@@ -1239,7 +1212,6 @@ class Analysis3DWidget(QWidget):
         self.ui.showSkeletonCheckBox.setChecked(False)
         self.ui.selectCheckBox.setChecked(False)
         if self.is_play:
-            # self.ui.playBtn.click()
             self.playBtnClicked4Process()
         self.video_loader_dual.loadVideo(video_path, video_path2)
         self.checkVideoLoad4Process()
@@ -1347,7 +1319,6 @@ class Analysis3DWidget(QWidget):
         current_seconds = (float(frame_num) / float(self.video_loader_dual.total_frames - 1)) * total_duration
         # 顯示格式： 0.45s / 1.50s
         self.ui.frameNumLabel.setText(f'{current_seconds:.2f}/{total_duration:.1f}s')
-        # self.ui.frameNumLabel.setText(f'{frame_num}/{self.video_loader_dual.total_frames - 1}')
         frame = self.video_loader_dual.getVideoImage(frame_num)
         frame_2 = self.video_loader_dual.getVideoImage2(frame_num)
         fps = 0
@@ -1389,7 +1360,6 @@ class Analysis3DWidget(QWidget):
         """Change the pitcher based on input value. 9: "左腕", 10: "右腕","""
         kpt_id = 10 if self.ui.batterInput.currentIndex() == 0 else 9
         self.pose_estimater.setKptId(kpt_id)
-        # self.pose_estimater.setPitchHandId(kpt_id)
 
     def updateVideoInfo4Process(self):
         """更新與影片相關的資訊顯示在 UI 上。"""
@@ -1401,7 +1371,6 @@ class Analysis3DWidget(QWidget):
         self.initFrameSlider(self.video_loader_dual.total_frames)
         self.updateFrame4Process(frame_num = 0)
         self.model.setImageSize(self.video_loader_dual.video_size)
-        # self.ui.videoNameLabel.setText(self.video_loader_dual.video_name)
         video_size = self.video_loader_dual.video_size
         self.ui.ResolutionLabel.setText(clip_title(self.video_loader_dual.folder_path))
         
@@ -1604,9 +1573,6 @@ class Analysis3DWidget(QWidget):
             # Convert numpy arrays to lists for JSON serialization if necessary, 
             # but pandas read_json/to_json might handle list-of-lists. 
             # However, for safety with direct to_json, ensure it's standard lists.
-            # safe_df = self.person_3d_df.copy()
-            # safe_df["keypoints_3d"] = safe_df["keypoints_3d"].apply(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
-            # safe_df.to_json(save_path, orient='records')
             
             # Simplified approach if we trust the structure or just want to dump it:
             try:
@@ -1632,7 +1598,6 @@ class Analysis3DWidget(QWidget):
             
             # 獨立視窗暫時關閉（圖表仍建立，用於與滑桿同步）
             self.hip_shoulder_plot.graph.resize(800, 400)
-            # self.hip_shoulder_plot.graph.show()
 
         # 棒頭速度與加速度圖表
         bat_frames = []
@@ -1667,7 +1632,6 @@ class Analysis3DWidget(QWidget):
             if hasattr(self, 'phase_result') and self.phase_result is not None:
                 self.bat_speed_plot.set_phase_result(self.phase_result)
             self.bat_speed_plot.graph.resize(800, 400)
-            # self.bat_speed_plot.graph.show()  # 獨立視窗暫時關閉（仍用最高速覆寫 Impact）
             
         # [NEW] 顯示 3D 關節速度圖表（獨立視窗暫時關閉）
 
@@ -1711,9 +1675,6 @@ class Analysis3DWidget(QWidget):
             
 
         if self.phase_result.F_liftoff is None and self.phase_result.F_landing is None and self.phase_result.F_impact is None:
-            # self.phase_result.F_liftoff = min(15, max(0, total_frames - 3))
-            # self.phase_result.F_landing = min(25, max(0, total_frames - 2))
-            # self.phase_result.F_impact = min(30, max(0, total_frames - 1))
             print("[Analysis3D] All keyphases missing. Skipping fallback as per user request.")
         else:
             if self.phase_result.F_landing is None:
@@ -1749,15 +1710,9 @@ class Analysis3DWidget(QWidget):
             f3 = phase_result.F_impact
             
             # 深藍 (Dark Blue)
-            # color_prepare = QColor(0, 191, 255)   # 亮天藍 (Deep Sky Blue)
-            # color_stride  = QColor(255, 69, 0)    # 亮橘紅 (Orange Red)
-            # color_swing   = QColor(255, 215, 0)   # 亮金黃 (Gold)
-            # color_follow  = QColor(50, 205, 50)   # 亮綠 (Lime Green)
             color_prepare = QColor(150, 150, 150)   # 亮天藍 (Deep Sky Blue)
             color_stride  = QColor(255, 69, 0)    # 亮橘紅 (Orange Red)
-            # color_swing   = QColor(255, 215, 0)   # 亮金黃 (Gold)
             color_swing = QColor(180, 165, 32)
-            # color_follow  = QColor(50, 205, 50)   # 亮綠 (Lime Green)
             color_follow = QColor(150, 150, 150)
 
             segs = []
@@ -2046,23 +2001,6 @@ class Analysis3DWidget(QWidget):
                         cv2.putText(draw_img, text_val, (f_x + 30, f_y - 30), cv2.FONT_HERSHEY_SIMPLEX, 1.2, WHITE, 3)
 
             # --- C. Impact：繪製腿部骨架 (髖-膝-踝) ---
-            # if phase_type == 'impact':
-            #     # 定義要畫的線段：[髖, 膝, 踝]
-            #     if not is_righty:
-            #         legs = [[L_HIP, L_KNEE, L_ANKLE]]
-            #     else:
-            #         legs = [[R_HIP, R_KNEE, R_ANKLE]]
-            #     for leg in legs:
-            #         p1 = tuple(kpts[leg[0]][:2].astype(int))
-            #         p2 = tuple(kpts[leg[1]][:2].astype(int))
-            #         p3 = tuple(kpts[leg[2]][:2].astype(int))
-            #         # 髖到膝
-            #         cv2.line(draw_img, p1, p2, CYAN, 7)
-            #         # 膝到踝
-            #         cv2.line(draw_img, p2, p3, CYAN, 7)
-            #         # 畫關節點
-            #         for p in [p1, p2, p3]:
-            #             cv2.circle(draw_img, p, 8, YELLOW, -1)
             if phase_type == 'impact':
                 # 定義要畫的線段：[髖, 膝, 踝]
                 if not is_righty:
@@ -2100,47 +2038,8 @@ class Analysis3DWidget(QWidget):
                     back_knee_angle = self.calculate_angle(p1, p2, p3)
 
         self._set_label_pixmap_with_crop(label, draw_img)
-        # # 3. 轉為 QPixmap 並顯示
-        # img_rgb = cv2.cvtColor(draw_img, cv2.COLOR_BGR2RGB)
-        # h, w, ch = img_rgb.shape
-        # q_img = QImage(img_rgb.data, w, h, ch * w, QImage.Format_RGB888).copy()
-        # pixmap = QPixmap.fromImage(q_img)
 
-        # # --- 填滿 Label 並對齊「底部中間」裁切 ---
-        # label_size = label.size()
-        
-        # if not label_size.isEmpty():
-        #     # 1. 以「填滿」為原則縮放 (會有一邊超出 Label)
-        #     pixmap = pixmap.scaled(
-        #         label_size, 
-        #         QtCore.Qt.KeepAspectRatioByExpanding, 
-        #         QtCore.Qt.SmoothTransformation
-        #     )
-            
-        #     # 2. 計算裁切區域 (Rect)
-        #     # x 軸：置中裁切 (左右各切一半)
-        #     # y 軸：對齊底部 (保留最下面，裁掉上面)
-        #     crop_x = (pixmap.width() - label_size.width()) // 2
-        #     crop_y = pixmap.height() - label_size.height() # 關鍵：直接減去高度，保留底部
-            
-        #     # 防呆：確保裁切起點不為負數
-        #     crop_x = max(0, crop_x)
-        #     crop_y = max(0, crop_y)
 
-        #     rect = QtCore.QRect(
-        #         crop_x,
-        #         crop_y,
-        #         label_size.width(),
-        #         label_size.height()
-        #     )
-            
-        #     # 3. 執行裁切
-        #     pixmap = pixmap.copy(rect)
-
-        # # 4. 顯示與快取
-        # label.setAlignment(QtCore.Qt.AlignCenter)
-        # self.cached_keyphase_pixmaps[label] = pixmap
-        # self.update_keyphase_label_image(label)
     def calculate_angle(self,p1, p2, p3):
         """
         計算 p1-p2-p3 之間夾角 (以 p2 為頂點)
@@ -2303,7 +2202,6 @@ class Analysis3DWidget(QWidget):
             
         # 2. 若「任一」影片正在讀取中 (processed 或 raw)，定時檢查
         if self.video_loader.is_loading or self.video_loader_raw.is_loading:
-            # self.ui.videoNameLabel.setText("讀取影片中")
             QTimer.singleShot(100, self.checkVideoLoad)
             return
 
@@ -2424,7 +2322,6 @@ class Analysis3DWidget(QWidget):
         self.ui.frameSlider.setMinimum(0)
         self.ui.frameSlider.setMaximum(total_frames - 1)
         self.ui.frameSlider.setValue(0)
-        # self.ui.frameNumLabel.setText(f'0/{total_frames - 1}')
         total_seconds = 1.5
         # 初始化標籤顯示： 0.00s / 1.50s
         self.ui.frameNumLabel.setText(self.frameTimeText(0, int(total_frames)))
@@ -2436,7 +2333,6 @@ class Analysis3DWidget(QWidget):
             frame_num = self.ui.frameSlider.value()
         # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間）
         self.ui.frameNumLabel.setText(self.frameTimeText(frame_num, self.video_loader.total_frames))
-        # self.ui.frameNumLabel.setText(f'{frame_num}/{self.video_loader.total_frames - 1}')
         # 取畫面
         frame = self.video_loader.getVideoImage(frame_num)
         frame_2 = self.video_loader.getVideoImage2(frame_num)
@@ -2463,7 +2359,6 @@ class Analysis3DWidget(QWidget):
         self.draw_swing_trajectory(frame_num)
         self.showImage(drawed_img, self.view_scene, self.ui.FrameView)
         self.showImage(drawed_img2, self.view_scene2, self.ui.FrameView_2)
-        # self.updateGraph(frame_num)
 
     def showImage(self, image: np.ndarray, scene: QGraphicsScene, GraphicsView: QGraphicsView):
         """Display an image in the QGraphicsView."""
@@ -2484,19 +2379,13 @@ class Analysis3DWidget(QWidget):
         frame_num = self.ui.frameSlider.value()
         # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間）
         self.ui.frameNumLabel.setText(self.frameTimeText(frame_num, self.video_loader.total_frames))
-        # self.ui.frameNumLabel.setText(f'{frame_num}/{self.video_loader.total_frames - 1}')
         frame = self.video_loader.getVideoImage(frame_num)
         frame_2 = self.video_loader.getVideoImage2(frame_num)
         fps = 0
-        # if self.ui.showSkeletonCheckBox.isChecked():
         curr_side_person_data = self.getPersonDf(self.person_df, frame_num)
         curr_front_person_data = self.getPersonDf(self.front_person_df, frame_num)
 
         self.updateFrame(frame_num=frame_num)
-        # pts3d = self.triangularPoints(frame_num= frame_num)
-        # self.draw_ground_once(pts3d)
-        # self.draw_3d_pose(pts3d)
-        # self.draw_hip_shoulder_angle(pts3d)
 
     # ======================================================
     # Frame 控制

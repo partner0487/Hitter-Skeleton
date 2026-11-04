@@ -295,7 +295,6 @@ class PoseEstimater:
         return ball_bboxes
 
 
-
     def detectKpt(self, image:np.ndarray, frame_num:int = None, is_video:bool = False, is_processed:bool=False):
         if not self.is_detect:
             return image, pd.DataFrame(), 0, pd.DataFrame(), pd.DataFrame()
@@ -667,11 +666,9 @@ class PoseEstimater:
         ball_bboxes = []
         ball_scores = []
 
-        # print(f"DEBUG: YOLO detections count: {len(detections)}")
         for det in detections:
             cls_id = int(det.boxes.cls[0])
             conf = float(det.boxes.conf[0])
-            # print(f"DEBUG: Detection cls={cls_id}, conf={conf:.2f}")
             if (cls_id == 0) :  # human
                 human_bboxes.append(np.array(det.boxes.xyxy[0].cpu().numpy().flatten()))
                 humane_scores.append(det.boxes.conf)
@@ -684,7 +681,6 @@ class PoseEstimater:
                 bat_scores.append(det.boxes.conf)
         # human tracker
         # online_targets = model.tracker.update(
-        #     np.hstack((np.vstack(human_bboxes), np.full((np.vstack(human_bboxes).shape[0], 2), [0.9, 0]))), img.copy()
         # )
 
         online_targets = []

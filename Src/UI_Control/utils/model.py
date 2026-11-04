@@ -29,7 +29,6 @@ except (ImportError, ModuleNotFoundError):
 
 class Model(object):
     def __init__(self):
-        # self.detect_args = self.setDetectParser()
         self.detect_args_yolo = self.setDetectParserYolo()
         self.pose_args = self.setPoseParser()
         self.tracker_args = self.setTrackerParser()

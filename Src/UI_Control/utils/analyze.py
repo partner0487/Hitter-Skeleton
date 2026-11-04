@@ -56,7 +56,6 @@ class PoseAnalyzer:
         return info
 
     def get_frame_angle_data(self, frame_num: int = None, angle_name: str = None) :
-        # print(self.analyze_df)
         if self.analyze_df.empty:
             return pd.DataFrame(), []
         condition = pd.Series([True] * len(self.analyze_df))
@@ -150,7 +149,6 @@ class BatAnalyzer:
                 # else calculate head tail 有偵測到球棒 開始計算棒頭棒尾
 
                 # 找距離手腕最遠的地方為棒頭
-                # bat_mask_xy = np.array(bat_data['mask'].values.tolist())[0][1][0]
                 bat_mask_list = bat_data['mask'].values.tolist()
 
                 # 過濾掉不符合條件的資料，確保每個元素都有兩個部分
@@ -190,7 +188,6 @@ class BatAnalyzer:
                     self.batHeadTail_df = pd.DataFrame(self.batHeadTail)
     
     def getBatHeadTailData(self, frame_num: int = None):
-        # print(self.batHeadTail_df)
         if self.batHeadTail_df.empty:
            return [], [] 
         batHeadTailData = self.batHeadTail_df[self.batHeadTail_df['frame_num'] == frame_num]
@@ -199,7 +196,6 @@ class BatAnalyzer:
         bat_haed = batHeadTailData['head'].iloc[0]
         bat_tail = batHeadTailData['tail'].iloc[0]
         return bat_haed, bat_tail
-
 
 
     def getAngleData(self, frame_num:int = None):
@@ -241,10 +237,6 @@ class BatAnalyzer:
         self.preLowPointFrame = None
         self.lowPoint = None
         self.lowPointAngle = None
-
-
-  
-
 
 
 class JointAreaChecker:

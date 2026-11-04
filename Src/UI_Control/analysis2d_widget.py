@@ -119,10 +119,8 @@ class Analysis2dWidget(QWidget):
         self.is_video = True if self.camera is None else False
         self.view_scene = QGraphicsScene()
         self.view_scene2 = QGraphicsScene()
-        # self.curve_scene = QGraphicsScene()
         self.view_scene.clear()
         self.view_scene2.clear()
-        # self.curve_scene.clear()
         self.is_hitting = False
         self.enlarged_dialog = None  # Reference to the EnlargedFrameDialog
         self.enlarged_view_is_frame_view = 0  # Track which view (FrameView or FrameView_2) was clicked
@@ -204,7 +202,6 @@ class Analysis2dWidget(QWidget):
 
     def bindUI(self):
         """Bind UI element to their corresponding functions."""
-        # self.ui.cameraIdInput.valueChanged.connect(self.changeCamera)
         self.ui.batterInput.currentIndexChanged.connect(self.changeHitter)
         self.updateHitterList() # 啟動時先掃描一次資料庫
         self.ui.hitterNameInput.currentIndexChanged.connect(self.populateRecentVideosList)
@@ -417,9 +414,6 @@ class Analysis2dWidget(QWidget):
     def bindCheckBox(self):
         """Bind UI CheckBox to their corresponding functions."""
         self.ui.cameraCheckBox.stateChanged.connect(self.toggleCamera)
-        # self.ui.recordCheckBox.stateChanged.connect(self.toggleRecord)
-        # self.ui.selectCheckBox1.stateChanged.connect(self.toggleSelect)
-        # self.ui.showSkeletonCheckBox1.stateChanged.connect(self.toggleShowSkeleton)
         self.ui.showRegionCheckBox.stateChanged.connect(self.toggleShowRegion)
         self.ui.startHitCheckBox.stateChanged.connect(self.toggleHitting)
         self.ui.watchTimeCombobox.currentTextChanged.connect(self.setWatchTime)
@@ -440,7 +434,6 @@ class Analysis2dWidget(QWidget):
             # 1. 建立選手資料夾
             if not os.path.exists(hitter_path):
                 os.makedirs(hitter_path)
-                # QMessageBox.information(self, "成功", f"選手 {new_name} 資料夾已建立")
             else:
                 # 如果資料夾已存在，仍允許加入選單，但給予提示
                 QMessageBox.information(self, "提示", f"選手 {new_name} 已存在於資料庫中")
@@ -601,7 +594,6 @@ class Analysis2dWidget(QWidget):
             self.view_scene.clear()
             self.view_scene2.clear()
 
-            # self.curve_scene.clear()
             self.is_video = True
             self.videoSilder(visible=True)
 
@@ -611,12 +603,9 @@ class Analysis2dWidget(QWidget):
                 self.ui.startHitCheckBox.setCheckState(0)
                 QMessageBox.warning(self, "無法開始打擊模式", "請先開啟相機")
                 return
-            # if not self.ui.showSkeletonCheckBox1.isChecked():
-            #     self.ui.showSkeletonCheckBox1.setCheckState(2)
             self.toggleSelect(2)
             self.toggleShowSkeleton(2)
             self.is_hitting = True
-            # self.record_checker = JointAreaChecker(self.camera.frame_size)
         else:
             self.is_hitting = False
 
@@ -702,7 +691,6 @@ class Analysis2dWidget(QWidget):
             self.ui.hitballNum.setText(f"球數: {self.hitBallNum:02d}")
 
         # OCR 觸發移至 resetRecordTimer 以支援手動錄影
-        # ocr.run_ocr_and_save(output_dir, camera_index=0)
 
     def toggleRecord(self, state:int):
         """Start or stop video recording."""
@@ -737,7 +725,6 @@ class Analysis2dWidget(QWidget):
     def startRecording(self):  
         """Start recording the video."""
         if self.camera is None:
-            # self.ui.recordCheckBox.setCheckState(0)
             self.toggleRecord(0)
             return
         now = datetime.now()
@@ -771,16 +758,10 @@ class Analysis2dWidget(QWidget):
     def toggleSelect(self, state:int):
         """Select a person based on checkbox state."""
         if state == 2:
-            # if not self.ui.selectCheckBox1.isChecked():
-            #     self.ui.selectCheckBox1.setCheckState(0)
-            #     QMessageBox.warning(self, "無法選擇人", "請選擇顯示人體骨架!")
-            #     return
             self.person_selector = PersonSelector()
             self.person_selector_2 = PersonSelector()
             frame_num = self.ui.frameSlider.value() if self.is_video else None
-            # search_person_df = self.pose_estimater.getPersonDf(frame_num=frame_num) if frame_num is not None else self.pose_estimater.pre_person_df
             search_person_df_2 = self.pose_estimater_2.getPersonDf(frame_num=frame_num) if frame_num is not None else self.pose_estimater_2.pre_person_df
-            # self.person_selector.select(search_person_df = search_person_df)
             self.person_selector_2.select(search_person_df = search_person_df_2)
             self.pose_estimater_2.setPersonId(self.person_selector_2.selected_id)
             if search_person_df_2 is not None and not search_person_df_2.empty:
@@ -796,7 +777,6 @@ class Analysis2dWidget(QWidget):
         """Toggle skeleton detection and FPS control."""
         is_checked = state == 2
         if not is_checked:
-            # self.ui.selectCheckBox1.setCheckState(0)
             self.toggleSelect(0)
             
         self.pose_estimater.setDetect(is_checked)
@@ -814,13 +794,11 @@ class Analysis2dWidget(QWidget):
         """Analyze and process each frame from the camera or video"""
         if self.is_video:
             frame_num = self.ui.frameSlider.value()
-            # self.ui.frameNumLabel.setText(f'{frame_num}/{self.video_loader.total_frames - 1}')
             # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間）
             self.ui.frameNumLabel.setText(self.frameTimeText(frame_num, self.video_loader.total_frames))
             frame = self.video_loader.getVideoImage(frame_num)
             frame_2 = self.video_loader.getVideoImage2(frame_num)
             
-            # _, df1, _, self.bat_front_df, self.ball_front_df = self.pose_estimater.detectKpt(frame, frame_num, is_video=True)
             _, df2, _, self.bat_side_df, self.ball_side_df = self.pose_estimater_2.detectKpt(frame_2, frame_num, is_video=True)
             self.updateFrame(frame_num=frame_num, frame=frame, frame_2=frame_2)
             if frame_num == self.video_loader.total_frames - 1:
@@ -846,8 +824,6 @@ class Analysis2dWidget(QWidget):
              self.batht_side_df = self.bat_analyzer_2.batHeadTail_df
         if not self.pose_estimater_2.person_df.empty:
             self.person_side_df = self.pose_estimater_2.person_df
-            # self.bat_side_df = self.pose_estimater_2.bat_df
-            # self.ball_side_df = self.pose_estimater_2.ball_df
             batter_idx = self.ui.batterInput.currentIndex()
             detector = PhaseDetector(
                 person_df=self.person_side_df,
@@ -925,9 +901,7 @@ class Analysis2dWidget(QWidget):
             
             color_prepare = QColor(150, 150, 150)   # 亮天藍 (Deep Sky Blue)
             color_stride  = QColor(255, 69, 0)    # 亮橘紅 (Orange Red)
-            # color_swing   = QColor(255, 215, 0)   # 亮金黃 (Gold)
             color_swing = QColor(180, 165, 32)
-            # color_follow  = QColor(50, 205, 50)   # 亮綠 (Lime Green)
             color_follow = QColor(150, 150, 150)
 
             segs = []
@@ -1346,7 +1320,6 @@ class Analysis2dWidget(QWidget):
               f"球棒 {result.bat_px:.0f} px，{'已' if result.undistorted else '未'}去畸變")
 
 
-
     def _update_label_pixmap(self, label, img):
         """封裝轉換與更新 Pixmap 的邏輯"""
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -1451,12 +1424,8 @@ class Analysis2dWidget(QWidget):
         """10秒後觸發的邏輯：重設變數並回到監控模式"""
         print("正在切換回監控模式...")
         self.play_times = 1 # 重置播放次數
-        # self.clearKeyphaseDisplays()
         
         # 2. 重置階段文字標籤 (如果有需要)
-        # self.ui.centerGravity.setText("重心初速")
-        # self.ui.centerGravity2.setText("重心速度")
-        # self.ui.strideDisLabel.setText("跨步距離")
         # 自動勾選相機開啟 (會觸發 toggleCamera)
         if self.is_process == False:
             self.ui.liftofflabel.setText("幀")
@@ -1465,9 +1434,7 @@ class Analysis2dWidget(QWidget):
             print("切換回監控模式")
             self.ui.cameraCheckBox.setCheckState(2) 
             # 開啟骨架偵測與打擊模式
-            # self.ui.showSkeletonCheckBox1.setCheckState(2)
             self.ui.startHitCheckBox.setCheckState(2)
-        # self.ui.selectCheckBox1.setCheckState(2) # 自動選人
         self.toggleSelect(2)
         self.toggleShowSkeleton(2)
 
@@ -1670,7 +1637,6 @@ class Analysis2dWidget(QWidget):
             except Exception as e:
                 print(f"OCR 執行失敗: {e}")
         self.video_loader.reset()
-        # self.ui.recordCheckBox.setCheckState(0)
         self.toggleRecord(0)
         self.ui.startHitCheckBox.setCheckState(0)
         self.ui.cameraCheckBox.setCheckState(0)
@@ -1687,7 +1653,6 @@ class Analysis2dWidget(QWidget):
             return
         # 若影片正在讀取中，定時檢查讀取狀況
         if self.video_loader.is_loading:
-            # self.ui.videoNameLabel.setText("讀取影片中")
             self.ui.fileNameLabel.setText("讀取影片中...")
             QTimer.singleShot(100, self.checkVideoLoad)  # 每100ms 檢查一次
             return
@@ -1698,10 +1663,8 @@ class Analysis2dWidget(QWidget):
                 name1 = name1[3:]
             self.ui.fileNameLabel.setText(f"{name1}")
         # 影片讀取完成後更新 UI 元素
-        # self.toggleSelect(2)
         self.toggleShowSkeleton(2)
         self.updateVideoInfo()
-        # self.initAnalyzeFrame()
 
     def updateVideoInfo(self):
         """更新與影片相關的資訊顯示在 UI 上。"""
@@ -1738,7 +1701,6 @@ class Analysis2dWidget(QWidget):
         frame = self.video_loader.getVideoImage(0)
         frame_2 = self.video_loader.getVideoImage2(0)
         if frame is not None and frame_2 is not None:
-            # _, _, _, _,_= self.pose_estimater.detectKpt(frame, 0, is_video=True)
             _, _, _, _,_= self.pose_estimater_2.detectKpt(frame_2, 0, is_video=True)
         self.updateFrame(frame_num=0)
         self.model.setImageSize(self.video_loader.video_size)
@@ -1750,13 +1712,9 @@ class Analysis2dWidget(QWidget):
     def initAnalyzeFrame(self):
         self.toggleSelect(2)
         self.toggleShowSkeleton(2)
-        # self.ui.showSkeletonCheckBox1.setCheckState(2)
         frame = self.video_loader.getVideoImage(0)
         frame_2 = self.video_loader.getVideoImage2(0)
-        # _, _, _, _,_= self.pose_estimater.detectKpt(frame, 0, is_video=True)
         _, _, _, _,_= self.pose_estimater_2.detectKpt(frame_2, 0, is_video=True)
-        # self.ui.selectCheckBox1.setCheckState(2)
-        # self.ui.selectKptCheckBox.setCheckState(0)
         self.ui.playBtn.click()
 
     def setFrameTimes(self, folder):
@@ -1786,16 +1744,6 @@ class Analysis2dWidget(QWidget):
         
         total_seconds = 1.5
         self.ui.frameNumLabel.setText(self.frameTimeText(0, int(total_frames)))
-        # """初始化影片滑桿和相關的標籤。"""
-        # total_frames = self.video_loader.total_frames
-        # self.ui.frameSlider.setMinimumHeight(80)
-        # self.ui.frameSlider.setMinimum(0)
-        # self.ui.frameSlider.setMaximum(total_frames - 1)
-        # self.ui.frameSlider.setValue(0)
-        # # self.ui.frameNumLabel.setText(f'0/{total_frames - 1}')
-        # total_seconds = 1.5
-        # # 初始化標籤顯示： 0.00s / 1.50s
-        # self.ui.frameNumLabel.setText(self.frameTimeText(0, int(total_frames)))
 
     def resetFrameSlider(self):
         self.ui.frameSlider.setValue(0)
@@ -1818,13 +1766,11 @@ class Analysis2dWidget(QWidget):
         if self.enlarged_dialog is not None:
             self.enlarged_dialog.close()
             self.enlarged_dialog = None
-        # self.curve_scene.clear()
 
     def showImage(self, image: np.ndarray, scene: QGraphicsScene, GraphicsView: QGraphicsView):
         """Display an image in the QGraphicsView."""
         scene.clear()
         if image is None:
-            # print(self.video_loader.video_frames)
             exit()
         h, w = image.shape[:2]
         qImg = QImage(image, w, h, 3 * w, QImage.Format_RGB888).rgbSwapped()
