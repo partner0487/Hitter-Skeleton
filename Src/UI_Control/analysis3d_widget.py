@@ -1262,7 +1262,10 @@ class Analysis3DWidget(QWidget):
         self.ui.landingBtn.clicked.connect(lambda: self.ui.frameSlider.setValue(self.phase_result.F_landing))
         self.ui.liftoffBtn.clicked.connect(lambda: self.ui.frameSlider.setValue(self.phase_result.F_liftoff))
         self.ui.loadVideoBtn.clicked.connect(lambda: self.loadVideo4Process())
-        self.ui.processVideosBtn.clicked.connect(lambda: self.toggleDetect())
+        # 載入影片後會自動處理，原本的「處理影片」改成批量處理整個資料夾
+        self.ui.processVideosBtn.setText("批量處理")
+        self.ui.processVideosBtn.clicked.connect(self.batchProcess)
+        self.processFinished.connect(self.onProcessFinished)
         self.ui.sideCameraBtn.setText("📹側向")
         self.ui.frontCameraBtn.setText("📸正向")
         self.ui.sideCameraBtn.clicked.connect(self.change2SideView)
@@ -1405,12 +1408,8 @@ class Analysis3DWidget(QWidget):
         mp4_files = sorted(glob.glob(os.path.join(folder_path, '*.mp4')))
         
         if len(mp4_files) >= 2:
-            self.video_loader_dual.video_path = mp4_files[0]
-            self.video_loader_dual.video_path2 = mp4_files[1]
-            self.loadVideo4Process()
-            self._auto_process_pending = True
-            # checkVideoLoad4Process 會等待影片載入完畢後，透過 _auto_process_pending 觸發 toggleDetect
-            self.checkVideoLoad4Process()
+            # 第一個為正面（CF）、第二個為側面（CS）；讀完後自動處理
+            self.loadVideo4Process(mp4_files[0], mp4_files[1])
         elif mp4_files:
             # 如果只有一個影片，就單純載入
             self.loadFolder(folder_path)
@@ -1474,7 +1473,10 @@ class Analysis3DWidget(QWidget):
             self.person_selector = None
             self.person_selector_2 = None
 
-    def loadVideo4Process(self):
+    def loadVideo4Process(self, video_path=None, video_path2=None):
+        """載入一組正面（CF）、側面（CS）影片，讀完後自動開始處理（checkVideoLoad4Process → toggleDetect）；
+        沒給路徑時跳出選資料夾的對話框"""
+        self._auto_process_pending = True
         self.reset4Process()
         # 畫面已換成新錄影，切換右打／左打時不可再重算、改寫先前資料夾的 3D
         self.folder = None
@@ -1485,8 +1487,68 @@ class Analysis3DWidget(QWidget):
         if self.is_play:
             # self.ui.playBtn.click()
             self.playBtnClicked4Process()
-        self.video_loader_dual.loadVideo()
+        self.video_loader_dual.loadVideo(video_path, video_path2)
         self.checkVideoLoad4Process()
+
+    @staticmethod
+    def findClipPairs(root):
+        """root 底下所有錄影資料夾的 (正面 CF*.mp4, 側面 CS*.mp4)；略過處理結果的 CF_ 子資料夾與校正等非打者資料夾"""
+        pairs = []
+        for d, subdirs, files in os.walk(root):
+            subdirs[:] = sorted(x for x in subdirs if not x.startswith("CF_") and x not in NON_HITTER_DIRS)
+            cf = sorted(f for f in files if f.startswith("CF") and f.lower().endswith(".mp4"))
+            cs = sorted(f for f in files if f.startswith("CS") and f.lower().endswith(".mp4"))
+            if cf and cs:
+                pairs.append((os.path.join(d, cf[0]), os.path.join(d, cs[0])))
+        return pairs
+
+    def batchProcess(self):
+        """批量處理：選一個資料夾（例如 Db/WeiShu/2026-10-29），依序處理底下每支錄影；處理中再按一次則在目前這支完成後停止"""
+        if getattr(self, "batch_queue", None) is not None:
+            self.batch_stop = True
+            self.ui.processVideosBtn.setText("停止中…")
+            return
+        root = QFileDialog.getExistingDirectory(self, "選擇要批量處理的資料夾（例如 Db/WeiShu/2026-10-29）", str(DB_DIR))
+        if not root:
+            return
+        pairs = self.findClipPairs(root)
+        if not pairs:
+            QMessageBox.warning(self, "批量處理", "這個資料夾底下沒有成對的 CF*.mp4 與 CS*.mp4 影片")
+            return
+        done = sum(any(n.startswith("CF_") and os.path.isdir(os.path.join(os.path.dirname(cf), n))
+                       for n in os.listdir(os.path.dirname(cf))) for cf, _ in pairs)
+        answer = QMessageBox.question(
+            self, "批量處理",
+            f"{root}\n\n找到 {len(pairs)} 支錄影，其中 {done} 支已處理過，會覆蓋原本 CF_ 子資料夾裡的結果。\n"
+            f"打擊方向：{self.ui.batterInput.currentText()}\n\n要開始處理嗎？")
+        if answer != QMessageBox.Yes:
+            return
+        self.batch_queue, self.batch_total, self.batch_stop, self.batch_root = list(pairs), len(pairs), False, root
+        self.ui.processVideosBtn.setText("停止批量處理")
+        self._startNextBatchClip()
+
+    def _startNextBatchClip(self):
+        if self.batch_stop or not self.batch_queue:
+            finished = self.batch_total - len(self.batch_queue)
+            stopped = self.batch_stop and self.batch_queue
+            self.batch_queue = None
+            self.ui.processVideosBtn.setText("批量處理")
+            QMessageBox.information(self, "批量處理", f"{'已停止，' if stopped else ''}完成 {finished}/{self.batch_total} 支")
+            return
+        cf, cs = self.batch_queue.pop(0)
+        index = self.batch_total - len(self.batch_queue)
+        try:
+            label = os.path.relpath(os.path.dirname(cf), os.path.dirname(self.batch_root))
+        except ValueError:  # 不同磁碟機
+            label = os.path.dirname(cf)
+        self.ui.ResolutionLabel.setText(f"批量處理 {index}/{self.batch_total}：{label}")
+        print(f"[批量處理] {index}/{self.batch_total} {label}")
+        self.loadVideo4Process(cf, cs)
+
+    def onProcessFinished(self, output_folder):
+        """一支處理完：批量處理中就接著下一支（延後執行，等播放迴圈結束）"""
+        if getattr(self, "batch_queue", None) is not None:
+            QTimer.singleShot(300, self._startNextBatchClip)
 
     def analyzeFrame4Process(self):
         """Analyze and process each video frame."""
@@ -1520,8 +1582,9 @@ class Analysis3DWidget(QWidget):
 
     def checkVideoLoad4Process(self):
         """檢查影片是否讀取完成，並確保幀數資訊已更新。"""
-        # 1. 檢查是否有路徑
+        # 1. 檢查是否有路徑（選資料夾時按取消就沒有，也不要留著待處理的旗標）
         if not self.video_loader_dual.video_path and not self.video_loader_dual.video_path2:
+            self._auto_process_pending = False
             return
         
         # 2. 若還在讀取中，或者 total_frames 尚未被賦值（None），則繼續等待
