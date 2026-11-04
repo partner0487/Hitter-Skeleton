@@ -28,7 +28,7 @@ from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
 from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
 from PyQt5 import QtGui
-from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps
+from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
 from utils.stereo_calibration import fundamental_side_to_front, load_stereo_params
 from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, keypoints_by_frame, peak_separation,
                                 pelvis_speed, separation_series, stride_length)
@@ -316,14 +316,21 @@ class Analysis3DWidget(QWidget):
         ui = self.ui
         ui.horizontalAngleLabel.setText("攻擊角度:")
         ui.verticalAngleLabel.setText("垂直棒角:")
+        # 跨步時間（離地 → 著地）、擊球時間（著地 → 擊球），放在離地區塊右欄
+        self.strideTimeCaption = new_label_like(ui.centerGravity, "跨步時間:")
+        self.strideTimeLabel = new_label_like(ui.centerGravityLabel)
+        self.swingTimeCaption = new_label_like(ui.centerGravity, "擊球時間:")
+        self.swingTimeLabel = new_label_like(ui.centerGravityLabel)
+        self.strideTimeLabel.setToolTip("前腳離地到前腳著地")
+        self.swingTimeLabel.setToolTip("前腳著地到擊球；Blast 的 Time to Contact 從開始下揮算起，這裡以著地為起點")
         self.maxSepCaption = new_label_like(ui.hipShoulderLabel2, "最大分離角:")
         self.maxSepLabel = new_label_like(ui.hipShoulderEditLabel2)
         sep_tip = "肩髖分離角：正值 = 肩落後髖（蓄力），負值 = 肩已轉過髖"
         for label in (ui.hipShoulderEditLabel1, ui.hipShoulderEditLabel2, ui.hipShoulderEditLabel3, self.maxSepLabel):
             label.setToolTip(sep_tip)
         arrange_metrics([
-            (ui.gridLayout_6, [[(ui.centerGravity, ui.centerGravityLabel)],
-                               [(ui.hipShoulderLabel, ui.hipShoulderEditLabel1)]]),
+            (ui.gridLayout_6, [[(ui.centerGravity, ui.centerGravityLabel), (self.strideTimeCaption, self.strideTimeLabel)],
+                               [(ui.hipShoulderLabel, ui.hipShoulderEditLabel1), (self.swingTimeCaption, self.swingTimeLabel)]]),
             (ui.gridLayout, [[(ui.centerGravity2, ui.centerGravityLabel2), (ui.strideDis, ui.strideDisLabel)],
                              [(ui.hipShoulderLabel2, ui.hipShoulderEditLabel2), (self.maxSepCaption, self.maxSepLabel)]]),
             (ui.gridLayout_5, [[(ui.batSpeed, ui.batSpeedLabel), (ui.horizontalAngleLabel, ui.horizontalAngleEditLabel)],
@@ -1983,6 +1990,15 @@ class Analysis3DWidget(QWidget):
         self.setPhaseResult(self.phase_result)
         print("PhaseResult =", self.phase_result)
 
+    def updatePhaseTimes(self, phase_result):
+        """跨步時間、擊球時間，與進度條上各段秒數一致"""
+        total = int(getattr(self.video_loader, "total_frames", 0) or 0)
+        times = getattr(self, "frame_times", None)
+        stride = phase_seconds(phase_result.F_liftoff, phase_result.F_landing, total, times)
+        swing = phase_seconds(phase_result.F_landing, phase_result.F_impact, total, times)
+        self.strideTimeLabel.setText(fmt(stride, "s", 2))
+        self.swingTimeLabel.setText(fmt(swing, "s", 2))
+
     def setPhaseResult(self, phase_result: PhaseResult):
         total = self.video_loader.total_frames
         if total > 0:
@@ -2047,6 +2063,7 @@ class Analysis3DWidget(QWidget):
         self.ui.liftofflabel.setText(str(phase_result.F_liftoff)+"幀")
         self.ui.landinglabel.setText(str(phase_result.F_landing)+"幀")
         self.ui.impactlabel.setText(str(phase_result.F_impact)+"幀")
+        self.updatePhaseTimes(phase_result)
         if phase_result.F_impact is not None:
             self.calculateBatAnglesAtImpact(phase_result.F_impact, phase_result.F_landing)
         # 先算指標：著地圖上的跨步距離標註用它的結果

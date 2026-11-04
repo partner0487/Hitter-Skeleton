@@ -29,13 +29,13 @@ from utils.model import Model
 from utils.phase_detect2d import PhaseDetector, PhaseResult
 from ocr import ocr_capture_1time as ocr
 from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS
-from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps
+from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
 from utils.bat_speed2d import blast_metrics_2d, read_frame_times
 from utils.stereo_calibration import load_stereo_params
 from utils.body_metrics import (SideScale, frame_interval, keypoints_by_frame, pelvis_speed, side_scale_from_stereo,
                                 stride_length, undistort_keypoints)
 from utils.bat_speed2d import BAT_LENGTH_M
-from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, rapsodo_texts
+from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts
 
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
@@ -187,8 +187,16 @@ class Analysis2dWidget(QWidget):
         2D 投影會失真，這兩項只在 3D 頁顯示"""
         ui = self.ui
         ui.horizontalAngleLabel.setText("攻擊角度:")
+        # 跨步時間（離地 → 著地）、擊球時間（著地 → 擊球），放在離地區塊右欄
+        self.strideTimeCaption = new_label_like(ui.centerGravity, "跨步時間:")
+        self.strideTimeLabel = new_label_like(ui.centerGravityLabel)
+        self.swingTimeCaption = new_label_like(ui.centerGravity, "擊球時間:")
+        self.swingTimeLabel = new_label_like(ui.centerGravityLabel)
+        self.strideTimeLabel.setToolTip("前腳離地到前腳著地")
+        self.swingTimeLabel.setToolTip("前腳著地到擊球；Blast 的 Time to Contact 從開始下揮算起，這裡以著地為起點")
         arrange_metrics([
-            (ui.gridLayout_6, [[(ui.centerGravity, ui.centerGravityLabel)]]),
+            (ui.gridLayout_6, [[(ui.centerGravity, ui.centerGravityLabel), (self.strideTimeCaption, self.strideTimeLabel)],
+                               [None, (self.swingTimeCaption, self.swingTimeLabel)]]),
             (ui.gridLayout_4, [[(ui.centerGravity2, ui.centerGravityLabel2), (ui.strideDis, ui.strideDisLabel)]]),
             (ui.gridLayout_5, [[(ui.batSpeed, ui.batSpeedLabel), (ui.horizontalAngleLabel, ui.horizontalAngleEditLabel)],
                                [(ui.forefoot3, ui.forefootLabel3), (ui.backfoot3, ui.backfootLabel3)]]),
@@ -1006,6 +1014,15 @@ class Analysis2dWidget(QWidget):
         self.setPhaseResult(self.phase_result)
         print("PhaseResult =", self.phase_result)
 
+    def updatePhaseTimes(self, phase_result):
+        """跨步時間、擊球時間，與進度條上各段秒數一致"""
+        total = int(getattr(self.video_loader, "total_frames", 0) or 0)
+        times = getattr(self, "frame_times", None)
+        stride = phase_seconds(phase_result.F_liftoff, phase_result.F_landing, total, times)
+        swing = phase_seconds(phase_result.F_landing, phase_result.F_impact, total, times)
+        self.strideTimeLabel.setText(fmt(stride, "s", 2))
+        self.swingTimeLabel.setText(fmt(swing, "s", 2))
+
     def setPhaseResult(self, phase_result: PhaseResult):
         total = self.video_loader.total_frames
         if total > 0:
@@ -1069,6 +1086,7 @@ class Analysis2dWidget(QWidget):
         self.ui.liftofflabel.setText(str(phase_result.F_liftoff)+"幀")
         self.ui.landinglabel.setText(str(phase_result.F_landing)+"幀")
         self.ui.impactlabel.setText(str(phase_result.F_impact)+"幀")
+        self.updatePhaseTimes(phase_result)
         print("calculateBatMetrics2D_1: impact_frame", phase_result.F_impact)
         self.calculateKeyphaseMetrics(phase_result)
         self.calculateBatMetrics2D(phase_result.F_impact, phase_result.F_landing)

@@ -25,9 +25,9 @@ def _detach(layout):
 
 
 def arrange_metrics(blocks):
-    """blocks：[(grid, rows), ...]，rows 每列為 [(標題 QLabel, 數值 QLabel), ...]；grid 原有但沒列出的元件隱藏。
+    """blocks：[(grid, rows), ...]，rows 每列為 [(標題 QLabel, 數值 QLabel) 或 None（空一格）, ...]；grid 原有但沒列出的元件隱藏。
     同一頁的標題欄、數值欄寬度一致（取最寬的標題與 VALUE_SAMPLE），各區塊的數字上下、左右都對齊"""
-    pairs = [pair for _, rows in blocks for row in rows for pair in row]
+    pairs = [pair for _, rows in blocks for row in rows for pair in row if pair is not None]
     if not pairs:
         return
     for caption, _ in pairs:  # 標題統一以半形冒號結尾（.ui 裡有的有、有的沒有）
@@ -36,12 +36,15 @@ def arrange_metrics(blocks):
     value_w = max(v.fontMetrics().horizontalAdvance(VALUE_SAMPLE) for _, v in pairs)
     max_rows = max(len(rows) for _, rows in blocks)
     for grid, rows in blocks:
-        used = {w for row in rows for pair in row for w in pair}
+        used = {w for row in rows for pair in row if pair is not None for w in pair}
         for w in _detach(grid):
             if w not in used:
                 w.hide()
         for r, row in enumerate(rows):
-            for c, (caption, value) in enumerate(row):
+            for c, pair in enumerate(row):
+                if pair is None:
+                    continue
+                caption, value = pair
                 caption.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 caption.setMinimumWidth(caption_w)
@@ -51,7 +54,7 @@ def arrange_metrics(blocks):
                 caption.show()
                 value.show()
         # 列數較少的區塊補空白列，同一頁每個指標區一樣高
-        template = rows[0][0][0]
+        template = next(pair[0] for row in rows for pair in row if pair is not None)
         for r in range(len(rows), max_rows):
             grid.addWidget(new_label_like(template, " "), r, 0)
         # 欄：標題｜數值｜間隔｜標題｜數值｜剩餘；多出的寬度給最右欄，兩組指標的位置固定

@@ -44,3 +44,10 @@ def frame_seconds(frame: int, total_frames: int, frame_times: dict = None) -> fl
         if span > 0:
             return (frame_times[frame] - start) / span * NOMINAL_DURATION_S
     return frame / (total_frames - 1) * NOMINAL_DURATION_S if total_frames and total_frames > 1 else 0.0
+
+
+def phase_seconds(f_start, f_end, total_frames: int, frame_times: dict = None):
+    """f_start → f_end 的時間（秒），與時間標籤、進度條各段秒數用同一套換算；缺幀回傳 None"""
+    if f_start is None or f_end is None or f_end < f_start:
+        return None
+    return frame_seconds(f_end, total_frames, frame_times) - frame_seconds(f_start, total_frames, frame_times)
