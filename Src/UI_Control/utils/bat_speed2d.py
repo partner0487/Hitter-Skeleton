@@ -6,7 +6,9 @@
 做法（側面單一相機）：
 - 棒頭／握把端：PhaseDetector.bat_head_track()（手腕分棒頭、排除跳動與沿用的遮罩），
   甜蜜點 = 棒頭往握把端方向，沿畫面上的球棒線段取棒長比例 0.1524 / BAT_LENGTH_M 的位置
-- 擊球瞬間：擊球點幀與它前一個有效幀（間隔 ≤ MAX_GAP 幀）之間的位移，即擊球前最後一段
+- 擊球瞬間（impact_frames）：2D 用擊球點幀（缺時往前最多 MAX_GAP 幀）與它前一個有效幀，即擊球前最後一段。
+  3D（bat_speed3d）改用擊球點前後各 IMPACT_WINDOW_3D 幀，比較穩；2D 不這樣做，
+  因為擊球後球棒往側面相機揮，畫面上幾乎沒有位移（WeiShu 15 支 2D 速度會只剩 3D 的 0.46～0.93 倍）
 - 時間：用 frame_times.csv 在擊球點前後 TIME_WINDOW 幀的平均幀間隔（可反映掉幀）；
   不用單一間隔，因為時間戳是電腦收到影像的時間，相鄰間隔在約 10／24 ms 交錯抖動。沒有檔案時用平均 fps
 - 內參：有側面相機校正時先去畸變
@@ -27,6 +29,7 @@ import pandas as pd
 BAT_LENGTH_M = 0.84             # 約 33 吋
 SWEET_SPOT_FROM_TIP_M = 0.1524  # Blast：距棒頭末端 6 吋
 MAX_GAP = 3                     # 擊球前一個有效幀最多往前找幾幀
+IMPACT_WINDOW_3D = 1            # 3D 擊球瞬間速度取擊球點前後各幾幀（見 bat_speed3d）
 TIME_WINDOW = 10                # 幀間隔取擊球點前後幾幀的平均
 
 
@@ -52,6 +55,25 @@ def read_frame_times(folder) -> dict:
             return {int(row["frame"]): float(row["time_sec"]) for row in csv.DictReader(f)}
     except (OSError, ValueError, KeyError):
         return {}
+
+
+def impact_frames(frames, f_impact: int, window: int = 0) -> Optional[list]:
+    """算擊球瞬間速度用的有效幀（由小到大）：擊球點前後各 window 幀內；window 為 0 或不足兩幀時
+    用擊球點（缺時往前最多 MAX_GAP 幀）與它前一個有效幀（間隔 ≤ MAX_GAP），即擊球前最後一段；都沒有回傳 None"""
+    frames = sorted(int(f) for f in frames)
+    window = [f for f in frames if f_impact - window <= f <= f_impact + window]
+    if len(window) >= 2:
+        return window
+    to = [f for f in frames if f_impact - MAX_GAP <= f <= f_impact]
+    if not to:
+        return None
+    before = [f for f in frames if to[-1] - MAX_GAP <= f < to[-1]]
+    return [before[-1], to[-1]] if before else None
+
+
+def path_and_chord(points: np.ndarray):
+    """(沿各點的路徑長, 頭尾連線向量)"""
+    return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()), points[-1] - points[0]
 
 
 def _undistort(points: np.ndarray, K, dist) -> np.ndarray:
@@ -84,15 +106,12 @@ def blast_metrics_2d(track: pd.DataFrame, f_impact: Optional[int], fps: float,
     sweet = head + (grip - head) * (SWEET_SPOT_FROM_TIP_M / bat_length_m)
     frames = valid["frame"].to_numpy()
 
-    # 擊球前最後一段：擊球點幀（缺時往前最多 MAX_GAP 幀）與它前一個有效幀
-    idx_to = np.where((frames <= f_impact) & (frames >= f_impact - MAX_GAP))[0]
-    if len(idx_to) == 0:
+    used = impact_frames(frames, f_impact)
+    if used is None:
         return None
-    i_to = int(idx_to[-1])
-    if i_to == 0 or frames[i_to] - frames[i_to - 1] > MAX_GAP:
-        return None
-    i_from = i_to - 1
-    f_from, f_to = int(frames[i_from]), int(frames[i_to])
+    index = {int(f): i for i, f in enumerate(frames)}
+    f_from, f_to = used[0], used[-1]
+    path_px, d = path_and_chord(sweet[[index[f] for f in used]])
 
     frame_times = frame_times or {}
     near = sorted(f for f in frame_times if f_from - TIME_WINDOW <= f <= f_to + TIME_WINDOW)
@@ -102,8 +121,7 @@ def blast_metrics_2d(track: pd.DataFrame, f_impact: Optional[int], fps: float,
     else:
         duration, timed_by = (f_to - f_from) / fps, "fps"
 
-    d = sweet[i_to] - sweet[i_from]
-    speed_kmh = float(np.linalg.norm(d)) * m_per_px / duration * 3.6
+    speed_kmh = path_px * m_per_px / duration * 3.6
     attack = float(np.degrees(np.arctan2(-d[1], abs(d[0]))))  # 畫面 y 向下，往上為正
     return BlastMetrics2D(speed_kmh=speed_kmh, attack_angle_deg=attack, from_frame=f_from, to_frame=f_to,
                           duration_s=duration, bat_px=bat_px, m_per_px=m_per_px,
