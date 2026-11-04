@@ -54,6 +54,12 @@ class AnalysisBar(QWidget):
         self.time_of_ratio = time_of_ratio
         self.update()
 
+    def _x(self, ratio, w):
+        """比例 → x 像素，與 QSlider 把手中心相同：把手中心從 handle_px/2 走到 w - handle_px/2，
+        直接用 ratio * w 時越靠兩端越偏，把手停在擊球幀也壓不到 c 標記"""
+        handle = getattr(self, "handle_px", 0)
+        return int(round(handle / 2 + ratio * (w - handle)))
+
     def set_markers(self, markers):
         """設定在進度條上標註的點位: [(ratio, 'text'), ...]"""
         self.markers = markers
@@ -77,15 +83,15 @@ class AnalysisBar(QWidget):
 
             # 1. 繪製色塊 (底層)
             for start_ratio, end_ratio, color in self.segments:
-                x = int(start_ratio * w)
-                seg_w = int((end_ratio - start_ratio) * w)
+                x = self._x(start_ratio, w)
+                seg_w = self._x(end_ratio, w) - x
                 if seg_w <= 0: continue
                 painter.fillRect(QRect(x, bar_y, seg_w, bar_h), QColor(color))
 
             # 2. 繪製標記 (1,2,3,4 與 a,b,c) - 緊貼邊緣
             if hasattr(self, 'markers') and self.markers:
                 for ratio, marker_text in self.markers:
-                    mx = int(max(0.0, min(ratio, 1.0)) * w)
+                    mx = self._x(max(0.0, min(ratio, 1.0)), w)
                     marker_str = str(marker_text)
                     
                     if marker_str in ['1', '2', '3', '4']:
@@ -110,8 +116,8 @@ class AnalysisBar(QWidget):
 
             # 3. 畫秒數文字 (字體變大、向下靠近 Bar)
             for start_ratio, end_ratio, color in self.segments:
-                x = int(start_ratio * w)
-                seg_w = int((end_ratio - start_ratio) * w)
+                x = self._x(start_ratio, w)
+                seg_w = self._x(end_ratio, w) - x
                 if seg_w < 15: continue
                 
                 time_of = getattr(self, "time_of_ratio", None) or (lambda r: r * total_duration)
@@ -339,6 +345,10 @@ class Analysis2dWidget(QWidget):
                 QtWidgets.QStyle.CC_Slider, opt, QtWidgets.QStyle.SC_SliderGroove, source
             )
             
+            handle_rect = source.style().subControlRect(
+                QtWidgets.QStyle.CC_Slider, opt, QtWidgets.QStyle.SC_SliderHandle, source
+            )
+            self.analysis_bar.handle_px = handle_rect.width()
             bar_h = 100 # ❗ 提高控制項容器高度
             # 讓 AnalysisBar 的寬度完全等於滑軌的寬度，位置與滑軌起始點對齊
             self.analysis_bar.setGeometry(
@@ -2348,7 +2358,10 @@ class Analysis2dWidget(QWidget):
                 lambda r: frame_seconds(int(round(r * (total - 1))), total, self.frame_times))
 
     def frameTimeText(self, frame_num, total_frames):
-        return f"{frame_seconds(frame_num, total_frames, getattr(self, 'frame_times', None)):.2f}/{NOMINAL_DURATION_S:.1f}s"
+        """目前時間/影片長度；有 frame_times.csv 時長度是最後一幀的擷取時間（例如 1.48 s），而非名目的 1.5 s"""
+        times = getattr(self, "frame_times", None)
+        duration = frame_seconds(total_frames - 1, total_frames, times) if total_frames > 1 else NOMINAL_DURATION_S
+        return f"{frame_seconds(frame_num, total_frames, times):.2f}/{duration:.2f}s"
 
     def initFrameSlider(self):
         """初始化影片滑桿和相關的標籤。"""
@@ -2364,7 +2377,7 @@ class Analysis2dWidget(QWidget):
         self.ui.frameSlider.setValue(0)
         
         total_seconds = 1.5
-        self.ui.frameNumLabel.setText(f'0.00/{total_seconds:.1f}s')
+        self.ui.frameNumLabel.setText(self.frameTimeText(0, int(total_frames)))
         # """初始化影片滑桿和相關的標籤。"""
         # total_frames = self.video_loader.total_frames
         # self.ui.frameSlider.setMinimumHeight(80)
@@ -2374,7 +2387,7 @@ class Analysis2dWidget(QWidget):
         # # self.ui.frameNumLabel.setText(f'0/{total_frames - 1}')
         # total_seconds = 1.5
         # # 初始化標籤顯示： 0.00s / 1.50s
-        # self.ui.frameNumLabel.setText(f'0.00/{total_seconds:.1f}s')
+        # self.ui.frameNumLabel.setText(self.frameTimeText(0, int(total_frames)))
 
     def resetFrameSlider(self):
         self.ui.frameSlider.setValue(0)
