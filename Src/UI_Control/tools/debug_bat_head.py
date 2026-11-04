@@ -173,8 +173,10 @@ def main():
         if track.empty:
             print("   沒有棒頭資料")
             continue
-        rejected = track.loc[track["rejected"], "frame"].tolist()
+        arm = track.loc[track["on_arm"], "frame"].tolist()
+        rejected = track.loc[track["rejected"] & ~track["on_arm"], "frame"].tolist()
         print(f"   沿用上一幀的遮罩（沒偵測到）：{track.loc[track['repeated'], 'frame'].tolist() or '無'}")
+        print(f"   排除誤抓手臂（遮罩貼著手臂骨架）：{arm or '無'}")
         print(f"   排除不合理跳動（> {PhaseDetector.JUMP_MAX_PX:g} px）：{rejected or '無'}")
         top = track.nlargest(5, "speed_px_per_frame")[["frame", "head_x", "head_y", "speed_px_per_frame"]]
         print("   速度前 5 名：")

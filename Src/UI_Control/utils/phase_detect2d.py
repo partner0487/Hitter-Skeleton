@@ -2,6 +2,18 @@ import numpy as np
 import pandas as pd
 from dataclasses import dataclass
 from typing import Optional
+
+# 肩–肘、肘–腕（Halpe26：5/6 肩、7/8 肘、9/10 腕）
+ARM_LINKS = ((5, 7), (7, 9), (6, 8), (8, 10))
+
+
+def _segment_distances(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """各點到線段 a-b 的距離"""
+    ab = b - a
+    t = np.clip(((points - a) @ ab) / max(float(ab @ ab), 1e-6), 0.0, 1.0)
+    return np.linalg.norm(points - (a + t[:, None] * ab), axis=1)
+
+
 @dataclass
 class PhaseResult:
     F0: int = 0
@@ -49,6 +61,8 @@ class PhaseDetector:
         self.toe_frames, self.toe_vals = self._extract_toe_data(person_df, batter_index)
         # 雙手腕中點，用來分辨球棒遮罩哪一端是握把
         self.wrists = self._extract_wrist_centers(person_df)
+        # 雙手的上臂、前臂骨架線段，用來排除把手臂誤判成球棒的遮罩
+        self.arm_segments = self._extract_arm_segments(person_df)
 
         # 預先平滑
         self.heel_smooth = self._smooth(self.heel_vals)
@@ -159,6 +173,44 @@ class PhaseDetector:
             if pts:
                 wrists[int(row["frame_number"])] = np.mean(pts, axis=0)
         return wrists
+
+    @staticmethod
+    def _extract_arm_segments(df: pd.DataFrame, min_conf: float = 0.3) -> dict:
+        """{frame: [(a, b), ...]} 肩–肘、肘–腕線段；Halpe26 的 5/6 肩、7/8 肘、9/10 腕"""
+        arms = {}
+        if df is None or df.empty or "keypoints" not in df:
+            return arms
+        for _, row in df.iterrows():
+            kpts = np.asarray(row["keypoints"], dtype=np.float32)
+            if kpts.ndim != 2 or kpts.shape[0] <= 10:
+                continue
+            ok = lambda i: kpts[i, 0] > 0 and (kpts.shape[1] < 3 or kpts[i, 2] >= min_conf)
+            segs = [(kpts[a, :2], kpts[b, :2]) for a, b in ARM_LINKS if ok(a) and ok(b)]
+            if segs:
+                arms[int(row["frame_number"])] = segs
+        return arms
+
+    def _mask_on_arm(self, frame: int, mask_data, ends, bat_px: float) -> bool:
+        """遮罩是不是誤抓到手臂：輪廓大多貼著手臂骨架、兩端都在手臂上，而且比整支球棒短很多。
+        揮棒時球棒常疊在前臂後方（重疊約 5～6 成），但會延伸超過手肘、長度接近整支球棒，不會被排除"""
+        segs = self.arm_segments.get(frame)
+        if not segs or bat_px <= 0:
+            return False
+        try:
+            poly = np.asarray(mask_data[1][0], dtype=np.float32).reshape(-1, 2)
+        except Exception:
+            return False
+        pts = []
+        for a, b in zip(poly, np.roll(poly, -1, axis=0)):  # 沿輪廓每 3 px 取一點
+            n = max(1, int(np.linalg.norm(b - a) / 3))
+            pts += [a + (b - a) * k / n for k in range(n)]
+        pts = np.asarray(pts)
+        dist = lambda q: np.min([_segment_distances(q, a, b) for a, b in segs], axis=0)
+        on_arm = float(np.mean(dist(pts) < self.ARM_NEAR_PX))
+        end_far = float(np.max(dist(np.asarray(ends))))
+        length = float(np.linalg.norm(ends[0] - ends[1]))
+        return (on_arm >= self.ARM_OVERLAP_MIN and end_far <= self.ARM_END_RATIO * bat_px
+                and length <= self.ARM_LENGTH_RATIO * bat_px)
 
     def _wrist_near(self, frame: int, max_gap: int = 3):
         """該幀的手腕中點；沒有時用前後 max_gap 幀內最近的一幀，都沒有回傳 None"""
@@ -307,6 +359,13 @@ class PhaseDetector:
     LIFT_TOL_PX = 4.0
     # 腳跟資料少於此幀數時不判斷各階段
     MIN_FOOT_FRAMES = 5
+    # 手臂誤判成球棒：輪廓有 ARM_OVERLAP_MIN 以上在手臂骨架 ARM_NEAR_PX 內、兩端離手臂都不超過
+    # 棒長 × ARM_END_RATIO、長度不到棒長 × ARM_LENGTH_RATIO（棒長 = 該片段遮罩兩端距離的 95 百分位）。
+    # 依 WeiShu 側拋 H03 f114、H04 f41、T座 H01 f60、正投 H04 f72、handsomeboy 正投 H01 f677/678 等
+    ARM_NEAR_PX = 20.0
+    ARM_OVERLAP_MIN = 0.6
+    ARM_END_RATIO = 0.2
+    ARM_LENGTH_RATIO = 0.65
 
     @staticmethod
     def _bat_ends_from_mask(mask_data):
@@ -352,7 +411,7 @@ class PhaseDetector:
                         head = p1 if p1[1] < p2[1] else p2
                         item.update(head_rule="higher")
                     item.update(source="mask", end1_x=float(p1[0]), end1_y=float(p1[1]),
-                                end2_x=float(p2[0]), end2_y=float(p2[1]))
+                                end2_x=float(p2[0]), end2_y=float(p2[1]), _mask=row['mask'])
                 else:
                     continue
                 item.update(head_x=float(head[0]), head_y=float(head[1]), _head=head)
@@ -369,11 +428,23 @@ class PhaseDetector:
         ends = track[ends_cols].to_numpy()
         track["repeated"] = np.r_[False, np.all(ends[1:] == ends[:-1], axis=1)]
 
+        # 誤抓到手臂的遮罩（見 _mask_on_arm）：不參與跳動判斷與速度
+        on_arm = np.zeros(len(track), dtype=bool)
+        if "_mask" in track:
+            lengths = np.hypot(track["end1_x"] - track["end2_x"], track["end1_y"] - track["end2_y"]).dropna()
+            bat_px = float(np.percentile(lengths, 95)) if len(lengths) else 0.0
+            for i in range(len(track)):
+                if track.at[i, "source"] == "mask" and not track.at[i, "repeated"]:
+                    ends_i = np.array([[track.at[i, "end1_x"], track.at[i, "end1_y"]],
+                                       [track.at[i, "end2_x"], track.at[i, "end2_y"]]], dtype=np.float32)
+                    on_arm[i] = self._mask_on_arm(int(track.at[i, "frame"]), track.at[i, "_mask"], ends_i, bat_px)
+        track["on_arm"] = on_arm
+
         # 排除不合理跳動：遮罩誤抓到手臂等物體時，棒頭會跳到別處再跳回來，離前後幾幀的中位數很遠；
         # 真正揮棒時棒頭連續移動，中位數幾乎就是該幀，再快也不會被排除
         frames = track["frame"].to_numpy()
         heads_xy = track[["head_x", "head_y"]].to_numpy()
-        detected = ~track["repeated"].to_numpy()
+        detected = ~track["repeated"].to_numpy() & ~on_arm
         jumps = np.full(len(track), np.nan)
         for i, f in enumerate(frames):
             if not detected[i]:
@@ -382,7 +453,7 @@ class PhaseDetector:
             if window.sum() >= 3:  # 前後資料太少時無法判斷，不排除
                 jumps[i] = float(np.linalg.norm(heads_xy[i] - np.median(heads_xy[window], axis=0)))
         track["jump_px"] = jumps
-        track["rejected"] = track["jump_px"] > self.JUMP_MAX_PX
+        track["rejected"] = (track["jump_px"] > self.JUMP_MAX_PX) | track["on_arm"]
 
         speeds = [np.nan] * len(track)
         prev = None
@@ -395,7 +466,7 @@ class PhaseDetector:
                     speeds[i] = float(np.linalg.norm(track.at[i, "_head"] - track.at[prev, "_head"]) / gap)
             prev = i
         track["speed_px_per_frame"] = speeds
-        return track.drop(columns="_head")
+        return track.drop(columns=[c for c in ("_head", "_mask") if c in track])
 
     def _fastest_non_spike(self, speeds: pd.Series):
         """
