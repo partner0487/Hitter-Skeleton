@@ -12,6 +12,7 @@ from mmpose.apis import init_model as init_pose_estimator
 from mmpose.evaluation.functional import nms
 from mmpose.structures import merge_data_samples
 from utils.timer import FPSTimer
+from utils.bat_roi import detect_bat_near_hands, hands_and_height
 from ultralytics import YOLO
 import torch
 import torch.autograd.profiler as profiler
@@ -683,14 +684,26 @@ class PoseEstimater:
         online_bat_bbox = []
         online_bat_mask = None
         online_ball_bbox = ball_bboxes
+        pred_instances = data_samples.get('pred_instances', None) if data_samples else None
 
-        # 當有偵測到Bat
-        # tracker Bat
-        if len(bat_bboxes):
+        # 球棒：有打者手腕時在雙手附近重新偵測（utils/bat_roi.py），模糊的球棒也抓得到、不會選到背景；
+        # mask 格式與下面相同：(序號, 輪廓陣列 (1, n, 2))
+        hands = None
+        if pred_instances is not None and len(pred_instances) > 0:
+            try:
+                hands = hands_and_height(pred_instances.keypoints[0], pred_instances.keypoint_scores[0],
+                                         pred_instances.bboxes[0])
+            except (AttributeError, IndexError, KeyError):
+                hands = None
+        if hands is not None:
+            found = detect_bat_near_hands(yolo_model, img, *hands)
+            if found is not None:
+                online_bat_bbox, online_bat_mask = found[0], (0, found[1][None])
+        # 沒有手腕時退回整張畫面的偵測結果
+        elif len(bat_bboxes):
             online_targets_bat = model.tracker.update(
                     np.hstack((np.vstack(bat_bboxes), np.full((np.vstack(bat_bboxes).shape[0], 2), [0.9, 0]))), img.copy()
             )
-            pred_instances = data_samples.get('pred_instances', None) if data_samples else None
             online_bat_bbox, online_bat_mask = self.filterBatBiggestTarget(online_targets_bat, bat_masks, pred_instances)
 
         return data_samples.get('pred_instances', None), online_ids, online_bat_bbox, online_bat_mask, online_ball_bbox
