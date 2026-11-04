@@ -14,14 +14,10 @@ import collections
 from typing import Optional
 from ui.dual_camera_system_record import Ui_hitter_ui_dual
 from datetime import datetime
-from utils.timer import Timer
 from cv_utils.cv_control_dual import Camera, VideoLoader
-from utils.selector import PersonSelector, KptSelector
+from utils.selector import PersonSelector
 from utils.analyze import PoseAnalyzer, BatAnalyzer
-from ui_utils.table_control import KeypointTable
-from ui_utils.graphicview_control import FrameView
 import cv2
-from utils.vis_graph_dual import GraphPlotter
 from utils.vis_image_dual import ImageDrawer
 from skeleton.detect_skeleton_dual import PoseEstimater
 import pyqtgraph as pg
@@ -29,6 +25,7 @@ from utils.model import Model
 from utils.phase_detect2d import PhaseDetector, PhaseResult
 from ocr import ocr_capture_1time as ocr
 from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS, clip_title
+from ui_utils.analysis_bar import AnalysisBar
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
 from utils.bat_speed2d import blast_metrics_2d, read_frame_times
 from utils.stereo_calibration import load_stereo_params
@@ -37,106 +34,6 @@ from utils.body_metrics import (SideScale, frame_interval, keypoints_by_frame, p
 from utils.bat_speed2d import BAT_LENGTH_M
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
-class AnalysisBar(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(QtCore.Qt.WA_StyledBackground, True) # 支援樣式
-        self.segments = []
-
-    def set_segments(self, segments):
-        self.segments = segments
-        self.update()
-
-    def set_time_of_ratio(self, time_of_ratio):
-        """進度條比例 → 秒數（實際擷取時間），各段秒數用它相減"""
-        self.time_of_ratio = time_of_ratio
-        self.update()
-
-    def _x(self, ratio, w):
-        """比例 → x 像素，與 QSlider 把手中心相同：把手中心從 handle_px/2 走到 w - handle_px/2，
-        直接用 ratio * w 時越靠兩端越偏，把手停在擊球幀也壓不到 c 標記"""
-        handle = getattr(self, "handle_px", 0)
-        return int(round(handle / 2 + ratio * (w - handle)))
-
-    def set_markers(self, markers):
-        """設定在進度條上標註的點位: [(ratio, 'text'), ...]"""
-        self.markers = markers
-        self.update()
-
-    def paintEvent(self, event):
-        if not hasattr(self, 'segments') or not self.segments:
-            return
-
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.Antialiasing)
-            w = self.width()
-            h = self.height() 
-            
-            # --- 垂直佈局調整 ---
-            bar_h = 12
-            # 色塊位置：置中偏下一點點，騰出上方給大字體
-            bar_y = int(h * 0.52) - (bar_h // 2)  
-            total_duration = 1.5
-
-            # 1. 繪製色塊 (底層)
-            for start_ratio, end_ratio, color in self.segments:
-                x = self._x(start_ratio, w)
-                seg_w = self._x(end_ratio, w) - x
-                if seg_w <= 0: continue
-                painter.fillRect(QRect(x, bar_y, seg_w, bar_h), QColor(color))
-
-            # 2. 繪製標記 (1,2,3,4 與 a,b,c) - 緊貼邊緣
-            if hasattr(self, 'markers') and self.markers:
-                for ratio, marker_text in self.markers:
-                    mx = self._x(max(0.0, min(ratio, 1.0)), w)
-                    marker_str = str(marker_text)
-                    
-                    if marker_str in ['1', '2', '3', '4']:
-                        radius = 12
-                        cy = bar_y - radius # 貼齊色塊上緣
-                        bg = {'1': QColor(220, 0, 0), '2': QColor(0, 170, 230), '3': QColor(0, 180, 0), '4': QColor(128, 0, 128)}.get(marker_str, Qt.gray)
-                        font_size = 12
-                    else:
-                        radius = 12
-                        cy = bar_y + bar_h + radius # 貼齊色塊下緣
-                        bg = {'a': QColor(255, 50, 50), 'b': QColor(255, 150, 0), 'c': QColor(0, 200, 255)}.get(marker_str, Qt.gray)
-                        font_size = 12
-
-                    rect = QRect(mx - radius, cy - radius, radius * 2, radius * 2)
-                    painter.setBrush(QBrush(bg))
-                    painter.setPen(QPen(Qt.black, 1))
-                    painter.drawEllipse(rect)
-                    
-                    painter.setFont(QFont("Arial", font_size, QFont.Bold))
-                    painter.setPen(QPen(Qt.white))
-                    painter.drawText(rect, Qt.AlignCenter, marker_str)
-
-            # 3. 畫秒數文字 (字體變大、向下靠近 Bar)
-            for start_ratio, end_ratio, color in self.segments:
-                x = self._x(start_ratio, w)
-                seg_w = self._x(end_ratio, w) - x
-                if seg_w < 15: continue
-                
-                time_of = getattr(self, "time_of_ratio", None) or (lambda r: r * total_duration)
-                seconds = time_of(end_ratio) - time_of(start_ratio)
-                t_color = QColor(color)
-                t_color.setAlpha(255)
-                painter.setPen(t_color)
-                
-                # --- 修改點：字體放大至 14 ---
-                painter.setFont(QFont("Arial", 14, QFont.Bold))
-                
-                # --- 修改點：位置向下沈，貼近 Bar ---
-                text_h = 24 # 增加文字框高度容納大字體
-                text_y = bar_y - text_h - 4 # 距離色塊頂部僅 4px，會與標記圓圈部分重疊
-                
-                painter.drawText(QRect(x, text_y, seg_w, text_h), Qt.AlignCenter, f"{seconds:.2f}s")
-                
-        finally:
-            painter.end()
 
 class EnlargedFrameDialog(QDialog):
     """Dialog to display an enlarged frame."""
@@ -300,7 +197,6 @@ class Analysis2dWidget(QWidget):
     
     def resizeEvent(self, event):
         new_size = event.size()
-        print(f"PoseCameraTabControl resized to: {new_size.width()}x{new_size.height()}")
         # 在此執行你想要的操作
         if self.video_loader.video_name is not None:
             self.updateFrame(frame_num=self.ui.frameSlider.value())
@@ -812,11 +708,9 @@ class Analysis2dWidget(QWidget):
         """Start or stop video recording."""
         if state == 2:
             self.startRecording()
-            print("record!!")
         else:
             if self.camera is None:
                 return
-            print("stop record!!")
             self.camera.stop_recording()
 
     def toggleManualRecord(self):
@@ -852,7 +746,7 @@ class Analysis2dWidget(QWidget):
         current_time_hhmm = now.strftime("%H%M")
         try:
             fps = int(self.camera.video_thread.camera1.get_fps())
-        except:
+        except Exception:
             fps = 180
 
         hitter_name = self.ui.hitterNameInput.currentText()
@@ -900,7 +794,6 @@ class Analysis2dWidget(QWidget):
 
     def toggleShowSkeleton(self, state:int):
         """Toggle skeleton detection and FPS control."""
-        print("skeleton state: "+ str(state))
         is_checked = state == 2
         if not is_checked:
             # self.ui.selectCheckBox1.setCheckState(0)
@@ -1069,10 +962,8 @@ class Analysis2dWidget(QWidget):
         self.ui.landinglabel.setText(str(phase_result.F_landing)+"幀")
         self.ui.impactlabel.setText(str(phase_result.F_impact)+"幀")
         self.updatePhaseTimes(phase_result)
-        print("calculateBatMetrics2D_1: impact_frame", phase_result.F_impact)
         self.calculateKeyphaseMetrics(phase_result)
         self.calculateBatMetrics2D(phase_result.F_impact, phase_result.F_landing)
-        print("calculateBatMetrics2D_2: impact_frame", phase_result.F_impact)
         self.display_phase_image(self.ui.keyphaseLabel1, phase_result.F_liftoff, 'liftoff')
         self.display_phase_image(self.ui.keyphaseLabel2, phase_result.F_landing, 'landing')
         self.display_phase_image(self.ui.keyphaseLabel3, phase_result.F_impact, 'impact')
@@ -1272,7 +1163,7 @@ class Analysis2dWidget(QWidget):
                                 font_val = ImageFont.truetype(path, 65) # 數值大字體
                                 font_lbl = ImageFont.truetype(path, 45) # 標籤中字體
                                 break
-                            except:
+                            except Exception:
                                 continue
                         
                         if font_val is None:
@@ -1429,98 +1320,6 @@ class Analysis2dWidget(QWidget):
         angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
 
         return np.degrees(angle)
-
-    def calculateBatMetrics2D__(self, impact_frame: int):
-        """基於 2D Mask 軌跡計算攻擊角度與速度 (使用前後幀平均法)"""
-        if impact_frame is None or self.bat_side_df is None or self.bat_side_df.empty:
-            print("calculateBatMetrics2D__: impact_frame is None or self.bat_side_df is None or self.bat_side_df.empty")
-            return
-
-        def get_bat_head_2d(df_row):
-            """從 Mask 中找出最遠端的棒頭座標"""
-            mask_data = df_row.get("mask")
-            if mask_data is None: return None
-            try:
-                # 取得 Mask 的所有像素點
-                contours = mask_data[1][0].reshape(-1, 2)
-                # 找距離最遠的兩個點
-                dist_matrix = np.linalg.norm(contours[:, None, :] - contours[None, :, :], axis=-1)
-                i, j = np.unravel_index(np.argmax(dist_matrix), dist_matrix.shape)
-                p1, p2 = contours[i], contours[j]
-                
-                # 核心修正：利用打擊方向與 Y 座標綜合判定棒頭
-                # 通常揮棒時棒頭移動路徑較長且靠近畫面頂部
-                return p1 if p1[1] < p2[1] else p2 
-            except:
-                print("calculateBatMetrics2D__: except in get_bat_head_2d")
-                return None
-
-        # --- 核心改動：選取 impact 前後的多幀進行平均 ---
-        # 我們抓取 (impact-1, impact) 與 (impact, impact+1) 兩組位移
-        frames_to_check = [impact_frame - 1, impact_frame, impact_frame + 1]
-        heads = {}
-
-        for f in frames_to_check:
-            if f < 0: continue
-            f_df = self.bat_side_df[self.bat_side_df['frame_number'] == f]
-            if not f_df.empty:
-                head_pt = get_bat_head_2d(f_df.iloc[-1])
-                if head_pt is not None:
-                    heads[f] = head_pt
-
-        # 必須至少有連續的兩幀才能計算
-        valid_f = sorted(heads.keys())
-        if len(valid_f) < 2:
-            print("calculateBatMetrics2D__: len(valid_f) < 2")
-            return
-
-        all_dx = []
-        all_dy = []
-
-        # 計算相鄰幀之間的位移向量
-        for i in range(len(valid_f) - 1):
-            f_curr = valid_f[i+1]
-            f_prev = valid_f[i]
-            
-            p_curr = heads[f_curr]
-            p_prev = heads[f_prev]
-            
-            dx = p_curr[0] - p_prev[0]
-            dy = p_curr[1] - p_prev[1]
-            
-            # 位移保護：若位移過小(可能是雜訊)，則不納入平均
-            if np.sqrt(dx**2 + dy**2) > 1.0:
-                all_dx.append(dx)
-                all_dy.append(dy)
-
-        # 如果沒有足夠的有效位移，則跳出避免除以 0
-        if not all_dx:
-            print("calculateBatMetrics2D__: not all_dx")
-            self.ui.batSpeedLabel.setText("0.0kmh")
-            self.ui.horizontalAngleEditLabel.setText("0.0°")
-            return
-
-        # --- 計算平均向量 ---
-        avg_dx = np.mean(all_dx)
-        avg_dy = np.mean(all_dy)
-        avg_pixel_dist = np.sqrt(avg_dx**2 + avg_dy**2)
-
-        # 1. 計算攻擊角度 (向上揮為正，dy需取負)
-        attack_angle = np.degrees(np.arctan2(-avg_dy, abs(avg_dx)))
-        attack_angle = abs(attack_angle) # 依照您的需求取絕對值
-
-        # 2. 計算揮棒速度
-        fps = get_video_fps(self.video_loader)
-        px_to_meter = 0.0032  # 假設比例尺
-        
-        # 速度 = (平均像素位移 * 比例尺) * FPS
-        speed_mps = (avg_pixel_dist * px_to_meter) * fps
-        speed_kmh = speed_mps * 3.6
-
-        # 更新 UI
-        
-        self.ui.horizontalAngleEditLabel.setText(f"{attack_angle:.1f}°")
-        self.ui.batSpeedLabel.setText(f"{speed_kmh:.1f}kmh")
 
 
     def calculateBatMetrics2D(self, impact_frame: int, landing_frame: int = None):
@@ -1757,21 +1556,6 @@ class Analysis2dWidget(QWidget):
                 centers[f] = center
         return centers
 
-    def _extract_bat_center_2d(self, bat_df):
-        """
-        相容於 mergeBatData 的格式處理
-        """
-        centers = {}
-        if bat_df is None or bat_df.empty:
-            return centers
-
-        for _, row in bat_df.iterrows():
-            # 相容兩種可能的欄位命名
-            f = int(row.get("frame_number", row.get("frame_num")))
-            center = self._extract_center_from_bbox(row["bbox"])
-            if center is not None:
-                centers[f] = center
-        return centers
 
     def is_bat_swing_detected(self, frame_2=None):
         """
@@ -1863,7 +1647,6 @@ class Analysis2dWidget(QWidget):
 
         self.showImage(drawed_img, self.view_scene, self.ui.FrameView) # 正面
         self.showImage(drawed_img_2, self.view_scene2, self.ui.FrameView_2) # 側面
-        # self.updateRealtimeMetrics(frame_num)
         # Update the enlarged dialog if open
         if self.enlarged_dialog is not None and self.enlarged_dialog.isVisible():
             # Send the correct frame based on the left/right state
@@ -1873,53 +1656,6 @@ class Analysis2dWidget(QWidget):
                 enlarged_frame = drawed_img_2
             self.enlarged_dialog.updateFrame(enlarged_frame)
 
-    def updateRealtimeMetrics(self, frame_num):
-        """即時計算當前幀的動力學數據並更新 UI"""
-        # 取得當前側面相機的關鍵點 (從 estimator 的 buffer 抓取最新的)
-        kpts = None
-        if self.is_video:
-            kpts = self.pose_estimater_2.getPersonDf(frame_num = frame_num, is_select=True, is_kpt=True)
-        else:
-            return
-        # 接下來的防呆檢查與計算邏輯
-        if kpts is None or len(kpts) < 26:
-            return
-
-        kpts = np.array(kpts)
-
-        # 1. 判斷左右打，決定前/後腿
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        # MediaPipe 索引: 11:L_Sho, 12:R_Sho, 23:L_Hip, 24:R_Hip, 25:L_Knee, 26:R_Knee, 27:L_Ank, 28:R_Ank
-        if is_righty:
-            f_idx = [5, 11, 13, 24] # 前腳 (左) [肩, 髖, 膝, 踝]
-            b_idx = [6, 12, 14, 25] # 後腳 (右)
-        else:
-            f_idx = [6, 12, 14, 25] # 前腳 (右)
-            b_idx = [5, 11, 13, 24] # 後腳 (左)
-
-        # 輔助計算：2D 向量夾角
-        def calc_angle(p1, p2, p3):
-            try:
-                v1 = p1[:2] - p2[:2]
-                v2 = p3[:2] - p2[:2]
-                cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-                return np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
-            except: return 0.0
-
-        # A. 計算前後膝角度
-        front_knee_angle = calc_angle(kpts[f_idx[1]], kpts[f_idx[2]], kpts[f_idx[3]])
-        back_knee_angle = calc_angle(kpts[b_idx[1]], kpts[b_idx[2]], kpts[b_idx[3]])
-        
-        # B. 計算肩髖分離角 (2D 投影角度差)
-        sho_vec = kpts[5][:2] - kpts[6][:2]
-        hip_vec = kpts[11][:2] - kpts[12][:2]
-        separation_angle = np.degrees(np.abs(np.arctan2(sho_vec[1], sho_vec[0]) - np.arctan2(hip_vec[1], hip_vec[0])))
-        if separation_angle > 90: separation_angle = 180 - separation_angle
-
-        # C. 重心速度 (取兩髖中點)
-        self.ui.kpfrontKneeAngleLabel.setText(f"{front_knee_angle:.1f}°")
-        self.ui.kpbackKneeAngleLabel.setText(f"{back_knee_angle:.1f}°")
-        self.ui.kphipShoulderEditLabel.setText(f"{separation_angle:.1f}°")
 
     def resetRecordTimer(self):
         video_path = getattr(self, 'video_path', None)
@@ -2088,7 +1824,6 @@ class Analysis2dWidget(QWidget):
         """Display an image in the QGraphicsView."""
         scene.clear()
         if image is None:
-            print(self.video_loader.total_frames)
             # print(self.video_loader.video_frames)
             exit()
         h, w = image.shape[:2]
@@ -2142,10 +1877,8 @@ class Analysis2dWidget(QWidget):
             if self.roi_drag_mode == 'draw':
                 self.roi_start_pos = scene_pos
                 self.roi_temp_rect = QRect(int(sx), int(sy), 0, 0)
-                print(f"ROI drawing start at: {sx}, {sy}")
             else:
                 self.roi_last_mouse_pos = scene_pos
-                print(f"ROI adjustment start: {self.roi_drag_mode}")
             return
 
         is_frame_view = self.ui.FrameView.rect().contains(frame_view_pos)

@@ -274,7 +274,6 @@ class VideoLoader:
             video_path = cf_files[0]
             video_path2 = cs_files[0]
 
-        print("Load Video Sucess!")
         self.video_path = video_path
         self.video_path2 = video_path2
         self.video_name = os.path.splitext(os.path.basename(self.video_path))[0]
@@ -331,25 +330,6 @@ class VideoLoader:
         safe_num = max(0, min(frame_num, len(self.video_frames2) - 1))
         return self.video_frames2[safe_num].copy()
 
-    def saveBatAnalyzeData1(self):
-        batAnalyzeData1 = {
-            "SwingSpeed": int(self.image_drawer.batSwingSpeed) if self.image_drawer.batSwingSpeed is not None else "",
-            "SwingTime": int(self.image_drawer.batSwingTime) if self.image_drawer.batSwingTime is not None else "",
-            "SwingHorizontalAngle": int(self.image_drawer.batHorizonAngle) if self.image_drawer.batHorizonAngle is not None else ""
-        }
-        batAnalyzeData_df1 = {key: [value] for key, value in batAnalyzeData1.items()}
-
-        return batAnalyzeData_df1
-
-    def saveBatAnalyzeData2(self):
-        batAnalyzeData2 = {
-            "SwingSpeed": int(self.image_drawer2.batSwingSpeed) if self.image_drawer2.batSwingSpeed is not None else "",
-            "SwingTime": int(self.image_drawer2.batSwingTime) if self.image_drawer2.batSwingTime is not None else "",
-            "SwingHorizontalAngle": int(self.image_drawer2.batHorizonAngle) if self.image_drawer2.batHorizonAngle is not None else ""
-        }
-        batAnalyzeData_df2 = {key: [value] for key, value in batAnalyzeData2.items()}
-
-        return batAnalyzeData_df2
 
     def saveVideo(self, process:bool):
         
@@ -551,7 +531,6 @@ class JsonLoader:
         json_path = os.path.join(self.folder_path, f"{self.file_name}.json")
         bat_json_path = os.path.join(self.folder_path, f"{self.file_name}_bat.json")
         swingData_json_path = os.path.join(self.folder_path, f"{self.file_name}_SwingData.json")
-        print(swingData_json_path)
         if not os.path.exists(json_path):
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         

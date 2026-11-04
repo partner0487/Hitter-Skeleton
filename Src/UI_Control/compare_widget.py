@@ -17,72 +17,10 @@ from cv_utils.cv_control_dual import DualJsonLoader
 from utils.phase_detect3d import PhaseDetector, PhaseResult
 from utils.phase_detect2d import PhaseDetector as PhaseDetector2D
 import pandas as pd
+from ui_utils.analysis_bar import AnalysisBar
 from utils.fps_utils import get_video_fps
 
 
-class AnalysisBar(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
-        self.segments = []
-        self.markers = []
-
-    def set_segments(self, segments):
-        self.segments = segments
-        self.update()
-
-    def set_markers(self, markers):
-        self.markers = markers
-        self.update()
-
-    def paintEvent(self, event):
-        if not hasattr(self, 'segments') or not self.segments:
-            return
-
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.Antialiasing)
-            w = self.width()
-            h = self.height() 
-            bar_h = 12
-            bar_y = int(h * 0.52) - (bar_h // 2)  
-            
-            for start_ratio, end_ratio, color in self.segments:
-                x = int(start_ratio * w)
-                seg_w = int((end_ratio - start_ratio) * w)
-                if seg_w <= 0: continue
-                painter.fillRect(QRect(x, bar_y, seg_w, bar_h), QColor(color))
-
-            if hasattr(self, 'markers') and self.markers:
-                for ratio, marker_text in self.markers:
-                    mx = int(max(0.0, min(ratio, 1.0)) * w)
-                    marker_str = str(marker_text)
-                    
-                    if marker_str in ['1', '2', '3', '4']:
-                        radius = 12
-                        cy = bar_y - radius
-                        bg = {'1': QColor(220, 0, 0), '2': QColor(0, 170, 230), '3': QColor(0, 180, 0), '4': QColor(128, 0, 128)}.get(marker_str, Qt.gray)
-                        font_size = 12
-                    else:
-                        radius = 12
-                        cy = bar_y + bar_h + radius
-                        bg = {'a': QColor(255, 50, 50), 'b': QColor(255, 150, 0), 'c': QColor(0, 200, 255)}.get(marker_str, Qt.gray)
-                        font_size = 12
-
-                    rect = QRect(mx - radius, cy - radius, radius * 2, radius * 2)
-                    painter.setBrush(QBrush(bg))
-                    painter.setPen(QPen(Qt.black, 1))
-                    painter.drawEllipse(rect)
-                    
-                    painter.setFont(QFont("Arial", font_size, QFont.Bold))
-                    painter.setPen(QPen(Qt.white))
-                    painter.drawText(rect, Qt.AlignCenter, marker_str)
-
-        except Exception as e:
-            print("AnalysisBar Paint Error:", e)
-        finally:
-            painter.end()
 class CompareProcessWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal()
     
@@ -244,10 +182,10 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         
         # 初始化 AnalysisBar 畫在 frameSlider1 和 frameSlider2 上
         if hasattr(self, 'frameSlider1'):
-            self.analysis_bar1 = AnalysisBar(self.frameSlider1)
+            self.analysis_bar1 = AnalysisBar(self.frameSlider1, show_seconds=False)
             self.frameSlider1.installEventFilter(self)
         if hasattr(self, 'frameSlider2'):
-            self.analysis_bar2 = AnalysisBar(self.frameSlider2)
+            self.analysis_bar2 = AnalysisBar(self.frameSlider2, show_seconds=False)
             self.frameSlider2.installEventFilter(self)
             
         # 初始化模式顯示
@@ -1135,7 +1073,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
                                     try:
                                         head_f = triangulate_bat_head(rs_f.iloc[0]['head'][:2], rf_f.iloc[0]['head'][:2])
                                         path_heads_3d[f] = head_f
-                                    except: pass
+                                    except Exception: pass
                                     
                             path_f = sorted(path_heads_3d.keys())
                             
@@ -1187,14 +1125,14 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
                                 i, j = np.unravel_index(np.argmax(dist_matrix), dist_matrix.shape)
                                 p1, p2 = contours[i], contours[j]
                                 return p1 if p1[1] < p2[1] else p2
-                            except: pass
+                            except Exception: pass
                         bbox = df_row.get("bbox")
                         if bbox is not None:
                             try:
                                 if isinstance(bbox, (list, np.ndarray)) and len(bbox) >= 4:
                                     x1, y1, x2, y2 = bbox[:4]
                                     return np.array([x1, y1]) if y1 < y2 else np.array([x2, y2])
-                            except: pass
+                            except Exception: pass
                         return None
                         
                     # 擴大搜尋範圍 ±10 幀
@@ -1312,7 +1250,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
                             ev_mph = float(data['ExitVelocity'])
                             ev_kmh = ev_mph * 1.60934
                             exitV.setText(f"{ev_kmh:.1f}")
-                        except:
+                        except Exception:
                             exitV.setText(f"{data['ExitVelocity']}")
                     if 'LaunchAngle' in data and launchA:
                         launchA.setText(f"{data['LaunchAngle']}")
@@ -1321,7 +1259,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
                             dist_ft = float(data['Distance'])
                             dist_m = dist_ft * 0.3048
                             distL.setText(f"{dist_m:.1f}")
-                        except:
+                        except Exception:
                             distL.setText(f"{data['Distance']}")
             except Exception as e:
                 print(f"Error loading {json_path}: {e}")

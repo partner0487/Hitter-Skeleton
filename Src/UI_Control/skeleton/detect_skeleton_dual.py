@@ -368,7 +368,7 @@ class PoseEstimater:
                         hands_pt = wr
                     elif len(kpts) > 18 and kpts[18][0] > 0:
                         hands_pt = kpts[18][:2] # 真的都沒抓到手再配脖子
-            except:
+            except Exception:
                 pass
 
         if hands_pt is not None:
@@ -738,11 +738,9 @@ class PoseEstimater:
         
     def setPersonId(self, person_id):
         self.person_id = person_id
-        print(self.person_id)
 
     def setKptId(self, kpt_id):
         self.kpt_id = kpt_id
-        print(self.kpt_id)
 
     def setDetect(self, status:bool):
         self.is_detect = status

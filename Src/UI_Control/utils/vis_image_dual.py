@@ -409,12 +409,6 @@ class ImageDrawer():
     def setShowRegion(self, status:bool):
         self.show_region = status
 
-    def setShowTraj(self, status:bool):
-        self.show_traj = status
-
-    def setShowAngleInfo(self, status:bool):
-        self.show_angle_info = status
-        self.setAngleInfoPos()
 
     def setAngleInfoPos(self):
         person_df = self.pose_estimater.getPersonDf(is_select=True)
