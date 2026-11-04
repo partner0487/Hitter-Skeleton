@@ -55,6 +55,8 @@ class Analysis3DWidget(QWidget):
         self.ui = Ui_hitter_ui_dual()
         self.ui.setupUi(self)
         self.arrangeMetricLabels()
+        # 背景程序處理時（tools/process3d_worker.py）不需要逐幀畫面，處理中完全不畫
+        self.headless = False
         self.folder = None
         self.frame = 0
         self.total_frames = 0
@@ -226,6 +228,28 @@ class Analysis3DWidget(QWidget):
         ])
         align_columns([ui.verticalLayout_5, ui.verticalLayout_7, ui.verticalLayout_9, ui.verticalLayout_10])
         self.addSwingChartsButton()
+
+    def metricTexts(self) -> dict:
+        """目前畫面上各指標的顯示文字（與提示），給錄影頁顯示 3D 結果用（tools/process3d_worker.py 存成 metrics_3d.json）。
+        鍵名與錄影頁共用：膝角、垂直棒角在 2D 介面的物件名稱不同，這裡用統一的鍵"""
+        ui = self.ui
+        labels = {
+            "centerGravityLabel": ui.centerGravityLabel, "centerGravityLabel2": ui.centerGravityLabel2,
+            "strideDisLabel": ui.strideDisLabel, "batSpeedLabel": ui.batSpeedLabel,
+            "horizontalAngleEditLabel": ui.horizontalAngleEditLabel, "verticalAngle": ui.verticalAngleEditLabel,
+            "frontKnee": ui.forefootLabel, "backKnee": ui.backfootLabel,
+            "hipShoulderEditLabel1": ui.hipShoulderEditLabel1, "hipShoulderEditLabel2": ui.hipShoulderEditLabel2,
+            "hipShoulderEditLabel3": ui.hipShoulderEditLabel3, "maxSep": self.maxSepLabel,
+            "pelvisRot": self.pelvisRotLabel, "torsoRot": self.torsoRotLabel,
+            "strideTime": self.strideTimeLabel, "swingTime": self.swingTimeLabel,
+        }
+        pr = getattr(self, "phase_result", None)
+        return {
+            "texts": {k: v.text() for k, v in labels.items()},
+            "tooltips": {k: v.toolTip() for k, v in labels.items() if v.toolTip()},
+            "phases": {k: getattr(pr, k, None) for k in ("F_liftoff", "F_landing", "F_impact")},
+            "stride_cm": getattr(self, "stride_cm", None),
+        }
 
     def addSwingChartsButton(self):
         """「分析」分頁加一組曲線圖按鈕（肩髖分離角、甜蜜點速度，見 ui_utils/swing_charts.py）"""
@@ -1337,7 +1361,9 @@ class Analysis3DWidget(QWidget):
             self.is_dual = False
 
         # 批量處理時每 BATCH_DRAW_EVERY 幀才畫一次（只供看進度；存檔的骨架影片另外繪製）
-        if (getattr(self, "batch_queue", None) is None or frame_num % self.BATCH_DRAW_EVERY == 0
+        if self.headless:
+            pass
+        elif (getattr(self, "batch_queue", None) is None or frame_num % self.BATCH_DRAW_EVERY == 0
                 or frame_num == self.video_loader_dual.total_frames - 1):
             self.updateFrame4Process(frame_num=frame_num)
 
