@@ -343,9 +343,18 @@ class PhaseDetector:
     # 依 WeiShu 2026-10-29 T座 H01、H02：揮棒時最多偏 36 px，誤抓手臂的幀 144 px 以上
     JUMP_WINDOW = 2
     JUMP_MAX_PX = 100.0
-    # 擊球點 = 棒頭最高速幀 + IMPACT_OFFSET（H01、H02 最高速幀比畫面上的擊球早約 1 幀）
+    # 擊球點細修（_refine_impact）：在最高速幀前後 IMPACT_REFINE_SPAN 幀內，把有效棒頭位置內插到每一幀，
+    # 用中央差分算速度（前後兩幀的位移 ÷ 2，本身有平滑效果），在最高速幀 ± IMPACT_REFINE_SEARCH 幀內
+    # 找峰值並用拋物線估出一幀以下的位置，擊球點 = round(峰值 + IMPACT_PEAK_LAG)。
+    # 只取單一幀最高速時，擊球附近常兩幀幾乎同速（146 vs 148 px/幀），結果在 ±1 幀間跳動。
+    # 依 tools/phase_truth.csv 的 19 支 WeiShu（60 fps）：原本遮罩與 ROI 遮罩都 17/19 正確、其餘差 1 幀，
+    # PEAK_LAG 1.65～1.75 都成立（ROI 遮罩用單取最高速只有 16/19）。PEAK_LAG 以幀為單位，其他 fps 需重新校正
+    IMPACT_REFINE_SPAN = 6
+    IMPACT_REFINE_SEARCH = 3
+    IMPACT_PEAK_LAG = 1.7
+    # 無法細修時（有效棒頭太少）：擊球點 = 棒頭最高速幀 + IMPACT_OFFSET（H01、H02 最高速幀比畫面上的擊球早約 1 幀）
     IMPACT_OFFSET = 1
-    # 最高速幀之後若接著幾幀遮罩無效（揮棒最快時動態模糊，沒偵測到或被判為跳動），
+    # 無法細修時，最高速幀之後若接著幾幀遮罩無效（揮棒最快時動態模糊，沒偵測到或被判為跳動），
     # 擊球點改為無效段的最後一幀，最多往後 BLUR_MAX_FRAMES 幀。
     # 依 WeiShu 側拋 H04：最高速 38、39～41 無效，畫面上 41 接觸；側拋 H03：113、114 無效，114 接觸
     BLUR_MAX_FRAMES = 3
@@ -507,6 +516,34 @@ class PhaseDetector:
 
         return None
 
+    def _refine_impact(self, raw_impact: int) -> Optional[int]:
+        """以中央差分速度的一幀以下峰值細修擊球點（見 IMPACT_REFINE_*）；有效棒頭不足時回傳 None"""
+        if self.bat_df is None or self.bat_df.empty:
+            return None
+        track = self.bat_head_track()
+        valid = track[(track["source"] == "mask") & ~track["repeated"] & ~track["rejected"]]
+        valid = valid[(valid["frame"] - raw_impact).abs() <= self.IMPACT_REFINE_SPAN]
+        if len(valid) < 4:
+            return None
+        frames = np.arange(int(valid["frame"].min()), int(valid["frame"].max()) + 1)
+        # 沒偵測到或被排除的幀用前後有效幀內插（揮棒最快時常模糊）
+        head_x = np.interp(frames, valid["frame"], valid["head_x"])
+        head_y = np.interp(frames, valid["frame"], valid["head_y"])
+        speed = np.hypot(np.gradient(head_x), np.gradient(head_y))
+        near = np.where(np.abs(frames - raw_impact) <= self.IMPACT_REFINE_SEARCH)[0]
+        if len(near) == 0:
+            return None
+        i = int(near[np.argmax(speed[near])])
+        shift = 0.0
+        if 0 < i < len(speed) - 1:
+            curve = speed[i - 1] - 2 * speed[i] + speed[i + 1]
+            if curve < 0:
+                shift = float(np.clip(0.5 * (speed[i - 1] - speed[i + 1]) / curve, -0.5, 0.5))
+        self.impact_peak = float(frames[i]) + shift
+        impact = int(np.floor(self.impact_peak + self.IMPACT_PEAK_LAG + 0.5))
+        print(f"擊球點細修：速度峰值 {self.impact_peak:.2f} 幀 → 擊球點 {impact}（最高速幀 {raw_impact}）")
+        return impact
+
     def _impact_offset(self, raw_impact: int) -> int:
         """最高速幀到擊球點的幀數：IMPACT_OFFSET，或其後連續無效遮罩的幀數（取大者，上限 BLUR_MAX_FRAMES）"""
         if self.bat_df is None or self.bat_df.empty:
@@ -627,10 +664,13 @@ class PhaseDetector:
              Fend = int(max(Fend, ball_max_f))
 
         self.raw_impact = F_impact
+        if F_impact is not None:
+            refined = self._refine_impact(F_impact)
+            F_impact = refined if refined is not None else F_impact + self._impact_offset(F_impact)
         return PhaseResult(
             F0=F0,
             F_liftoff=F_liftoff,
             F_landing=F_landing,
-            F_impact=F_impact + self._impact_offset(F_impact) if F_impact is not None else None,
+            F_impact=F_impact,
             Fend=Fend,
         )
