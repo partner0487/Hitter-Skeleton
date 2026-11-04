@@ -35,6 +35,8 @@ class PoseEstimater:
         self.person_df = pd.DataFrame()
         self.pre_person_df = pd.DataFrame()
         self.prev_bbox_center = None
+        # 對極幾何導引（正面相機用）：(F, 側面打者 bbox)，見 filterBiggestTargets；None 時不使用
+        self.epipolar_guide = None
 
         self.bat_df = pd.DataFrame()
         self.has_pre_bat_df = False
@@ -531,6 +533,10 @@ class PoseEstimater:
         # 5b. 過濾掉面積太小的人 (背景遠處的人 bbox 小，面積比例 < 0.3 → 直接排除)
         #     這樣後面站著的人不會搶分
         foreground_mask = norm_areas >= 0.3
+        # 有對極幾何導引時不用面積排除：正投時投手離正面相機近、人框大，打者站得窄時面積常不到投手的 30%，
+        # 會在套用對極權重前就被排除；背景人物離對極線遠，權重本來就很低
+        if self.epipolar_guide is not None:
+            foreground_mask = torch.ones_like(foreground_mask)
         if foreground_mask.sum() == 0:
             foreground_mask = torch.ones_like(foreground_mask)  # fallback: 全部保留
 
@@ -542,6 +548,12 @@ class PoseEstimater:
             pos_score = center_weight
 
         final_scores = (norm_areas ** 2) * (pos_score ** 5) * bat_weight
+
+        # 8. 對極幾何（正面相機）：側面已鎖定的打者，頭頂、腳底中點在正面畫面各對應一條對極線，
+        #    同一個人的人框頭頂、腳底應落在線上（WeiShu 實測打者 3～15 px，其他人 ≥ 53 px）。
+        #    正投時投手站在正面相機前、畫面最大，只靠面積會選到投手（距離 240～300 px）
+        if self.epipolar_guide is not None:
+            final_scores = final_scores * self._epipolar_weight(tlwhs)
         # 排除背景小人 (設為 -1 讓 argmax 不會選到)
         final_scores[~foreground_mask] = -1.0
 
@@ -560,6 +572,22 @@ class PoseEstimater:
         ]
 
         return [max_bbox], [1]
+
+    EPIPOLAR_SIGMA_PX = 30.0
+
+    def _epipolar_weight(self, tlwhs):
+        """各人框頭頂、腳底中點到側面打者對極線的平均距離 d → 權重 exp(-(d / σ)²)"""
+        F, side_bbox = self.epipolar_guide
+        x1, y1, x2, y2 = [float(v) for v in side_bbox[:4]]
+        side_pts = np.array([[(x1 + x2) / 2, y1, 1.0], [(x1 + x2) / 2, y2, 1.0]])
+        lines = torch.tensor((F @ side_pts.T).T, device=tlwhs.device, dtype=torch.float32)  # (2, 3)
+        lines = lines / torch.linalg.norm(lines[:, :2], dim=1, keepdim=True)
+        cx = tlwhs[:, 0] + tlwhs[:, 2] / 2.0
+        ones = torch.ones_like(cx)
+        top = torch.stack([cx, tlwhs[:, 1], ones], dim=1)
+        bottom = torch.stack([cx, tlwhs[:, 1] + tlwhs[:, 3], ones], dim=1)
+        d = (torch.abs(top @ lines[0]) + torch.abs(bottom @ lines[1])) / 2.0
+        return torch.exp(-(d / self.EPIPOLAR_SIGMA_PX) ** 2)
 
     def smoothKpt(self, person_ids: list, frame_num=None):
         # 如果是即時處理，則初始化前一幀的數據，否則依賴 frame_slider 進行處理
@@ -804,6 +832,7 @@ class PoseEstimater:
         self.person_df = pd.DataFrame()
         self.pre_person_df = pd.DataFrame()
         self.prev_bbox_center = None
+        self.epipolar_guide = None
         self.person_id = None
         self.kpt_id = None
         self.fps = None

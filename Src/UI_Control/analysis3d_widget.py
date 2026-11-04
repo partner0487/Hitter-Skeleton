@@ -29,7 +29,7 @@ from skeleton.detect_skeleton_dual import PoseEstimater
 from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
 from PyQt5 import QtGui
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps
-from utils.stereo_calibration import load_stereo_params
+from utils.stereo_calibration import fundamental_side_to_front, load_stereo_params
 from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, keypoints_by_frame, peak_separation,
                                 pelvis_speed, separation_series, stride_length)
 from utils.bat_speed2d import read_frame_times
@@ -358,6 +358,8 @@ class Analysis3DWidget(QWidget):
             self.front_intrinsic_matrix = params.K_front
             self.front_distortion_coeffs = params.dist_front
             self.R, self.t = params.R, params.t
+            # 處理影片時用側面打者導引正面選人（PoseEstimater.epipolar_guide）
+            self.F_side_front = fundamental_side_to_front(params)
             # 舊參數的 1 單位 ≈ 基線長，只用來換算揮棒速度的舊算法；3D 視角改用公尺定值（VIEW_METRIC）
             self.view_scale = params.baseline_m
             self.has_metric_scale = True
@@ -365,6 +367,7 @@ class Analysis3DWidget(QWidget):
         else:
             self.view_scale = 1.0
             self.has_metric_scale = False
+            self.F_side_front = None
             print("[Analysis3D] 找不到校正檔，使用程式內寫死的舊參數（沒有真實尺度）")
         # 換校正等於換座標系，舊的骨架原點與地面不能沿用（下一幀依新座標重畫地面）
         self.__dict__.pop("origin", None)
@@ -1430,8 +1433,7 @@ class Analysis3DWidget(QWidget):
         # self.ui.selectCheckBox.setChecked(True)
         frame = self.video_loader_dual.getVideoImage(0)
         frame_2 = self.video_loader_dual.getVideoImage2(0)
-        _, _, _, _, _ = self.pose_estimater.detectKpt(frame, 0, is_video=True)
-        _, _, _, _, _ = self.pose_estimater_2.detectKpt(frame_2, 0, is_video=True)
+        self.detectDualKpt(frame, frame_2, 0)
         self.ui.selectCheckBox.setChecked(True)
         self.ui.playBtn.click()
     
@@ -1570,6 +1572,21 @@ class Analysis3DWidget(QWidget):
         if getattr(self, "batch_queue", None) is not None:
             QTimer.singleShot(300, self._startNextBatchClip)
 
+    def detectDualKpt(self, frame, frame_2, frame_num):
+        """先偵測側面（pose_estimater_2）、再偵測正面（pose_estimater）：側面鎖定的打者人框經對極幾何導引正面選人，
+        正投時才不會選到站在正面相機前的投手"""
+        _, _, fps, _, _ = self.pose_estimater_2.detectKpt(frame_2, frame_num, is_video=True)
+        guide = None
+        F = getattr(self, "F_side_front", None)
+        side_df = self.pose_estimater_2.person_df
+        if F is not None and side_df is not None and not side_df.empty and "frame_number" in side_df:
+            rows = side_df[side_df["frame_number"] == frame_num]
+            if not rows.empty:
+                guide = (F, np.asarray(rows.iloc[0]["bbox"], dtype=np.float64).ravel())
+        self.pose_estimater.epipolar_guide = guide
+        _, _, fps_front, _, _ = self.pose_estimater.detectKpt(frame, frame_num, is_video=True)
+        return fps_front
+
     def analyzeFrame4Process(self):
         """Analyze and process each video frame."""
         frame_num = self.ui.frameSlider.value()
@@ -1582,8 +1599,7 @@ class Analysis3DWidget(QWidget):
         frame_2 = self.video_loader_dual.getVideoImage2(frame_num)
         fps = 0
         if self.ui.showSkeletonCheckBox.isChecked():
-            _, _, fps, _, _ = self.pose_estimater.detectKpt(frame, frame_num, is_video=True)
-            _, _, fps, _, _ = self.pose_estimater_2.detectKpt(frame_2, frame_num, is_video=True)
+            fps = self.detectDualKpt(frame, frame_2, frame_num)
             if self.pose_estimater.person_id is not None and self.pose_estimater_2.person_id is not None:
                 self.pose_analyzer.addAnalyzeInfo(frame_num)
                 self.pose_analyzer_2.addAnalyzeInfo(frame_num)
@@ -1625,6 +1641,9 @@ class Analysis3DWidget(QWidget):
         """更新與影片相關的資訊顯示在 UI 上。"""
         self.reset()
         self.changeBatter()
+        # 正面選人的對極幾何用這支錄影當天、對應打擊方向的校正（與載入資料夾分析時相同的挑法）
+        params = load_stereo_params(self.video_loader_dual.folder_path, self.currentBatterSide())
+        self.F_side_front = fundamental_side_to_front(params) if params is not None else None
         self.initFrameSlider(self.video_loader_dual.total_frames)
         self.updateFrame4Process(frame_num = 0)
         self.model.setImageSize(self.video_loader_dual.video_size)

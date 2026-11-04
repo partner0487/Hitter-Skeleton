@@ -137,3 +137,12 @@ def load_stereo_params(folder=None, batter_side=None):
     print(f"[stereo_calibration] 沒有可用的{side}校正，"
           + (f"改用 {STEREO_JSON.name}" if params else "使用程式內寫死的舊參數"))
     return params
+
+
+def fundamental_side_to_front(params: StereoParams) -> np.ndarray:
+    """F（3×3）：側面畫面的點 x_s（齊次像素座標）在正面畫面的對極線為 l = F @ x_s，
+    同一個人在正面的對應點 x_f 滿足 x_f^T F x_s = 0（忽略畸變）"""
+    tx = np.array([[0, -params.t[2, 0], params.t[1, 0]],
+                   [params.t[2, 0], 0, -params.t[0, 0]],
+                   [-params.t[1, 0], params.t[0, 0], 0]])
+    return np.linalg.inv(params.K_front).T @ (tx @ params.R) @ np.linalg.inv(params.K_side)
