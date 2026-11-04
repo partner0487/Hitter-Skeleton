@@ -1572,6 +1572,8 @@ class Analysis3DWidget(QWidget):
         if getattr(self, "batch_queue", None) is not None:
             QTimer.singleShot(300, self._startNextBatchClip)
 
+    BATCH_DRAW_EVERY = 5
+
     def detectDualKpt(self, frame, frame_2, frame_num):
         """先偵測側面（pose_estimater_2）、再偵測正面（pose_estimater）：側面鎖定的打者人框經對極幾何導引正面選人，
         正投時才不會選到站在正面相機前的投手"""
@@ -1614,7 +1616,10 @@ class Analysis3DWidget(QWidget):
             self.processFinished.emit(self.video_loader_dual.output_folder)
             self.is_dual = False
 
-        self.updateFrame4Process(frame_num=frame_num)
+        # 批量處理時每 BATCH_DRAW_EVERY 幀才畫一次（只供看進度；存檔的骨架影片另外繪製）
+        if (getattr(self, "batch_queue", None) is None or frame_num % self.BATCH_DRAW_EVERY == 0
+                or frame_num == self.video_loader_dual.total_frames - 1):
+            self.updateFrame4Process(frame_num=frame_num)
 
     def checkVideoLoad4Process(self):
         """檢查影片是否讀取完成，並確保幀數資訊已更新。"""
@@ -1677,10 +1682,12 @@ class Analysis3DWidget(QWidget):
             if i == self.video_loader_dual.total_frames - 1 and self.is_play:
                 self.playBtnClicked4Process()
             
-            # 還原原本系統 1 倍速為最低延遲 1ms 的體驗
+            # 還原原本系統 1 倍速為最低延遲 1ms 的體驗；偵測處理中不套用慢動作
+            # （原本沿用播放速度 0.25x，每幀多等約 100 ms，佔一支影片處理時間的 35%）。
+            # waitKey 在 Windows 上會順便處理視窗訊息，畫面才會更新，所以仍保留 1 ms
             delay = 1
             try:
-                if hasattr(self.ui, 'slowMotionInput'):
+                if hasattr(self.ui, 'slowMotionInput') and not self.ui.showSkeletonCheckBox.isChecked():
                     val_str = self.ui.slowMotionInput.currentText().replace('x', '').replace('X', '').strip()
                     current_rate = float(val_str)
                     if current_rate >= 1.0:
