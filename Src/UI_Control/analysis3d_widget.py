@@ -33,7 +33,8 @@ from utils.stereo_calibration import fundamental_side_to_front, load_stereo_para
 from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, keypoints_by_frame, peak_separation,
                                 pelvis_speed, rotation_speed_peaks, separation_series, stride_length)
 from utils.bat_speed2d import read_frame_times
-from utils.bat_speed3d import bat_track_3d, blast_metrics_3d
+from utils.bat_speed3d import bat_track_3d, blast_metrics_3d, sweet_spot_speeds
+from ui_utils.swing_charts import SwingChartsDialog
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
 
@@ -348,6 +349,36 @@ class Analysis3DWidget(QWidget):
                                 [(ui.attackDis, ui.attackDisLabel)]]),
         ])
         align_columns([ui.verticalLayout_5, ui.verticalLayout_7, ui.verticalLayout_9, ui.verticalLayout_10])
+        self.addSwingChartsButton()
+
+    def addSwingChartsButton(self):
+        """「分析」分頁加一組曲線圖按鈕（肩髖分離角、甜蜜點速度，見 ui_utils/swing_charts.py）"""
+        self.swing_charts = None
+        self.chart_separation, self.chart_sweet_speed = {}, {}
+        box = QtWidgets.QGroupBox("曲線圖", self.ui.tab_2)
+        box.setFont(self.ui.phaseAnalysis_2.font())
+        layout = QtWidgets.QVBoxLayout(box)
+        button = QtWidgets.QPushButton("肩髖分離角／甜蜜點速度", box)
+        button.setFont(self.ui.liftoffBtn.font())
+        button.clicked.connect(self.showSwingCharts)
+        layout.addWidget(button)
+        self.ui.gridLayout_16.addWidget(box, 3, 0, 1, 1)
+
+    def showSwingCharts(self):
+        if self.swing_charts is None:
+            self.swing_charts = SwingChartsDialog(self)
+        self.refreshSwingCharts(force=True)
+        self.swing_charts.show()
+        self.swing_charts.raise_()
+
+    def refreshSwingCharts(self, force=False):
+        """曲線圖視窗開著時，換影片或關鍵幀重算後跟著更新"""
+        if self.swing_charts is None or not (force or self.swing_charts.isVisible()):
+            return
+        total = int(getattr(self.video_loader, "total_frames", 0) or 0)
+        self.swing_charts.set_data(self.chart_separation, self.chart_sweet_speed,
+                                   getattr(self, "phase_result", None), total)
+        self.swing_charts.set_frame(self.ui.frameSlider.value())
 
     def currentBatterSide(self):
         """畫面上選的打擊方向，對應校正的 batter_side（right／left）"""
@@ -1562,6 +1593,8 @@ class Analysis3DWidget(QWidget):
 
         if hasattr(self, 'hip_shoulder_plot') and self.hip_shoulder_plot is not None:
             self.hip_shoulder_plot.update(self.ui.frameSlider.value())
+        if getattr(self, "swing_charts", None) is not None and self.swing_charts.isVisible():
+            self.swing_charts.set_frame(self.ui.frameSlider.value())
 
         if hasattr(self, 'bat_speed_plot') and self.bat_speed_plot is not None:
             self.bat_speed_plot.update(self.ui.frameSlider.value())
@@ -1891,6 +1924,7 @@ class Analysis3DWidget(QWidget):
         if hasattr(self, 'video_loader') and self.video_loader and hasattr(self.video_loader, 'video_path'):
             folder_path = os.path.dirname(self.video_loader.video_path)
             self._loadRapsodoData(folder_path)
+        self.refreshSwingCharts()
 
     def _loadRapsodoData(self, folder_path: str):
         """讀取 Rapsodo 資料 (data.json 與 sprayChart.jpg) 並更新 UI"""
@@ -1950,6 +1984,7 @@ class Analysis3DWidget(QWidget):
         # 肩髖分離角：正 = 肩落後髖；遮擋而不可信的幀顯示 —
         up = ground_up(kpts)  # 地面法向量：側面相機不一定水平
         series = separation_series(kpts, f_land, f_impact, is_righty, up)
+        self.chart_separation = series
         for label, frame in ((ui.hipShoulderEditLabel1, f_lift), (ui.hipShoulderEditLabel2, f_land),
                              (ui.hipShoulderEditLabel3, f_impact)):
             label.setText(fmt(series.get(frame), "°", signed=True))
@@ -2393,6 +2428,7 @@ class Analysis3DWidget(QWidget):
         labels = (self.ui.batSpeedLabel, self.ui.horizontalAngleEditLabel, self.ui.verticalAngleEditLabel)
         for label in labels:
             label.setText(MISSING)
+        self.chart_sweet_speed = {}
         if impact_frame is None or not self.has_metric_scale:
             if not self.has_metric_scale:
                 print("[BatMetrics 3D] 沒有校正檔，3D 座標沒有真實尺度，不顯示揮棒速度")
@@ -2403,6 +2439,8 @@ class Analysis3DWidget(QWidget):
         front_track = self._bat_head_track(self.person_front_df, getattr(self, "bat_front_df", None))
         track3d, bat_m = bat_track_3d(side_track, front_track, self.triangulate_points)
         frame_times = read_frame_times(self.folder) or read_frame_times(os.path.dirname(self.folder or ""))
+        self.chart_sweet_speed = sweet_spot_speeds(
+            track3d, frame_interval(get_video_fps(self.video_loader), frame_times, impact_frame))
         up = ground_up(keypoints_by_frame(self.person_3d_df, "keypoints_3d"))
         if up is None:
             print("[BatMetrics 3D] 腳點擬合不出地面，垂直方向改用側面相機的 Y 軸")

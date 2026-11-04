@@ -105,3 +105,14 @@ def blast_metrics_3d(track3d: Dict[int, Tuple[np.ndarray, np.ndarray]], bat_m: f
         vertical_bat_angle_deg=_elevation_deg(head - grip, up),
         from_frame=f_from, to_frame=f_to, duration_s=duration, bat_m=bat_m, frames_used=len(track3d),
     )
+
+
+def sweet_spot_speeds(track3d: Dict[int, Tuple[np.ndarray, np.ndarray]], frame_dt: float, max_gap: int = 3) -> Dict[int, float]:
+    """曲線圖用：{幀: 甜蜜點速度 km/h}，為該幀與前一個有效幀（間隔 ≤ max_gap）之間的平均速度"""
+    frames = sorted(track3d)
+    out = {}
+    for a, b in zip(frames, frames[1:]):
+        if b - a <= max_gap and frame_dt > 0:
+            d = _sweet_spot(*track3d[b]) - _sweet_spot(*track3d[a])
+            out[b] = float(np.linalg.norm(d)) / ((b - a) * frame_dt) * 3.6
+    return out
