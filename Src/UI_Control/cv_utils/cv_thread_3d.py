@@ -38,7 +38,8 @@ class VideoToImagesThread(QThread):
 
         vidcap.release()
         vidcap2.release()
-        fps = int(fps) >> 1
+        # 回傳影片標記的 fps（原本右移一位減半，3D 頁所有速度都少一半）
+        fps = int(round(fps))
         return video_images, video_images2, fps, count
 
     def run(self):
