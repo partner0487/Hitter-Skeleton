@@ -35,8 +35,12 @@ NOMINAL_DURATION_S = 1.5  # 每支錄影的長度（介面標示 x.xx/1.5s）
 
 
 def frame_seconds(frame: int, total_frames: int, frame_times: dict = None) -> float:
-    """畫面上顯示的時間（秒）：有 frame_times.csv 時用該幀的實際擷取時間（掉幀時間隔不均），
-    沒有時把 NOMINAL_DURATION_S 平均分給每一幀"""
-    if frame_times and frame in frame_times:
-        return frame_times[frame] - min(frame_times.values())
+    """畫面上顯示的時間（秒），第一幀 0、最後一幀 NOMINAL_DURATION_S：
+    有 frame_times.csv 時把實際擷取時間等比例縮放到 NOMINAL_DURATION_S（保留掉幀造成的不均勻間隔，
+    實際最後一幀約 1.48 s），沒有時平均分給每一幀"""
+    if frame_times and frame in frame_times and total_frames - 1 in frame_times:
+        start = frame_times.get(0, min(frame_times.values()))
+        span = frame_times[total_frames - 1] - start
+        if span > 0:
+            return (frame_times[frame] - start) / span * NOMINAL_DURATION_S
     return frame / (total_frames - 1) * NOMINAL_DURATION_S if total_frames > 1 else 0.0
