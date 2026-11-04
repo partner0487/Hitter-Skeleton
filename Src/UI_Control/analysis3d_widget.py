@@ -29,9 +29,10 @@ from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
 from PyQt5 import QtGui
 from utils.fps_utils import get_video_fps
 from utils.stereo_calibration import load_stereo_params
-from utils.body_metrics import (HORIZONTAL_3D, frame_interval, keypoints_by_frame, peak_separation, pelvis_speed,
-                                separation_series, stride_length)
+from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, keypoints_by_frame, peak_separation,
+                                pelvis_speed, separation_series, stride_length)
 from utils.bat_speed2d import read_frame_times
+from utils.bat_speed3d import bat_track_3d, blast_metrics_3d
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts
 
 
@@ -1658,6 +1659,12 @@ class Analysis3DWidget(QWidget):
             self.bat_side_df = pd.read_json(bat_side_path, orient='records') if os.path.exists(bat_side_path) else pd.DataFrame()
         except ValueError:
             self.bat_side_df = pd.DataFrame()
+        # 正面球棒遮罩：與側面一起三角化，算 3D 揮棒速度（calculateBatAnglesAtImpact）
+        bat_front_path = os.path.join(folder, "bat_front.json")
+        try:
+            self.bat_front_df = pd.read_json(bat_front_path, orient='records') if os.path.exists(bat_front_path) else pd.DataFrame()
+        except ValueError:
+            self.bat_front_df = pd.DataFrame()
         self.ball_side_df    = get_json_df("ball_side.json")
         self.ball_front_df   = get_json_df("ball_front.json")
 
@@ -2015,7 +2022,8 @@ class Analysis3DWidget(QWidget):
         f_lift, f_land, f_impact = phase_result.F_liftoff, phase_result.F_landing, phase_result.F_impact
 
         # 肩髖分離角：正 = 肩落後髖；遮擋而不可信的幀顯示 —
-        series = separation_series(kpts, f_land, f_impact, is_righty)
+        up = ground_up(kpts)  # 地面法向量：側面相機不一定水平
+        series = separation_series(kpts, f_land, f_impact, is_righty, up)
         for label, frame in ((ui.hipShoulderEditLabel1, f_lift), (ui.hipShoulderEditLabel2, f_land),
                              (ui.hipShoulderEditLabel3, f_impact)):
             label.setText(fmt(series.get(frame), "°", signed=True))
@@ -2041,7 +2049,7 @@ class Analysis3DWidget(QWidget):
         def speed(frame):
             return pelvis_speed(kpts, frame, frame_interval(fps, frame_times, frame))
 
-        stride_m = stride_length(kpts.get(f_land), is_righty, axes=HORIZONTAL_3D) if f_land is not None else None
+        stride_m = stride_length(kpts.get(f_land), is_righty, basis=horizontal_basis(up)) if f_land is not None else None
         self.stride_cm = stride_m * 100 if stride_m is not None else None
         ui.centerGravityLabel.setText(fmt(speed(f_lift), "m/s", 2))
         ui.centerGravityLabel2.setText(fmt(speed(f_land), "m/s", 2))
@@ -2510,137 +2518,43 @@ class Analysis3DWidget(QWidget):
         return super().eventFilter(source, event)
 
 
+    def _bat_head_track(self, person_df, bat_df):
+        """與 2D 頁相同的棒頭軌跡（手腕分棒頭、排除沿用／跳動／誤抓手臂的遮罩）"""
+        if person_df is None or person_df.empty or bat_df is None or bat_df.empty:
+            return None
+        detector = PhaseDetector2D(person_df=person_df, batter_index=self.ui.batterInput.currentIndex(),
+                                   ball_df=pd.DataFrame(), bat_df=bat_df, land_hold=3)
+        return detector.bat_head_track()
+
     def calculateBatAnglesAtImpact(self, impact_frame: int, landing_frame: int = None):
-        # 1. 確保 frame 合法
-        for label in (self.ui.verticalAngleEditLabel, self.ui.batSpeedLabel, self.ui.horizontalAngleEditLabel):
+        """揮棒速度、攻擊角度、垂直棒角：側面與正面球棒遮罩三角化，採 Blast Motion 定義（utils/bat_speed3d.py）"""
+        labels = (self.ui.batSpeedLabel, self.ui.horizontalAngleEditLabel, self.ui.verticalAngleEditLabel)
+        for label in labels:
             label.setText(MISSING)
-        if impact_frame <= 0: return
-
-        # 尋找有效的當前擊球點與前一點 (過濾掉可能由 fallback 複製的相同座標)
-        def find_valid_bat_3d(f_target, is_prev=False, exclude_head=None):
-            search_range = [1, 2, 3, 4] if is_prev else [0, 1, 2, -1, -2]
-            for offset in search_range:
-                cand = f_target - offset if is_prev else f_target + offset
-                if cand < 0: continue
-                tail, head = self.triangulate_bat(cand)
-                if tail is not None and head is not None:
-                    if exclude_head is not None:
-                        if np.array_equal(head[:2], exclude_head[:2]):
-                            continue
-                    return tail, head, cand
-            return None, None, f_target - 1 if is_prev else f_target
-
-        tail_3d, head_3d, f_curr = find_valid_bat_3d(impact_frame, is_prev=False)
-        _, head_prev, f_prev = find_valid_bat_3d(f_curr, is_prev=True, exclude_head=head_3d)
-        gap = max(1, f_curr - f_prev)
-
-        if tail_3d is not None and head_3d is not None:
-            # --- A. 垂直棒角 (Vertical Bat Angle) ---
-            bat_vector = head_3d - tail_3d
-            
-            # 在 y_down 系統中，若 head_y > tail_y (棒頭在下)，則 dy 為負
-            dy = tail_3d[1] - head_3d[1] 
-            # 水平面的投影長度
-            dxz = np.linalg.norm([bat_vector[0], bat_vector[2]])
-            
-            # 計算角度：dy 為負時，arctan2 會回傳負角度 (符合向下之意)
-            angle_vba = np.degrees(np.arctan2(dy, dxz)) * -1
-            self.ui.verticalAngleEditLabel.setText(fmt(angle_vba, "°"))
-
-            # --- B. 揮擊軌跡指標 ---
-            if head_prev is not None:
-                # 取得影片 FPS (預設 30)
-                fps = get_video_fps(self.video_loader)
-                
-                # 1. 揮棒速度計算 (Bat Speed) - 使用 mph
-                # 位移向量與 3D 距離 (公尺)
-                velocity_vec = head_3d - head_prev
-                dist = np.linalg.norm(velocity_vec)
-                
-                # =========================================================================
-                # (原本的計算方式，已註解以供比較)
-                # =========================================================================
-                # speed_ms = (dist * fps) / (2.0 * gap)
-                # speed_kmh = speed_ms * 3.6 * 2.5
-                # old_min, old_max = 80, 160
-                # new_min, new_max = 93, 130
-                # normalized_val = ((speed_kmh - old_min) / (old_max - old_min)) * (new_max - new_min) + new_min
-                # normalized_val = max(new_min, min(new_max, normalized_val))
-                # speed_kmh_old = normalized_val
-                # =========================================================================
-
-                # =========================================================================
-                # (新的計算方式：基於 landing 到 impact 之間的實際路徑與時間)
-                # =========================================================================
-                landing_frame_to_use = landing_frame if (landing_frame is not None and landing_frame > 0) else max(0, impact_frame - 15)
-                
-                path_heads_3d = {}
-                for f in range(landing_frame_to_use, impact_frame + 1):
-                    if f < 0: continue
-                    _, head_f = self.triangulate_bat(f)
-                    if head_f is not None:
-                        path_heads_3d[f] = head_f
-                        
-                path_f = sorted(path_heads_3d.keys())
-                
-                # 計算總 3D 距離 (公尺)
-                total_path_m = 0.0
-                for i in range(len(path_f) - 1):
-                    p_prev = path_heads_3d[path_f[i]]
-                    p_curr = path_heads_3d[path_f[i+1]]
-                    dist_val = np.linalg.norm(p_curr - p_prev)
-                    total_path_m += dist_val
-                    
-                # 計算時間差 (秒)
-                frames_diff = max(1, impact_frame - landing_frame_to_use)
-                duration_sec = frames_diff / fps
-                
-                # 速度 (m/s) 與速度 (km/h, 原始)
-                new_speed_ms = total_path_m / duration_sec
-                new_speed_kmh_raw = new_speed_ms * 3.6
-                
-                # 舊參數沒有真實尺度（1 單位 ≈ 基線），才以 +80 的經驗偏移補償；
-                # 有校正檔時座標是公尺，直接顯示實際速度，+80 的結果只印出來對照
-                legacy_kmh = new_speed_kmh_raw / self.view_scale + 80
-                speed_kmh = new_speed_kmh_raw if self.has_metric_scale else legacy_kmh
-                self.ui.batSpeedLabel.setText(fmt(speed_kmh, "km/h"))
-
-                # 計算舊方法的速度以供比對列印（換回舊的單位長度，與過去的數值可比）
-                old_min, old_max = 80, 160
-                new_min, new_max = 93, 130
-                velocity_vec_old = head_3d - head_prev
-                dist_old = np.linalg.norm(velocity_vec_old) / self.view_scale
-                old_speed_ms = (dist_old * fps) / (2.0 * gap)
-                old_speed_kmh_raw = old_speed_ms * 3.6
-                old_speed_kmh_scaled = old_speed_kmh_raw * 2.5
-                old_normalized_val = ((old_speed_kmh_scaled - old_min) / (old_max - old_min)) * (new_max - new_min) + new_min
-                old_normalized_val = max(new_min, min(new_max, old_normalized_val))
-                
-                print(f"[BatMetrics 3D] 速度對比:")
-                print(f"  - 舊方法 (前後鄰近幀位移): 原始={old_speed_kmh_raw:.2f} kmh, 放大={old_speed_kmh_scaled:.2f} kmh, 歸一化={old_normalized_val:.2f} kmh")
-                print(f"  - 新方法 (landing到impact路徑): 原始={new_speed_kmh_raw:.2f} kmh, 舊算法 (+80)={legacy_kmh:.2f} kmh, 顯示={speed_kmh:.2f} kmh（{'公尺尺度' if self.has_metric_scale else '無尺度舊參數'}）, 總路徑={total_path_m:.4f}, 幀數={len(path_f)}/{frames_diff}, 時間={duration_sec:.4f}秒")
-                
-                # 1. 取得揮擊位移向量 (Velocity vector)
-                # velocity[0]: X (左右), velocity[1]: Y (上下), velocity[2]: Z (前後)
-                velocity = head_3d - head_prev
-                
-                # 2. 計算水平面上的合成位移 (XZ 平面的長度)
-                # 這是為了計算相對於地面的「爬升」角度
-                vxz = np.sqrt(velocity[0]**2 + velocity[2]**2)
-                
-                # 3. 處理 Y 軸 (Vertical)
-                # 在 y_down 系統中，head_3d[1] 變小代表向上移動。
-                # 所以 vy = -(current_y - prev_y) = prev_y - current_y
-                # 這樣向上揮時 vy_up 會是正值
-                vy_up = -velocity[1] 
-                
-                # 4. 計算攻擊角度 (Attack Angle)
-                # 使用 arctan2(y, x) 確保數值範圍與正負號正確
-                attack_angle = np.degrees(np.arctan2(vy_up, vxz))
-                # 保留正負號：向上揮為正、向下揮為負（Blast 定義），與 2D 頁相同
-                
-                # 更新 UI 顯示 (對應圖片中的向上角度)
-                self.ui.horizontalAngleEditLabel.setText(fmt(attack_angle, "°", signed=True))
+        if impact_frame is None or not self.has_metric_scale:
+            if not self.has_metric_scale:
+                print("[BatMetrics 3D] 沒有校正檔，3D 座標沒有真實尺度，不顯示揮棒速度")
+            return
+        detector = getattr(self, "phase_detector", None)
+        side_track = (detector.bat_head_track() if getattr(self, "impact_from_masks", False) and detector is not None
+                      else self._bat_head_track(self.person_side_df, getattr(self, "bat_side_df", None)))
+        front_track = self._bat_head_track(self.person_front_df, getattr(self, "bat_front_df", None))
+        track3d, bat_m = bat_track_3d(side_track, front_track, self.triangulate_points)
+        frame_times = read_frame_times(self.folder) or read_frame_times(os.path.dirname(self.folder or ""))
+        up = ground_up(keypoints_by_frame(self.person_3d_df, "keypoints_3d"))
+        if up is None:
+            print("[BatMetrics 3D] 腳點擬合不出地面，垂直方向改用側面相機的 Y 軸")
+        result = blast_metrics_3d(track3d, bat_m, impact_frame, fps=get_video_fps(self.video_loader),
+                                  frame_times=frame_times, up=up)
+        if result is None:
+            print(f"[BatMetrics 3D] 擊球點 {impact_frame} 附近側面、正面沒有同時偵測到球棒")
+            return
+        self.ui.batSpeedLabel.setText(fmt(result.speed_kmh, "km/h"))
+        self.ui.horizontalAngleEditLabel.setText(fmt(result.attack_angle_deg, "°", signed=True))
+        self.ui.verticalAngleEditLabel.setText(fmt(result.vertical_bat_angle_deg, "°", signed=True))
+        print(f"[BatMetrics 3D] 揮棒速度 {result.speed_kmh:.1f} km/h、攻擊角度 {result.attack_angle_deg:+.1f}°、"
+              f"垂直棒角 {result.vertical_bat_angle_deg:+.1f}°：甜蜜點 幀 {result.from_frame}→{result.to_frame}，"
+              f"{result.duration_s * 1000:.1f} ms，兩台相機都有效 {result.frames_used} 幀，棒長中位數 {result.bat_m:.2f} m")
 
     def loadVideo(self):
         self.video_loader.loadVideo(self.video_side_path, self.video_front_path)
