@@ -293,6 +293,10 @@ class PhaseDetector:
     JUMP_MAX_PX = 100.0
     # 擊球點 = 棒頭最高速幀 + IMPACT_OFFSET（H01、H02 最高速幀比畫面上的擊球早約 1 幀）
     IMPACT_OFFSET = 1
+    # 最高速幀之後若接著幾幀遮罩無效（揮棒最快時動態模糊，沒偵測到或被判為跳動），
+    # 擊球點改為無效段的最後一幀，最多往後 BLUR_MAX_FRAMES 幀。
+    # 依 WeiShu 側拋 H04：最高速 38、39～41 無效，畫面上 41 接觸；側拋 H03：113、114 無效，114 接觸
+    BLUR_MAX_FRAMES = 3
     # 著地：腳跟高度在區間最低點 + LAND_TOL_PX 以內即視為貼地（吸收關節點幾 px 的抖動）
     LAND_TOL_PX = 2.0
     # 著地容許值至少為抬腿高度（最高點 − 最低點）的此比例：落地後重心轉移，腳跟常再慢慢降幾 px（H05 落地 5 px → 之後 0 px）
@@ -432,6 +436,23 @@ class PhaseDetector:
 
         return None
 
+    def _impact_offset(self, raw_impact: int) -> int:
+        """最高速幀到擊球點的幀數：IMPACT_OFFSET，或其後連續無效遮罩的幀數（取大者，上限 BLUR_MAX_FRAMES）"""
+        if self.bat_df is None or self.bat_df.empty:
+            return self.IMPACT_OFFSET
+        track = self.bat_head_track().set_index("frame")
+        invalid = 0
+        frame = raw_impact + 1
+        while invalid < self.BLUR_MAX_FRAMES and frame in track.index:
+            row = track.loc[frame]
+            if row["source"] == "mask" and not row["repeated"] and not row["rejected"]:
+                break
+            invalid += 1
+            frame += 1
+        if invalid > self.IMPACT_OFFSET:
+            print(f"最高速幀 {raw_impact} 之後 {invalid} 幀遮罩無效（動態模糊），擊球點改為 {raw_impact + invalid}")
+        return max(self.IMPACT_OFFSET, invalid)
+
     def _point_to_segment_distance(self, p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
         """
         計算點 p 到線段 a-b 的最短距離（2D 空間）。
@@ -534,10 +555,11 @@ class PhaseDetector:
              ball_max_f = self.ball_df['frame_number'].max()
              Fend = int(max(Fend, ball_max_f))
 
+        self.raw_impact = F_impact
         return PhaseResult(
             F0=F0,
             F_liftoff=F_liftoff,
             F_landing=F_landing,
-            F_impact=F_impact + self.IMPACT_OFFSET if F_impact is not None else None,
+            F_impact=F_impact + self._impact_offset(F_impact) if F_impact is not None else None,
             Fend=Fend,
         )

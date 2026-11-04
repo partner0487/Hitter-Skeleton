@@ -5,7 +5,7 @@
 
 每個資料夾輸出：
   debug_bat_head.csv   每幀棒頭位置、遮罩兩端、速度（px/幀，有 frame_times.csv 時另算 px/s）
-  debug_bat_head.png   棒頭 x、y、速度與前腳腳跟／腳尖高度曲線，標出離地、著地、擊球（原始最高速幀與 + IMPACT_OFFSET 後）、偵測到球的幀
+  debug_bat_head.png   棒頭 x、y、速度與前腳腳跟／腳尖高度曲線，標出離地、著地、擊球（原始最高速幀與調整後的擊球點）、偵測到球的幀
   debug_bat_head.mp4   （加 --video）側面影片畫上遮罩兩端（青）、手腕中點（綠十字）與棒頭
                        （紅圈；灰圈為不合理跳動、已排除）
 
@@ -30,7 +30,6 @@ from utils.phase_detect2d import PhaseDetector  # noqa: E402
 
 # 與 analysis2d_widget.detectPhases 相同的參數
 DETECTOR_KWARGS = dict(th_lift=5.0, th_land=5.0, land_hold=3)
-IMPACT_OFFSET = PhaseDetector.IMPACT_OFFSET  # detect_phases 對最高速幀加的偏移
 
 
 def read_records(folder, name):
@@ -66,6 +65,7 @@ def analyse(folder, batter_index):
     heel = pd.DataFrame({"frame": detector.heel_frames, "height": detector.heel_vals})
     toe = pd.DataFrame({"frame": detector.toe_frames, "toe_height": detector.toe_vals})
     heel = heel.merge(toe, on="frame", how="outer").sort_values("frame")
+    track.attrs["raw_impact"] = getattr(detector, "raw_impact", None)
     return phases, track, ball_frames(ball), len(bat), heel
 
 
@@ -83,9 +83,9 @@ def write_plot(path, folder, track, phases, balls, heel):
     axes[1].plot(rejected["frame"], rejected["head_y"], "rx", markersize=9, label="rejected (jump)")
     axes[1].invert_yaxis()
     axes[2].plot(track["frame"], track["speed_px_per_frame"], ".-", label="speed (px/frame)", color="tab:green")
-    raw_impact = phases.F_impact - IMPACT_OFFSET if phases.F_impact is not None else None
+    raw_impact = track.attrs.get("raw_impact")
     marks = [("liftoff", phases.F_liftoff, "tab:blue"), ("landing", phases.F_landing, "tab:purple"),
-             ("max speed", raw_impact, "tab:red"), (f"impact (+{IMPACT_OFFSET})", phases.F_impact, "black")]
+             ("max speed", raw_impact, "tab:red"), ("impact", phases.F_impact, "black")]
     for ax in axes:
         for name, frame, color in marks:
             if frame is not None:
@@ -120,7 +120,7 @@ def write_video(path, folder, track, phases):
     size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     out = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     rows = track.set_index("frame")
-    raw_impact = phases.F_impact - IMPACT_OFFSET if phases.F_impact is not None else None
+    raw_impact = track.attrs.get("raw_impact")
     frame_num = 0
     while True:
         ok, img = cap.read()
@@ -169,7 +169,7 @@ def main():
         phases, track, balls, bat_rows, heel = analyse(folder, 1 if args.left else 0)
         print(f"   bat_side.json {bat_rows} 筆，取得棒頭 {len(track)} 幀")
         print(f"   離地 {phases.F_liftoff}｜著地 {phases.F_landing}｜擊球 {phases.F_impact}"
-              f"（最高速幀 + {IMPACT_OFFSET}）｜偵測到球的幀：{balls[:5]}{' …' if len(balls) > 5 else ''}")
+              f"（最高速幀 {track.attrs.get('raw_impact')}）｜偵測到球的幀：{balls[:5]}{' …' if len(balls) > 5 else ''}")
         if track.empty:
             print("   沒有棒頭資料")
             continue
