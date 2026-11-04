@@ -27,7 +27,7 @@ from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
 from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
 from PyQt5 import QtGui
-from utils.fps_utils import get_video_fps
+from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps
 from utils.stereo_calibration import load_stereo_params
 from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, keypoints_by_frame, peak_separation,
                                 pelvis_speed, separation_series, stride_length)
@@ -51,6 +51,11 @@ class AnalysisBar(QWidget):
 
     def set_segments(self, segments):
         self.segments = segments
+        self.update()
+
+    def set_time_of_ratio(self, time_of_ratio):
+        """進度條比例 → 秒數（實際擷取時間），各段秒數用它相減"""
+        self.time_of_ratio = time_of_ratio
         self.update()
 
     def set_markers(self, markers):
@@ -119,7 +124,8 @@ class AnalysisBar(QWidget):
                 seg_w = int((end_ratio - start_ratio) * w)
                 if seg_w < 15: continue
                 
-                seconds = (end_ratio - start_ratio) * total_duration
+                time_of = getattr(self, "time_of_ratio", None) or (lambda r: r * total_duration)
+                seconds = time_of(end_ratio) - time_of(start_ratio)
                 t_color = QColor(color)
                 t_color.setAlpha(255)
                 painter.setPen(t_color)
@@ -2658,6 +2664,7 @@ class Analysis3DWidget(QWidget):
     def updateVideoInfo(self):
         # 更新與影片相關的資訊顯示在 UI 上
         self.reset()
+        self.setFrameTimes(self.folder)
         self.initFrameSlider()
         self.initGraph()
         pts3d = self.triangularPersonPoints(0)
@@ -2707,6 +2714,17 @@ class Analysis3DWidget(QWidget):
         except:
             return None
 
+    def setFrameTimes(self, folder):
+        """讀 frame_times.csv（3D 的 CF_ 子資料夾沒有時看上一層），時間標籤與進度條各段秒數用實際擷取時間"""
+        self.frame_times = read_frame_times(folder) or read_frame_times(os.path.dirname(folder or ""))
+        total = int(getattr(self.video_loader, "total_frames", 0) or 0)
+        if hasattr(self, "analysis_bar") and total > 1:
+            self.analysis_bar.set_time_of_ratio(
+                lambda r: frame_seconds(int(round(r * (total - 1))), total, self.frame_times))
+
+    def frameTimeText(self, frame_num, total_frames):
+        return f"{frame_seconds(frame_num, total_frames, getattr(self, 'frame_times', None)):.2f}/{NOMINAL_DURATION_S:.1f}s"
+
     def initFrameSlider(self, total_frames=None):
         """初始化影片滑桿和相關的標籤。"""
         if total_frames is None:
@@ -2727,10 +2745,8 @@ class Analysis3DWidget(QWidget):
         # 若外部沒傳，從 slider 讀（保險用）
         if frame_num is None:
             frame_num = self.ui.frameSlider.value()
-        total_duration = 1.5
-        current_seconds = (frame_num / (self.video_loader.total_frames - 1)) * total_duration
-        # 顯示格式： 0.45s / 1.50s
-        self.ui.frameNumLabel.setText(f'{current_seconds:.2f}/{total_duration:.1f}s')
+        # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間）
+        self.ui.frameNumLabel.setText(self.frameTimeText(frame_num, self.video_loader.total_frames))
         # self.ui.frameNumLabel.setText(f'{frame_num}/{self.video_loader.total_frames - 1}')
         # 取畫面
         frame = self.video_loader.getVideoImage(frame_num)
@@ -2777,10 +2793,8 @@ class Analysis3DWidget(QWidget):
     def analyzeFrame(self):
         """Analyze and process each video frame."""
         frame_num = self.ui.frameSlider.value()
-        total_duration = 1.5
-        current_seconds = (frame_num / (self.video_loader.total_frames - 1)) * total_duration
-        # 顯示格式： 0.45s / 1.50s
-        self.ui.frameNumLabel.setText(f'{current_seconds:.2f}/{total_duration:.1f}s')
+        # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間）
+        self.ui.frameNumLabel.setText(self.frameTimeText(frame_num, self.video_loader.total_frames))
         # self.ui.frameNumLabel.setText(f'{frame_num}/{self.video_loader.total_frames - 1}')
         frame = self.video_loader.getVideoImage(frame_num)
         frame_2 = self.video_loader.getVideoImage2(frame_num)

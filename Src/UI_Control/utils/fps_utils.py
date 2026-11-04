@@ -29,3 +29,14 @@ def get_video_fps(loader, default=DEFAULT_FPS):
     if fps and 0 < fps <= 600:
         return float(fps)
     return default
+
+
+NOMINAL_DURATION_S = 1.5  # 每支錄影的長度（介面標示 x.xx/1.5s）
+
+
+def frame_seconds(frame: int, total_frames: int, frame_times: dict = None) -> float:
+    """畫面上顯示的時間（秒）：有 frame_times.csv 時用該幀的實際擷取時間（掉幀時間隔不均），
+    沒有時把 NOMINAL_DURATION_S 平均分給每一幀"""
+    if frame_times and frame in frame_times:
+        return frame_times[frame] - min(frame_times.values())
+    return frame / (total_frames - 1) * NOMINAL_DURATION_S if total_frames > 1 else 0.0
