@@ -2733,10 +2733,8 @@ class Analysis3DWidget(QWidget):
                 lambda r: frame_seconds(int(round(r * (total - 1))), total, self.frame_times))
 
     def frameTimeText(self, frame_num, total_frames):
-        """目前時間/影片長度；有 frame_times.csv 時長度是最後一幀的擷取時間（例如 1.48 s），而非名目的 1.5 s"""
-        times = getattr(self, "frame_times", None)
-        duration = frame_seconds(total_frames - 1, total_frames, times) if total_frames > 1 else NOMINAL_DURATION_S
-        return f"{frame_seconds(frame_num, total_frames, times):.2f}/{duration:.2f}s"
+        """目前時間/影片長度，影片結束時為 1.50/1.5s（見 fps_utils.frame_seconds）"""
+        return f"{frame_seconds(frame_num, total_frames, getattr(self, 'frame_times', None)):.2f}/{NOMINAL_DURATION_S:.1f}s"
 
     def initFrameSlider(self, total_frames=None):
         """初始化影片滑桿和相關的標籤。"""
