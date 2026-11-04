@@ -2,6 +2,7 @@
 import os
 import pandas as pd
 import glob
+import shutil
 import cv2
 import PyQt5.QtCore as QtCore
 from PIL import Image, ImageDraw, ImageFont
@@ -1519,7 +1520,7 @@ class Analysis3DWidget(QWidget):
                        for n in os.listdir(os.path.dirname(cf))) for cf, _ in pairs)
         answer = QMessageBox.question(
             self, "批量處理",
-            f"{root}\n\n找到 {len(pairs)} 支錄影，其中 {done} 支已處理過，會覆蓋原本 CF_ 子資料夾裡的結果。\n"
+            f"{root}\n\n找到 {len(pairs)} 支錄影，其中 {done} 支已處理過。\n處理結果會覆蓋 CF_ 子資料夾，以及錄影資料夾裡 2D 頁用的 person_side、bat_side、ball_side.json。\n"
             f"打擊方向：{self.ui.batterInput.currentText()}\n\n要開始處理嗎？")
         if answer != QMessageBox.Yes:
             return
@@ -1545,8 +1546,27 @@ class Analysis3DWidget(QWidget):
         print(f"[批量處理] {index}/{self.batch_total} {label}")
         self.loadVideo4Process(cf, cs)
 
+    # 3D 處理完覆蓋到錄影資料夾、給 2D 頁用的側面結果（同一支側面影片、同一套偵測）。
+    # batht_side.json 不複製：2D 頁只拿它畫球棒軌跡線，2D 自己處理時這個檔是空的
+    SIDE_RESULTS_FOR_2D = ("person_side.json", "bat_side.json", "ball_side.json")
+
+    def copySideResultsTo2D(self, output_folder):
+        """把 CF_ 子資料夾的側面結果覆蓋到上一層的錄影資料夾，2D 頁載入時就是新的偵測結果"""
+        if not output_folder or not os.path.isdir(output_folder):
+            return
+        target = os.path.dirname(output_folder)
+        for name in self.SIDE_RESULTS_FOR_2D:
+            src = os.path.join(output_folder, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(target, name))
+        print(f"[處理完成] 側面結果已覆蓋到 2D：{target}")
+
     def onProcessFinished(self, output_folder):
-        """一支處理完：批量處理中就接著下一支（延後執行，等播放迴圈結束）"""
+        """一支處理完：側面結果覆蓋給 2D；批量處理中就接著下一支（延後執行，等播放迴圈結束）"""
+        try:
+            self.copySideResultsTo2D(output_folder)
+        except OSError as e:
+            print(f"[處理完成] 側面結果複製到 2D 失敗：{e}")
         if getattr(self, "batch_queue", None) is not None:
             QTimer.singleShot(300, self._startNextBatchClip)
 
