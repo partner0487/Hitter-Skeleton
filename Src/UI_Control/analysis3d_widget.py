@@ -32,7 +32,7 @@ from utils.stereo_calibration import load_stereo_params
 from utils.body_metrics import (HORIZONTAL_3D, frame_interval, keypoints_by_frame, peak_separation, pelvis_speed,
                                 separation_series, stride_length)
 from utils.bat_speed2d import read_frame_times
-from ui_utils.metric_grid import MISSING, arrange_metrics, fmt, new_label_like, rapsodo_texts
+from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts
 
 
 class AnalysisBar(QWidget):
@@ -318,6 +318,7 @@ class Analysis3DWidget(QWidget):
             (ui.gridLayout_13, [[(ui.exitV, ui.exitVLabel), (ui.lanuchAngle, ui.lanuchAngleLabel)],
                                 [(ui.attackDis, ui.attackDisLabel)]]),
         ])
+        align_columns([ui.verticalLayout_5, ui.verticalLayout_7, ui.verticalLayout_9, ui.verticalLayout_10])
 
     def currentBatterSide(self):
         """畫面上選的打擊方向，對應校正的 batter_side（right／left）"""
@@ -2425,8 +2426,8 @@ class Analysis3DWidget(QWidget):
         )
         
         label.setPixmap(scaled_pixmap)
-        # 強制要求 Label 對齊中央 (選配)
-        label.setAlignment(Qt.AlignCenter)
+        # 貼齊格子底部：各欄圖片底部與 Rapsodo 落點圖（填滿格子）對齊
+        label.setAlignment(Qt.AlignHCenter | Qt.AlignBottom)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)  

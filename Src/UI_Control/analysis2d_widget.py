@@ -35,7 +35,7 @@ from utils.stereo_calibration import load_stereo_params
 from utils.body_metrics import (SideScale, frame_interval, keypoints_by_frame, pelvis_speed, side_scale_from_stereo,
                                 stride_length, undistort_keypoints)
 from utils.bat_speed2d import BAT_LENGTH_M
-from ui_utils.metric_grid import MISSING, arrange_metrics, fmt, rapsodo_texts
+from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, rapsodo_texts
 
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
@@ -183,6 +183,7 @@ class Analysis2dWidget(QWidget):
             (ui.gridLayout_8, [[(ui.exitV, ui.exitVLabel), (ui.lanuchAngle, ui.lanuchAngleLabel)],
                                [(ui.attackDis, ui.attackDisLabel)]]),
         ])
+        align_columns([ui.verticalLayout_5, ui.verticalLayout_7, ui.verticalLayout_9, ui.verticalLayout_10])
         # 前腳、後腳膝蓋是側面投影角，膝蓋彎曲有一部分朝向相機，會低估彎曲，以 3D 頁為準
         for label in (ui.forefootLabel3, ui.backfootLabel3):
             label.setToolTip("側面 2D 投影角，膝蓋往相機方向彎時會失真；以 3D 頁為準")
@@ -1675,8 +1676,8 @@ class Analysis2dWidget(QWidget):
         )
         
         label.setPixmap(scaled_pixmap)
-        # 強制要求 Label 對齊中央 (選配)
-        label.setAlignment(Qt.AlignCenter)
+        # 貼齊格子底部：各欄圖片底部與 Rapsodo 落點圖（填滿格子）對齊
+        label.setAlignment(Qt.AlignHCenter | Qt.AlignBottom)
 
     def updateHitterList(self):
         """掃描 Db 資料夾，將現有的選手名稱加入下拉選單"""

@@ -1,10 +1,11 @@
-"""關鍵幀指標區的排版：每列最多兩組「標題｜數值」，2D、3D 各區塊用同一套格線、靠上對齊。
+"""關鍵幀指標區的排版：每列最多兩組「標題｜數值」，2D、3D 各區塊用同一套格線、靠上對齊；
+各欄（離地、著地、擊球、Rapsodo）的標題列、指標區一樣高，圖片底部才會對齊。
 
 .ui 產生的版面是一層層的 QHBoxLayout，標題、數值、單位各自分開、寬度比例不一，
 這裡把原有元件取出重排（物件名稱不變，其他程式照常 setText），沒用到的元件（空白、單位欄）隱藏。
 """
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QLabel
+from PyQt5.QtWidgets import QLabel, QSizePolicy
 
 MISSING = "—"
 PAIR_GAP_PX = 24
@@ -33,6 +34,7 @@ def arrange_metrics(blocks):
         caption.setText(caption.text().strip().rstrip(":：") + ":")
     caption_w = max(c.fontMetrics().horizontalAdvance(c.text()) for c, _ in pairs) + 8
     value_w = max(v.fontMetrics().horizontalAdvance(VALUE_SAMPLE) for _, v in pairs)
+    max_rows = max(len(rows) for _, rows in blocks)
     for grid, rows in blocks:
         used = {w for row in rows for pair in row for w in pair}
         for w in _detach(grid):
@@ -48,11 +50,36 @@ def arrange_metrics(blocks):
                 grid.addWidget(value, r, c * 3 + 1)
                 caption.show()
                 value.show()
+        # 列數較少的區塊補空白列，同一頁每個指標區一樣高
+        template = rows[0][0][0]
+        for r in range(len(rows), max_rows):
+            grid.addWidget(new_label_like(template, " "), r, 0)
         # 欄：標題｜數值｜間隔｜標題｜數值｜剩餘；多出的寬度給最右欄，兩組指標的位置固定
         for col, stretch in enumerate((0, 0, 0, 0, 0, 1)):
             grid.setColumnStretch(col, stretch)
         grid.setColumnMinimumWidth(2, PAIR_GAP_PX)
-        grid.setRowStretch(len(rows), 1)
+        grid.setRowStretch(max_rows, 1)
+
+
+def align_columns(columns):
+    """columns：各欄的 QVBoxLayout，內容依序為 標題列、圖片 QLabel、指標區（layout 或 groupBox）。
+    標題列統一高度、指標區只取需要的高度（已由 arrange_metrics 補成相同列數），剩下的高度全給圖片，
+    各欄的圖片格子因此一樣高、底部對齊"""
+    headers = [col.itemAt(0).layout() for col in columns]
+    header_widgets = [h.itemAt(i).widget() for h in headers for i in range(h.count()) if h.itemAt(i).widget()]
+    header_h = max(w.sizeHint().height() for w in header_widgets)
+    for w in header_widgets:
+        w.setFixedHeight(header_h)
+    for col in columns:
+        image = col.itemAt(1).widget()
+        image.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        image.setMinimumSize(50, 50)
+        metrics = col.itemAt(2)
+        if metrics.widget() is not None:
+            metrics.widget().setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        col.setStretch(0, 0)
+        col.setStretch(1, 1)
+        col.setStretch(2, 0)
 
 
 def new_label_like(template: QLabel, text: str = "") -> QLabel:
