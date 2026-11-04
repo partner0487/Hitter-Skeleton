@@ -29,6 +29,10 @@ from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
 from PyQt5 import QtGui
 from utils.fps_utils import get_video_fps
 from utils.stereo_calibration import load_stereo_params
+from utils.body_metrics import (HORIZONTAL_3D, frame_interval, keypoints_by_frame, peak_separation, pelvis_speed,
+                                separation_series, stride_length)
+from utils.bat_speed2d import read_frame_times
+from ui_utils.metric_grid import MISSING, arrange_metrics, fmt, new_label_like, rapsodo_texts
 
 
 class AnalysisBar(QWidget):
@@ -146,13 +150,7 @@ class Analysis3DWidget(QWidget):
         super().__init__(parent)
         self.ui = Ui_hitter_ui_dual()
         self.ui.setupUi(self)
-        # 擊球區塊與 2D 頁一致：揮棒速度在上排、揮棒垂直角度在下排
-        grid = self.ui.gridLayout_5
-        for row, widgets in ((0, (self.ui.batSpeed, self.ui.batSpeedLabel, self.ui.label_5)),
-                             (2, (self.ui.verticalAngleLabel, self.ui.verticalAngleEditLabel, self.ui.label_7))):
-            for col, w in enumerate(widgets, start=3):
-                grid.removeWidget(w)
-                grid.addWidget(w, row, col, 1, 1)
+        self.arrangeMetricLabels()
         self.folder = None
         self.frame = 0
         self.total_frames = 0
@@ -298,6 +296,28 @@ class Analysis3DWidget(QWidget):
         # self.t = np.array([[ 0.99450367], [-0.10454567], [-0.00571446]])
         # 以上寫死的數值只在沒有校正檔時使用（t 長度約 1，沒有真實尺度）
         self.applyStereoCalibration(load_stereo_params(batter_side=self.currentBatterSide()))
+
+    def arrangeMetricLabels(self):
+        """關鍵幀指標排成與 2D 頁相同的格線（ui_utils/metric_grid.py）；著地區塊多一格整段揮棒的最大肩髖分離角"""
+        ui = self.ui
+        ui.horizontalAngleLabel.setText("攻擊角度:")
+        ui.verticalAngleLabel.setText("垂直棒角:")
+        self.maxSepCaption = new_label_like(ui.hipShoulderLabel2, "最大分離角:")
+        self.maxSepLabel = new_label_like(ui.hipShoulderEditLabel2)
+        sep_tip = "肩髖分離角：正值 = 肩落後髖（蓄力），負值 = 肩已轉過髖"
+        for label in (ui.hipShoulderEditLabel1, ui.hipShoulderEditLabel2, ui.hipShoulderEditLabel3, self.maxSepLabel):
+            label.setToolTip(sep_tip)
+        arrange_metrics([
+            (ui.gridLayout_6, [[(ui.centerGravity, ui.centerGravityLabel)],
+                               [(ui.hipShoulderLabel, ui.hipShoulderEditLabel1)]]),
+            (ui.gridLayout, [[(ui.centerGravity2, ui.centerGravityLabel2), (ui.strideDis, ui.strideDisLabel)],
+                             [(ui.hipShoulderLabel2, ui.hipShoulderEditLabel2), (self.maxSepCaption, self.maxSepLabel)]]),
+            (ui.gridLayout_5, [[(ui.batSpeed, ui.batSpeedLabel), (ui.horizontalAngleLabel, ui.horizontalAngleEditLabel)],
+                               [(ui.forefoot, ui.forefootLabel), (ui.backfoot, ui.backfootLabel)],
+                               [(ui.hipShoulderLabel3, ui.hipShoulderEditLabel3), (ui.verticalAngleLabel, ui.verticalAngleEditLabel)]]),
+            (ui.gridLayout_13, [[(ui.exitV, ui.exitVLabel), (ui.lanuchAngle, ui.lanuchAngleLabel)],
+                                [(ui.attackDis, ui.attackDisLabel)]]),
+        ])
 
     def currentBatterSide(self):
         """畫面上選的打擊方向，對應校正的 batter_side（right／left）"""
@@ -1719,7 +1739,7 @@ class Analysis3DWidget(QWidget):
         self.detectPhases()
         
         # 建立肩髖夾角變化圖表並顯示
-        target_df = getattr(self, 'person_side_df', self.person_3d_df)
+        target_df = self.person_3d_df  # 肩髖分離是繞垂直軸的轉動，要用 3D 骨架
         total_frames = int(self.video_loader.total_frames) if hasattr(self.video_loader, 'total_frames') and self.video_loader.total_frames else 0
         if target_df is not None and not target_df.empty:
             is_righty = (self.ui.batterInput.currentText() == "右打")
@@ -1898,13 +1918,13 @@ class Analysis3DWidget(QWidget):
         self.ui.liftofflabel.setText(str(phase_result.F_liftoff)+"幀")
         self.ui.landinglabel.setText(str(phase_result.F_landing)+"幀")
         self.ui.impactlabel.setText(str(phase_result.F_impact)+"幀")
+        if phase_result.F_impact is not None:
+            self.calculateBatAnglesAtImpact(phase_result.F_impact, phase_result.F_landing)
+        # 先算指標：著地圖上的跨步距離標註用它的結果
+        self.calculateKeyphaseMetrics(phase_result)
         self.display_phase_image(self.ui.keyphaseLabel1, phase_result.F_liftoff, 'liftoff')
         self.display_phase_image(self.ui.keyphaseLabel2, phase_result.F_landing, 'landing')
         self.display_phase_image(self.ui.keyphaseLabel3, phase_result.F_impact, 'impact')
-
-        if phase_result.F_impact is not None:
-            self.calculateBatAnglesAtImpact(phase_result.F_impact, phase_result.F_landing)
-        self.calculateKeyphaseMetrics(phase_result)
 
         # [NEW] 在 Keyphase 計算完成後，載入 Rapsodo 數據
         if hasattr(self, 'video_loader') and self.video_loader and hasattr(self.video_loader, 'video_path'):
@@ -1924,27 +1944,16 @@ class Analysis3DWidget(QWidget):
         data_json_path = os.path.join(folder_path, 'data.json')
         if not os.path.exists(data_json_path):
             data_json_path = os.path.join(os.path.dirname(folder_path), 'data.json')
+        for label in (self.ui.exitVLabel, self.ui.lanuchAngleLabel, self.ui.attackDisLabel):
+            label.setText(MISSING)
 
         if os.path.exists(data_json_path):
             try:
                 with open(data_json_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    if 'ExitVelocity' in data and hasattr(self.ui, 'exitVLabel'):
-                        try:
-                            ev_mph = float(data['ExitVelocity'])
-                            ev_kmh = ev_mph * 1.60934
-                            self.ui.exitVLabel.setText(f"{ev_kmh:.1f} kmh")
-                        except:
-                            self.ui.exitVLabel.setText(f"{data['ExitVelocity']} kmh")
-                    if 'LaunchAngle' in data and hasattr(self.ui, 'lanuchAngleLabel'):
-                        self.ui.lanuchAngleLabel.setText(f"{data['LaunchAngle']}°")
-                    if 'Distance' in data and hasattr(self.ui, 'attackDisLabel'):
-                        try:
-                            dist_ft = float(data['Distance'])
-                            dist_m = dist_ft * 0.3048
-                            self.ui.attackDisLabel.setText(f"{dist_m:.1f} m")
-                        except:
-                            self.ui.attackDisLabel.setText(f"{data['Distance']}'")
+                    texts = rapsodo_texts(data)
+                    for label, text in zip((self.ui.exitVLabel, self.ui.lanuchAngleLabel, self.ui.attackDisLabel), texts):
+                        label.setText(text)
             except Exception as e:
                 print(f"Error loading {data_json_path}: {e}")
 
@@ -1989,108 +1998,53 @@ class Analysis3DWidget(QWidget):
         return np.array(target.iloc[0]["keypoints"]) # 回傳 (N, 2) 或 (N, 3)
 
     def calculateKeyphaseMetrics(self, phase_result: PhaseResult):
-        """Calculate and update UI for detailed metrics."""
-        if self.person_3d_df is None or self.person_3d_df.empty:
+        """重心速度、跨步距離、肩髖分離角、前後膝角度，都用 3D 骨架計算（utils/body_metrics.py）；
+        有校正時 3D 座標單位是公尺，沒有校正的舊參數沒有真實尺度，速度與距離不顯示"""
+        ui = self.ui
+        value_labels = (ui.centerGravityLabel, ui.centerGravityLabel2, ui.strideDisLabel,
+                        ui.hipShoulderEditLabel1, ui.hipShoulderEditLabel2, ui.hipShoulderEditLabel3,
+                        self.maxSepLabel, ui.forefootLabel, ui.backfootLabel)
+        for label in value_labels:
+            label.setText(MISSING)
+        self.stride_cm = None
+        kpts = keypoints_by_frame(self.person_3d_df, "keypoints_3d")
+        if not kpts:
             return
+        is_righty = ui.batterInput.currentText() == "右打"
+        f_lift, f_land, f_impact = phase_result.F_liftoff, phase_result.F_landing, phase_result.F_impact
 
-        # 1. Determine Front Leg based on Batter Type
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        # Indices (MediaPipe)
-        # Left: Hip=23, Knee=25, Ankle=27
-        # Right: Hip=24, Knee=26, Ankle=28
-        if is_righty:
-            # Front = Left
-            front_hip, front_knee, front_ankle = 11, 13, 24
-            back_hip, back_knee, back_ankle = 12, 14, 25
-        else:
-            # Front = Right
-            front_hip, front_knee, front_ankle = 12, 14, 25
-            back_hip, back_knee, back_ankle = 11, 13, 24
-        
-        # Helper to get 3D point (x, y, z)
-        def get_pt(frame, idx):
-            # 1. 基本檢查：DataFrame 是否存在
-            if self.person_3d_df is None or self.person_3d_df.empty:
-                return None
+        # 肩髖分離角：正 = 肩落後髖；遮擋而不可信的幀顯示 —
+        series = separation_series(kpts, f_land, f_impact, is_righty)
+        for label, frame in ((ui.hipShoulderEditLabel1, f_lift), (ui.hipShoulderEditLabel2, f_land),
+                             (ui.hipShoulderEditLabel3, f_impact)):
+            label.setText(fmt(series.get(frame), "°", signed=True))
+        peak = peak_separation(series, f_lift, f_impact)
+        if peak is not None:
+            self.maxSepLabel.setText(fmt(peak[0], "°", signed=True))
+            self.maxSepLabel.setToolTip(f"離地到擊球之間最大的肩髖分離角，出現在第 {peak[1]} 幀")
+            print(f"[Keyphase3D] 最大肩髖分離角 {peak[0]:+.1f}°（第 {peak[1]} 幀）")
 
-            # 2. 取得對應 frame_number 的那一行
-            # 注意：這裡使用過濾方式，比 iloc[frame] 更安全（防止有缺幀）
-            target_rows = self.person_3d_df[self.person_3d_df["frame_number"] == frame]
-            
-            if target_rows.empty:
-                return None
-        
-            try:
-                # 3. 取得該幀的 3D 陣列 (ndarray)
-                # target_rows.iloc[0]["keypoints_3d"] 是一個 shape 為 (N, 3) 的陣列
-                pts_array = target_rows.iloc[0]["keypoints_3d"]
-        
-                # 4. 檢查索引 idx 是否在陣列範圍內 (你的 JSON 顯示有 26 個點，索引 0~25)
-                if idx < 0 or idx >= len(pts_array):
-                    # print(f"Warning: Index {idx} out of range (max: {len(pts_array)-1})")
-                    return None
-            
-                # 5. 回傳對應索引的 [x, y, z]
-                return pts_array[idx]
-        
-            except Exception as e:
-                print(f"Error in get_pt: {e}")
-                return None
-        # --- A. Liftoff Phase Metrics ---
-        f_lift = phase_result.F_liftoff
-        if f_lift is not None:
-            if f_lift > 0:
-                pt_L_t = get_pt(f_lift, 23)
-                pt_R_t = get_pt(f_lift, 24)
-                pt_L_prev = get_pt(f_lift-1, 23)
-                pt_R_prev = get_pt(f_lift-1, 24)
-                if all(p is not None for p in [pt_L_t, pt_R_t, pt_L_prev, pt_R_prev]):
-                    cog_t = (pt_L_t + pt_R_t) / 2
-                    cog_prev = (pt_L_prev + pt_R_prev) / 2
-                    dist = np.linalg.norm(cog_t - cog_prev)
-                    fps = get_video_fps(self.video_loader)
-                    speed = dist * fps
-                    self.ui.centerGravityLabel.setText(f"{speed:.1f}") # Check units
-                else:
-                    self.ui.centerGravityLabel.setText("  ")
-            else:
-                self.ui.centerGravityLabel.setText("  ")
-        else:
-            self.ui.forefootLabel.setText("  ")
-            self.ui.centerGravityLabel.setText("  ")
+        # 擊球時前、後膝角度：髖-膝-腳跟夾角
+        k = kpts.get(f_impact)
+        if k is not None:
+            front, back = ((11, 13, 24), (12, 14, 25)) if is_righty else ((12, 14, 25), (11, 13, 24))
+            ui.forefootLabel.setText(fmt(self._calculate_3d_joint_angle(k, *front), "°"))
+            ui.backfootLabel.setText(fmt(self._calculate_3d_joint_angle(k, *back), "°"))
 
-        # --- B. Landing Phase Metrics ---
-        f_land = phase_result.F_landing
-        if f_land is not None:
-            # # 1. Stride Distance (L_Ankle to R_Ankle dist)
-            # pt_ank_f = get_pt(f_land, front_ankle)
-            # pt_ank_b = get_pt(f_land, back_ankle)
-            # stride_px = np.linalg.norm(pt_ank_f - pt_ank_b)
-            # if pt_ank_f is not None and pt_ank_b is not None:
-            #     self.ui.strideDisLabel.setText(f"{stride_px:.1f} cm")
-            # else:
-            #     self.ui.strideDisLabel.setText("  ")
+        if not self.has_metric_scale:
+            print("[Keyphase3D] 沒有校正檔，3D 座標沒有真實尺度，不顯示重心速度與跨步距離")
+            return
+        fps = get_video_fps(self.video_loader)
+        frame_times = read_frame_times(self.folder) or read_frame_times(os.path.dirname(self.folder or ""))
 
-            # 2. Knee Angle (Hip-Knee-Ankle of front leg)
-            if f_land > 0:
-                pt_L_t = get_pt(f_land, 23)
-                pt_R_t = get_pt(f_land, 24)
-                pt_L_prev = get_pt(f_land-1, 23)
-                pt_R_prev = get_pt(f_land-1, 24)
-                if all(p is not None for p in [pt_L_t, pt_R_t, pt_L_prev, pt_R_prev]):
-                    cog_t = (pt_L_t + pt_R_t) / 2
-                    cog_prev = (pt_L_prev + pt_R_prev) / 2
-                    dist = np.linalg.norm(cog_t - cog_prev)
-                    fps = get_video_fps(self.video_loader)
-                    speed = dist * fps
-                    self.ui.centerGravityLabel2.setText(f"{speed:.1f}") # Check units
-                else:
-                    self.ui.centerGravityLabel2.setText("  ")
-            else:
-                self.ui.centerGravityLabel2.setText("  ")
-        else:
-            self.ui.strideDisLabel.setText("  ")
-            self.ui.centerGravityLabel2.setText("  ")
+        def speed(frame):
+            return pelvis_speed(kpts, frame, frame_interval(fps, frame_times, frame))
+
+        stride_m = stride_length(kpts.get(f_land), is_righty, axes=HORIZONTAL_3D) if f_land is not None else None
+        self.stride_cm = stride_m * 100 if stride_m is not None else None
+        ui.centerGravityLabel.setText(fmt(speed(f_lift), "m/s", 2))
+        ui.centerGravityLabel2.setText(fmt(speed(f_land), "m/s", 2))
+        ui.strideDisLabel.setText(fmt(self.stride_cm, "cm", 0))
 
     def display_phase_image(self, label: QtWidgets.QLabel, frame_num: int, phase_type: str):
         """
@@ -2171,12 +2125,9 @@ class Analysis3DWidget(QWidget):
                     cv2.line(draw_img, (ax1, ay1-15), (ax1, ay1+15), RED, 7)
                     cv2.line(draw_img, (ax2, ay1-15), (ax2, ay1+15), RED, 7)
 
-                    # 準備文字
-                    stride_px = np.linalg.norm(p_l_ank - p_r_ank)
-                    stride_px = stride_px * 0.45
-                    text_val = f"{stride_px:.1f}"
+                    # 準備文字（數值由 calculateKeyphaseMetrics 以 3D 骨架計算）
+                    text_val = fmt(getattr(self, "stride_cm", None), "cm", 0)
                     text_label = "跨步距離"
-                    self.ui.strideDisLabel.setText(f"{stride_px:.1f}")
                     # --- 中文顯示防呆處理 ---
                     try:
                         # 轉為 PIL 格式
@@ -2288,8 +2239,6 @@ class Analysis3DWidget(QWidget):
                         cv2.circle(draw_img, p, 8, YELLOW, -1)
                     # 計算後腿角度
                     back_knee_angle = self.calculate_angle(p1, p2, p3)
-                self.ui.forefootLabel.setText(f"{front_knee_angle:.1f}")
-                self.ui.backfootLabel.setText(f"{back_knee_angle:.1f}")
 
                 # ---- 新增繪製動力啟動順序標籤 (1, 2, 3, 4) ----
                 try:
@@ -2562,6 +2511,8 @@ class Analysis3DWidget(QWidget):
 
     def calculateBatAnglesAtImpact(self, impact_frame: int, landing_frame: int = None):
         # 1. 確保 frame 合法
+        for label in (self.ui.verticalAngleEditLabel, self.ui.batSpeedLabel, self.ui.horizontalAngleEditLabel):
+            label.setText(MISSING)
         if impact_frame <= 0: return
 
         # 尋找有效的當前擊球點與前一點 (過濾掉可能由 fallback 複製的相同座標)
@@ -2593,7 +2544,7 @@ class Analysis3DWidget(QWidget):
             
             # 計算角度：dy 為負時，arctan2 會回傳負角度 (符合向下之意)
             angle_vba = np.degrees(np.arctan2(dy, dxz)) * -1
-            self.ui.verticalAngleEditLabel.setText(f"{angle_vba:.1f}")
+            self.ui.verticalAngleEditLabel.setText(fmt(angle_vba, "°"))
 
             # --- B. 揮擊軌跡指標 ---
             if head_prev is not None:
@@ -2651,7 +2602,7 @@ class Analysis3DWidget(QWidget):
                 # 有校正檔時座標是公尺，直接顯示實際速度，+80 的結果只印出來對照
                 legacy_kmh = new_speed_kmh_raw / self.view_scale + 80
                 speed_kmh = new_speed_kmh_raw if self.has_metric_scale else legacy_kmh
-                self.ui.batSpeedLabel.setText(f"{speed_kmh:.1f}")
+                self.ui.batSpeedLabel.setText(fmt(speed_kmh, "km/h"))
 
                 # 計算舊方法的速度以供比對列印（換回舊的單位長度，與過去的數值可比）
                 old_min, old_max = 80, 160
@@ -2685,10 +2636,10 @@ class Analysis3DWidget(QWidget):
                 # 4. 計算攻擊角度 (Attack Angle)
                 # 使用 arctan2(y, x) 確保數值範圍與正負號正確
                 attack_angle = np.degrees(np.arctan2(vy_up, vxz))
-                attack_angle = abs(attack_angle)
+                # 保留正負號：向上揮為正、向下揮為負（Blast 定義），與 2D 頁相同
                 
                 # 更新 UI 顯示 (對應圖片中的向上角度)
-                self.ui.horizontalAngleEditLabel.setText(f"{attack_angle:.1f}")
+                self.ui.horizontalAngleEditLabel.setText(fmt(attack_angle, "°", signed=True))
 
     def loadVideo(self):
         self.video_loader.loadVideo(self.video_side_path, self.video_front_path)
@@ -2806,91 +2757,10 @@ class Analysis3DWidget(QWidget):
         # self.draw_ball_3d(ball_3d)
         self.draw_bat_3d(tail_3d, head_3d)
         # 2. 畫出隨時間生長的軌跡 (淺色)
-        pts3d1 = self.triangularPersonPoints(self.phase_result.F_liftoff)
-        pts3d2 = self.triangularPersonPoints(self.phase_result.F_landing)
-        pts3d3 = self.triangularPersonPoints(self.phase_result.F_impact)
-        self.sethipShoulderEditLabel(1, pts3d1)
-        self.sethipShoulderEditLabel(2, pts3d2)
-        self.sethipShoulderEditLabel(3, pts3d3)
-        self.setKneeAngleEditLabel(pts3d3)
         self.draw_swing_trajectory(0)
         self.updateFrame(frame_num = 0)
         video_size = self.video_loader.video_size
         self.ui.ResolutionLabel.setText(f"(0,0) - {video_size[0]} x {video_size[1]}")
-
-    def setKneeAngleEditLabel(self, points_3d_centered):
-        if points_3d_centered is None:
-            return
-        self.calKneeAngleEditLabel(points_3d_centered)
-
-    def calKneeAngleEditLabel(self, points_3d_centered):
-        if points_3d_centered is None:
-            return
-
-        # 1. 根據打擊手別判斷後腳索引
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        if is_righty:
-            # 右打者：後腳為右腳
-            f_hip_idx, f_knee_idx, f_ankle_idx = 11, 13, 24
-            b_hip_idx, b_knee_idx, b_ankle_idx = 12, 14, 25
-        else:
-            # 左打者：後腳為左腳
-            f_hip_idx, f_knee_idx, f_ankle_idx = 12, 14, 25
-            b_hip_idx, b_knee_idx, b_ankle_idx = 11, 13, 24
-
-        try:
-            # 2. 取得三維座標點
-            hip = points_3d_centered[b_hip_idx]
-            knee = points_3d_centered[b_knee_idx]
-            ankle = points_3d_centered[b_ankle_idx]
-
-            # 3. 建立向量：以膝蓋為頂點
-            # 向量 BA (膝蓋到髖部)
-            v_knee_to_hip = hip - knee
-            # 向量 BC (膝蓋到腳踝)
-            v_knee_to_ankle = ankle - knee
-
-            # 4. 使用內積公式計算夾角 (餘弦定理變體)
-            # cos(theta) = (v1 . v2) / (|v1| * |v2|)
-            dot_product = np.dot(v_knee_to_hip, v_knee_to_ankle)
-            norm_hip = np.linalg.norm(v_knee_to_hip)
-            norm_ankle = np.linalg.norm(v_knee_to_ankle)
-
-            # 防止數值誤差導致超出 [-1, 1] 範圍
-            cos_theta = np.clip(dot_product / (norm_hip * norm_ankle), -1.0, 1.0)
-            
-            # 轉為角度
-            angle_deg = np.degrees(np.arccos(cos_theta))
-
-            # 5. 更新 UI 標籤 (根據您的 UI 定義為 backKneeAngleLabel)
-            self.ui.backfootLabel.setText(f"{angle_deg:.1f}")
-
-            hip = points_3d_centered[f_hip_idx]
-            knee = points_3d_centered[f_knee_idx]
-            ankle = points_3d_centered[f_ankle_idx]
-
-            # 3. 建立向量：以膝蓋為頂點
-            # 向量 BA (膝蓋到髖部)
-            v_knee_to_hip = hip - knee
-            # 向量 BC (膝蓋到腳踝)
-            v_knee_to_ankle = ankle - knee
-
-            # 4. 使用內積公式計算夾角 (餘弦定理變體)
-            # cos(theta) = (v1 . v2) / (|v1| * |v2|)
-            dot_product = np.dot(v_knee_to_hip, v_knee_to_ankle)
-            norm_hip = np.linalg.norm(v_knee_to_hip)
-            norm_ankle = np.linalg.norm(v_knee_to_ankle)
-
-            # 防止數值誤差導致超出 [-1, 1] 範圍
-            cos_theta = np.clip(dot_product / (norm_hip * norm_ankle), -1.0, 1.0)
-            
-            # 轉為角度
-            angle_deg = np.degrees(np.arccos(cos_theta))
-
-            # 5. 更新 UI 標籤 (根據您的 UI 定義為 backKneeAngleLabel)
-            self.ui.forefootLabel.setText(f"{angle_deg:.1f}")
-        except Exception as e:
-            print(f"Error in calBackKneeAngleEditLabel: {e}")
 
     def calBackKneeAngleEditLabel(self, points_3d_centered):
         """計算並更新 UI 上的後膝角度"""
@@ -2921,48 +2791,6 @@ class Analysis3DWidget(QWidget):
             return np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
         except:
             return None
-
-    def sethipShoulderEditLabel(self, phase, points_3d_centered):
-        if points_3d_centered is None:
-            return
-        self.calhipShoulderEditLabel(phase, points_3d_centered)
-
-    def calhipShoulderEditLabel(self, phase, points_3d_centered):
-        l_hip = points_3d_centered[11]
-        r_hip = points_3d_centered[12]
-        l_shoulder = points_3d_centered[5]
-        r_shoulder = points_3d_centered[6]
-
-        hip_pts = np.array([l_hip, r_hip], dtype=np.float32)
-        shoulder_pts = np.array([l_shoulder, r_shoulder], dtype=np.float32)
-        v1 = r_hip - l_hip
-        v2 = r_shoulder - l_shoulder
-
-        # 投影到 XZ 平面（MLB 定義的旋轉平面）
-        v1_proj = np.array([v1[0], v1[2]])
-        v2_proj = np.array([v2[0], v2[2]])
-
-        # atan2 得到旋轉角度（有方向性）
-        theta_hip = np.arctan2(v1_proj[1], v1_proj[0])
-        theta_shd = np.arctan2(v2_proj[1], v2_proj[0])
-
-        # HSS = 肩 - 髖（MLB 定義）
-        angle_rad = theta_shd - theta_hip
-
-        # 將角度包到 -180 ～ +180
-        angle_deg = np.degrees(angle_rad)
-        angle_deg = (angle_deg + 180) % 360 - 180
-        if angle_deg < 0:
-            angle_deg += 180
-            
-        if angle_deg > 90:
-            angle_deg = abs(180 - angle_deg)
-        
-        label_name = f"hipShoulderEditLabel{phase}"
-        # 從 self.ui 中抓取對應名稱的物件
-        label_object = getattr(self.ui, label_name)
-        # 設定文字
-        label_object.setText(f"{angle_deg:.1f}")
 
     def initFrameSlider(self, total_frames=None):
         """初始化影片滑桿和相關的標籤。"""

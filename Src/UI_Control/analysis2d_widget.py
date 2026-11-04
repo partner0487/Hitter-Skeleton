@@ -11,6 +11,7 @@ import pandas as pd
 import sys
 import os
 import collections
+from typing import Optional
 from ui.dual_camera_system_record import Ui_hitter_ui_dual
 from datetime import datetime
 from utils.timer import Timer
@@ -31,6 +32,10 @@ from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS
 from utils.fps_utils import get_video_fps
 from utils.bat_speed2d import blast_metrics_2d, read_frame_times
 from utils.stereo_calibration import load_stereo_params
+from utils.body_metrics import (SideScale, frame_interval, keypoints_by_frame, pelvis_speed, side_scale_from_stereo,
+                                stride_length, undistort_keypoints)
+from utils.bat_speed2d import BAT_LENGTH_M
+from ui_utils.metric_grid import MISSING, arrange_metrics, fmt, rapsodo_texts
 
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
@@ -158,24 +163,29 @@ class Analysis2dWidget(QWidget):
         super().__init__(parent)
         self.ui = Ui_hitter_ui_dual()
         self.ui.setupUi(self)
-        # 肩髖分離角是水平面上的旋轉，單一側面相機只看得到投影、量不準，只在 3D 頁顯示
-        for i in (1, 2, 3):
-            getattr(self.ui, f"hipShoulderLabel{i}").hide()
-            getattr(self.ui, f"hipShoulderEditLabel{i}").hide()
-        # 揮棒垂直角度（擊球時球棒低於水平的角度）同理：擊球時球棒朝側面相機伸出，2D 投影會失真，只在 3D 頁顯示
-        self.ui.verticalAngleLabel3.hide()
-        self.ui.verticalAngleEditLabel3.hide()
-        # 隱藏後擊球區塊上排空一格：揮棒速度移到上排，揮棒垂直角度（已隱藏）移到下排
-        grid = self.ui.gridLayout_5
-        for row, widgets in ((0, (self.ui.batSpeed, self.ui.batSpeedLabel, self.ui.label_5)),
-                             (2, (self.ui.verticalAngleLabel3, self.ui.verticalAngleEditLabel3, self.ui.label_4))):
-            for col, w in enumerate(widgets, start=3):
-                grid.removeWidget(w)
-                grid.addWidget(w, row, col, 1, 1)
+        self.arrangeMetricLabels()
         self.model = model
         self.setupComponents()
         self.initVar()
         self.bindUI()
+
+    def arrangeMetricLabels(self):
+        """關鍵幀指標排成與 3D 頁相同的格線（ui_utils/metric_grid.py）。
+        肩髖分離角是繞垂直軸的轉動，單一側面相機看不到；揮棒垂直角度在擊球時球棒朝側面相機伸出、
+        2D 投影會失真，這兩項只在 3D 頁顯示"""
+        ui = self.ui
+        ui.horizontalAngleLabel.setText("攻擊角度:")
+        arrange_metrics([
+            (ui.gridLayout_6, [[(ui.centerGravity, ui.centerGravityLabel)]]),
+            (ui.gridLayout_4, [[(ui.centerGravity2, ui.centerGravityLabel2), (ui.strideDis, ui.strideDisLabel)]]),
+            (ui.gridLayout_5, [[(ui.batSpeed, ui.batSpeedLabel), (ui.horizontalAngleLabel, ui.horizontalAngleEditLabel)],
+                               [(ui.forefoot3, ui.forefootLabel3), (ui.backfoot3, ui.backfootLabel3)]]),
+            (ui.gridLayout_8, [[(ui.exitV, ui.exitVLabel), (ui.lanuchAngle, ui.lanuchAngleLabel)],
+                               [(ui.attackDis, ui.attackDisLabel)]]),
+        ])
+        # 前腳、後腳膝蓋是側面投影角，膝蓋彎曲有一部分朝向相機，會低估彎曲，以 3D 頁為準
+        for label in (ui.forefootLabel3, ui.backfootLabel3):
+            label.setToolTip("側面 2D 投影角，膝蓋往相機方向彎時會失真；以 3D 頁為準")
 
     def shutdown(self):
         """關閉程式前停止計時器、影片載入與相機"""
@@ -1070,27 +1080,16 @@ class Analysis2dWidget(QWidget):
         json_path = os.path.join(folder_path, 'data.json')
         if not os.path.exists(json_path):
             json_path = os.path.join(os.path.dirname(folder_path), 'data.json')
+        for label in (self.ui.exitVLabel, self.ui.lanuchAngleLabel, self.ui.attackDisLabel):
+            label.setText(MISSING)
 
         if os.path.exists(json_path):
             try:
                 with open(json_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    if 'ExitVelocity' in data and hasattr(self.ui, 'exitVLabel'):
-                        try:
-                            ev_mph = float(data['ExitVelocity'])
-                            ev_kmh = ev_mph * 1.60934
-                            self.ui.exitVLabel.setText(f"{ev_kmh:.1f} kmh")
-                        except:
-                            self.ui.exitVLabel.setText(f"{data['ExitVelocity']} kmh")
-                    if 'LaunchAngle' in data and hasattr(self.ui, 'lanuchAngleLabel'):
-                        self.ui.lanuchAngleLabel.setText(f"{data['LaunchAngle']}°")
-                    if 'Distance' in data and hasattr(self.ui, 'attackDisLabel'):
-                        try:
-                            dist_ft = float(data['Distance'])
-                            dist_m = dist_ft * 0.3048
-                            self.ui.attackDisLabel.setText(f"{dist_m:.1f} m")
-                        except:
-                            self.ui.attackDisLabel.setText(f"{data['Distance']}'")
+                    texts = rapsodo_texts(data)
+                    for label, text in zip((self.ui.exitVLabel, self.ui.lanuchAngleLabel, self.ui.attackDisLabel), texts):
+                        label.setText(text)
             except Exception as e:
                 print(f"Error loading {json_path}: {e}")
 
@@ -1134,94 +1133,62 @@ class Analysis2dWidget(QWidget):
             return None
         return np.array(target.iloc[0]["keypoints"]) # 回傳 (N, 2) 或 (N, 3)
 
+    def _calibration(self):
+        """(資料夾, 側面相機校正)；校正依錄影日期與打擊方向挑選，找不到時為 None"""
+        folder = os.path.dirname(self.video_loader.video_path) if self.video_loader.video_path else None
+        side = "right" if self.ui.batterInput.currentText() == "右打" else "left"
+        return folder, (load_stereo_params(folder, side) if folder else None)
+
+    def _side_scale(self, folder, calib, impact_frame) -> Optional[SideScale]:
+        """側面畫面的公尺換算：有正面骨架時用校正三角化的打者深度，否則用棒長（與揮棒速度相同）"""
+        scale = side_scale_from_stereo(folder, calib)
+        if scale is not None:
+            return scale
+        detector = getattr(self, "phase_detector", None)
+        result = blast_metrics_2d(
+            detector.bat_head_track() if detector is not None else None, impact_frame,
+            fps=get_video_fps(self.video_loader),
+            K=calib.K_side if calib else None, dist=calib.dist_side if calib else None,
+        )
+        if result is None:
+            return None
+        return SideScale(m_per_px=result.m_per_px, depth_m=None,
+                         source=f"球棒長 {BAT_LENGTH_M} m 估計（這支影片沒有正面骨架）")
+
     def calculateKeyphaseMetrics(self, phase_result: PhaseResult):
-        """使用側面相機 2D 關鍵點計算並更新 UI。"""
-        # 改為檢查 2D DataFrame
+        """重心速度（離地、著地）與跨步距離（著地）：側面 2D 關鍵點換算成公尺（utils/body_metrics.py）"""
+        labels = (self.ui.centerGravityLabel, self.ui.centerGravityLabel2, self.ui.strideDisLabel)
+        for label in labels:
+            label.setText(MISSING)
+            label.setToolTip("")
+        self.stride_cm = None
         if self.person_side_df is None or self.person_side_df.empty:
             return
 
-        # 1. 根據打擊類型決定前腳索引 (MediaPipe 2D 索引通常與 3D 相同)
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        
-        # 索引參考：左(L) Hip=23, Knee=25, Ankle=27 | 右(R) Hip=24, Knee=26, Ankle=28
-        # 注意：MediaPipe 2D 關鍵點清單中通常也是這些編號
-        if is_righty:
-            # Front = Left
-            front_hip, front_knee, front_ankle = 11, 13, 24
-            back_hip, back_knee, back_ankle = 12, 14, 25
-        else:
-            # Front = Right
-            front_hip, front_knee, front_ankle = 12, 14, 25
-            back_hip, back_knee, back_ankle = 11, 13, 24
-        
-        # Helper: 取得側面相機的 2D 點 (x, y)
-        def get_pt_2d(frame, idx):
-            if self.person_side_df is None or self.person_side_df.empty:
-                return None
-            
-            # 使用 frame_number 過濾
-            target_rows = self.person_side_df[self.person_side_df["frame_number"] == frame]
-            if target_rows.empty:
-                return None
-            
-            try:
-                # 取得該幀的關鍵點列表 (N, 2) 或 (N, 3)
-                kpts = target_rows.iloc[0]["keypoints"]
-                if idx < 0 or idx >= len(kpts):
-                    return None
-                
-                # 回傳 numpy array [x, y]
-                return np.array(kpts[idx][:2])
-            except Exception as e:
-                print(f"Error in get_pt_2d: {e}")
-                return None
+        folder, calib = self._calibration()
+        scale = self._side_scale(folder, calib, phase_result.F_impact)
+        if scale is None:
+            print("[Keyphase2D] 沒有正面骨架也沒有可用的球棒長度，無法換算公尺")
+            return
+        kpts = undistort_keypoints(keypoints_by_frame(self.person_side_df),
+                                   calib.K_side if calib else None, calib.dist_side if calib else None)
+        fps = get_video_fps(self.video_loader)
+        frame_times = read_frame_times(folder)
+        is_righty = self.ui.batterInput.currentText() == "右打"
 
-        # --- A. Liftoff Phase Metrics (重心移動速度) ---
-        f_lift = phase_result.F_liftoff
-        if f_lift is not None and f_lift > 0:
-            pt_L_t = get_pt_2d(f_lift, front_ankle)
-            pt_R_t = get_pt_2d(f_lift, back_ankle)
-            pt_L_prev = get_pt_2d(f_lift - 1, front_ankle)
-            pt_R_prev = get_pt_2d(f_lift - 1, back_ankle)
-            
-            if all(p is not None for p in [pt_L_t, pt_R_t, pt_L_prev, pt_R_prev]):
-                # 計算 2D 影像中的重心 (兩髖中點)
-                cog_t = (pt_L_t + pt_R_t) / 2
-                cog_prev = (pt_L_prev + pt_R_prev) / 2
-                # 計算像素位移
-                dist_px = np.linalg.norm(cog_t - cog_prev)
-                fps = get_video_fps(self.video_loader)
-                speed_px = dist_px * fps
-                speed_px = speed_px * 0.01
-                # 注意：這裡輸出的是 px/s，若有轉換係數可乘以係數
-                self.ui.centerGravityLabel.setText(f"{speed_px:.1f} m/s")
-            else:
-                self.ui.centerGravityLabel.setText("  ")
-        else:
-            self.ui.centerGravityLabel.setText("  ")
+        def speed(frame):
+            return pelvis_speed(kpts, frame, frame_interval(fps, frame_times, frame), scale.m_per_px)
 
-        # --- B. Landing Phase Metrics (跨步距離) ---
         f_land = phase_result.F_landing
-        if f_land is not None:
-            # 著地時的重心速度
-            if f_land > 0:
-                pt_L_t = get_pt_2d(f_land, 23)
-                pt_R_t = get_pt_2d(f_land, 24)
-                pt_L_prev = get_pt_2d(f_land - 1, 23)
-                pt_R_prev = get_pt_2d(f_land - 1, 24)
-                
-                if all(p is not None for p in [pt_L_t, pt_R_t, pt_L_prev, pt_R_prev]):
-                    cog_t = (pt_L_t + pt_R_t) / 2
-                    cog_prev = (pt_L_prev + pt_R_prev) / 2
-                    dist_px = np.linalg.norm(cog_t - cog_prev)
-                    fps = get_video_fps(self.video_loader)
-                    speed_px = dist_px * fps
-                    speed_px = speed_px * 0.01
-                    self.ui.centerGravityLabel2.setText(f"{speed_px:.1f} m/s")
-                else:
-                    self.ui.centerGravityLabel2.setText("  ")
-        else:
-            self.ui.centerGravityLabel2.setText("  ")
+        stride_m = stride_length(kpts.get(f_land), is_righty, scale.m_per_px) if f_land is not None else None
+        self.stride_cm = stride_m * 100 if stride_m is not None else None
+        self.ui.centerGravityLabel.setText(fmt(speed(phase_result.F_liftoff), "m/s", 2))
+        self.ui.centerGravityLabel2.setText(fmt(speed(f_land), "m/s", 2))
+        self.ui.strideDisLabel.setText(fmt(self.stride_cm, "cm", 0))
+        tip = f"比例尺：{scale.source}，{scale.m_per_px * 1000:.2f} mm/px"
+        for label in labels:
+            label.setToolTip(tip)
+        print(f"[Keyphase2D] {tip}")
 
     def display_phase_image(self, label: QtWidgets.QLabel, frame_num: int, phase_type: str):
         """
@@ -1298,12 +1265,9 @@ class Analysis2dWidget(QWidget):
                     cv2.line(draw_img, (ax1, ay1-15), (ax1, ay1+15), RED, 7)
                     cv2.line(draw_img, (ax2, ay1-15), (ax2, ay1+15), RED, 7)
 
-                    # 準備文字
-                    stride_px = np.linalg.norm(p_l_ank - p_r_ank)
-                    stride_px = stride_px * 0.45
-                    text_val = f"{stride_px:.1f} cm"
+                    # 準備文字（數值由 calculateKeyphaseMetrics 換算成公尺）
+                    text_val = fmt(getattr(self, "stride_cm", None), "cm", 0)
                     text_label = "跨步距離"
-                    self.ui.strideDisLabel.setText(f"{stride_px:.1f} cm")
                     
                     # --- 中文顯示防呆處理 ---
                     try:
@@ -1399,8 +1363,8 @@ class Analysis2dWidget(QWidget):
                         cv2.circle(draw_img, p, 8, YELLOW, -1)
                     # 計算後腿角度
                     back_knee_angle = self.calculate_angle(p1, p2, p3)
-                self.ui.forefootLabel3.setText(f"{front_knee_angle:.1f}°")
-                self.ui.backfootLabel3.setText(f"{back_knee_angle:.1f}°")
+                self.ui.forefootLabel3.setText(fmt(front_knee_angle, "°"))
+                self.ui.backfootLabel3.setText(fmt(back_knee_angle, "°"))
 
                 # ---- 新增繪製動力啟動順序標籤 ----
                 if hasattr(self, 'pose_estimater_2') and self.pose_estimater_2.person_df is not None and not self.pose_estimater_2.person_df.empty:
@@ -1655,9 +1619,7 @@ class Analysis2dWidget(QWidget):
     def calculateBatMetrics2D(self, impact_frame: int, landing_frame: int = None):
         """揮棒速度與攻擊角度，採 Blast Motion 定義：擊球瞬間甜蜜點（距棒頭 6 吋）的速度與移動方向（見 utils/bat_speed2d.py）"""
         detector = getattr(self, "phase_detector", None)
-        folder = os.path.dirname(self.video_loader.video_path) if self.video_loader.video_path else None
-        side = "right" if self.ui.batterInput.currentText() == "右打" else "left"
-        calib = load_stereo_params(folder, side) if folder else None
+        folder, calib = self._calibration()
         result = blast_metrics_2d(
             detector.bat_head_track() if detector is not None else None,
             impact_frame,
@@ -1668,11 +1630,11 @@ class Analysis2dWidget(QWidget):
         )
         if result is None:
             print(f"[BatMetrics] 擊球點 {impact_frame} 附近沒有足夠的棒頭資料")
-            self.ui.batSpeedLabel.setText("N/A")
-            self.ui.horizontalAngleEditLabel.setText("N/A")
+            self.ui.batSpeedLabel.setText(MISSING)
+            self.ui.horizontalAngleEditLabel.setText(MISSING)
             return
-        self.ui.batSpeedLabel.setText(f"{result.speed_kmh:.1f}kmh")
-        self.ui.horizontalAngleEditLabel.setText(f"{result.attack_angle_deg:.1f}°")
+        self.ui.batSpeedLabel.setText(fmt(result.speed_kmh, "km/h"))
+        self.ui.horizontalAngleEditLabel.setText(fmt(result.attack_angle_deg, "°", signed=True))
         print(f"[BatMetrics] 揮棒速度 {result.speed_kmh:.1f} km/h、攻擊角度 {result.attack_angle_deg:+.1f}°："
               f"甜蜜點 幀 {result.from_frame}→{result.to_frame}，{result.duration_s * 1000:.1f} ms（{result.timed_by}），"
               f"球棒 {result.bat_px:.0f} px，{'已' if result.undistorted else '未'}去畸變")
