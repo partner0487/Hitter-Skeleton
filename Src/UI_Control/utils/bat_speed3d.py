@@ -10,7 +10,11 @@
 - 三角化的棒長偏離整段中位數 LENGTH_TOLERANCE 以上的幀，表示有一端對錯，不採用
   （手會遮住握把，遮罩兩端的 3D 距離約 0.65～0.72 m，比實際棒長短，但同一支影片應該固定）
 - 甜蜜點 = 棒頭沿球棒方向往握把 0.1524 m，不用遮罩長度換算比例
-- 擊球瞬間：擊球點幀（缺時往前最多 MAX_GAP 幀）與它前一個有效幀之間的位移，與 2D 相同
+- 擊球瞬間：擊球點前後各 IMPACT_WINDOW_3D 幀的甜蜜點路徑長 ÷ 時間，方向（攻擊角度）取頭尾連線；
+  不足兩幀時退回擊球前最後一段（與 2D 相同）。WeiShu 21 支比較，拿掉任一幀時：
+  只用最後一段，速度變動中位數 13.8 km/h、攻擊角度 14.9°；前後各一幀為 5.2 km/h、5.6°。
+  取路徑長而不是頭尾直線距離：棒頭走弧線，跨兩幀的直線距離約短 4%。
+  不用二次擬合取端點斜率：擊球前仍在加速，外插會高估 20 km/h 以上
 - 鉛垂方向用 body_metrics.ground_up()（腳點擬合的地面法向量），沒有時用側面相機的 -Y
 """
 from dataclasses import dataclass
@@ -19,7 +23,7 @@ from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from utils.bat_speed2d import MAX_GAP, SWEET_SPOT_FROM_TIP_M
+from utils.bat_speed2d import IMPACT_WINDOW_3D, SWEET_SPOT_FROM_TIP_M, impact_frames, path_and_chord
 from utils.body_metrics import CAMERA_UP, frame_interval
 
 LENGTH_TOLERANCE = 0.25
@@ -84,24 +88,19 @@ def blast_metrics_3d(track3d: Dict[int, Tuple[np.ndarray, np.ndarray]], bat_m: f
     """資料不足（擊球點附近兩台相機沒有同時偵測到球棒）回傳 None"""
     if not track3d or f_impact is None:
         return None
-    frames = np.array(sorted(track3d))
-    near = frames[(frames <= f_impact) & (frames >= f_impact - MAX_GAP)]
-    if len(near) == 0:
+    used = impact_frames(track3d, f_impact, IMPACT_WINDOW_3D)
+    if used is None:
         return None
-    f_to = int(near[-1])
-    before = frames[(frames < f_to) & (frames >= f_to - MAX_GAP)]
-    if len(before) == 0:
-        return None
-    f_from = int(before[-1])
-
-    d = _sweet_spot(*track3d[f_to]) - _sweet_spot(*track3d[f_from])
-    duration = (f_to - f_from) * frame_interval(fps, frame_times, f_to)
-    if duration <= 0:
+    f_from, f_to = used[0], used[-1]
+    length, d = path_and_chord(np.stack([_sweet_spot(*track3d[f]) for f in used]))
+    duration = (f_to - f_from) * frame_interval(fps, frame_times, f_impact)
+    if duration <= 0 or np.linalg.norm(d) == 0:
         return None
     up = CAMERA_UP if up is None else up
-    head, grip = track3d[f_to]
+    # 垂直棒角取最接近擊球點的那一幀
+    head, grip = track3d[min(used, key=lambda f: abs(f - f_impact))]
     return BlastMetrics3D(
-        speed_kmh=float(np.linalg.norm(d)) / duration * 3.6,
+        speed_kmh=length / duration * 3.6,
         attack_angle_deg=_elevation_deg(d, up),
         vertical_bat_angle_deg=_elevation_deg(head - grip, up),
         from_frame=f_from, to_frame=f_to, duration_s=duration, bat_m=bat_m, frames_used=len(track3d),
