@@ -26,7 +26,7 @@ from utils.phase_detect3d import PhaseDetector, PhaseResult
 from utils.phase_detect2d import PhaseDetector as PhaseDetector2D
 from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
-from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
+from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_parts, clip_title
 from PyQt5 import QtGui
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
 from utils.stereo_calibration import fundamental_side_to_front, load_stereo_params
@@ -34,7 +34,7 @@ from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, key
                                 pelvis_speed, rotation_speed_peaks, separation_series, stride_length)
 from utils.bat_speed2d import read_frame_times
 from utils.bat_speed3d import bat_track_3d, blast_metrics_3d
-from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts
+from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
 
 class AnalysisBar(QWidget):
@@ -1119,6 +1119,22 @@ class Analysis3DWidget(QWidget):
         if hasattr(self.ui, 'hitterNameAddInputBtn'):
             self.ui.hitterNameAddInputBtn.clicked.connect(self.addNewHitter)
 
+    def syncSelectionToFolder(self, folder):
+        """打者選單、模式改成資料夾所屬的打者與模式（Db/<打者>/<日期>/<模式>/...），右側清單跟著更新"""
+        parts = clip_parts(folder)
+        if not parts or not hasattr(self.ui, 'hitterNameInput'):
+            return
+        index = self.ui.hitterNameInput.findText(parts[0])
+        if index >= 0 and index != self.ui.hitterNameInput.currentIndex():
+            self.ui.hitterNameInput.blockSignals(True)
+            self.ui.hitterNameInput.setCurrentIndex(index)
+            self.ui.hitterNameInput.blockSignals(False)
+        mode = next((k for k, v in self.mode_dict.items() if len(parts) > 2 and v == parts[2]), None)
+        if mode is not None:
+            self.setMode(mode)  # 會一併更新右側清單
+        else:
+            self.populateRecentVideosList()
+
     def setMode(self, mode):
         self.current_mode = mode
         if hasattr(self.ui, 'modeDisplay'):
@@ -1475,7 +1491,7 @@ class Analysis3DWidget(QWidget):
         self.model.setImageSize(self.video_loader_dual.video_size)
         # self.ui.videoNameLabel.setText(self.video_loader_dual.video_name)
         video_size = self.video_loader_dual.video_size
-        self.ui.ResolutionLabel.setText(f"(0,0) - {video_size[0]} x {video_size[1]}")
+        self.ui.ResolutionLabel.setText(clip_title(self.video_loader_dual.folder_path))
         
         if getattr(self, '_auto_process_pending', False):
             self._auto_process_pending = False
@@ -1575,6 +1591,7 @@ class Analysis3DWidget(QWidget):
         print(f"📁 Loading Folder: {folder}")
         # 依錄影路徑中的日期與畫面上選的右打／左打，使用當天或之前最新的對應校正
         self.applyStereoCalibration(load_stereo_params(folder, self.currentBatterSide()))
+        self.syncSelectionToFolder(folder)
 
         # 定義輔助函式，支援根目錄或 CF_ 子目錄 (讀取內部那包)
         def get_json_df(fname, sub_prefix="CF_"):
@@ -1901,36 +1918,9 @@ class Analysis3DWidget(QWidget):
             except Exception as e:
                 print(f"Error loading {data_json_path}: {e}")
 
-        spray_chart_path = os.path.abspath(os.path.join(folder_path, 'sprayChart.jpg')).replace('\\', '/')
-        if not os.path.exists(spray_chart_path):
-            spray_chart_path = os.path.abspath(os.path.join(os.path.dirname(folder_path), 'sprayChart.jpg')).replace('\\', '/')
+        if hasattr(self.ui, 'rapsodoLabel'):
+            show_spray_chart(self.ui.rapsodoLabel, folder_path)
 
-        if os.path.exists(spray_chart_path) and hasattr(self.ui, 'rapsodoLabel'):
-            try:
-                # 像 keyphase 一樣，用 cv2 讀取圖片，避開 QPixmap 直接讀檔的 Thread 限制
-                # cv2.imdecode 可以支援中文路徑
-                img_bgr = cv2.imdecode(np.fromfile(spray_chart_path, dtype=np.uint8), cv2.IMREAD_COLOR)
-                if img_bgr is not None:
-                    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                    h, w, ch = img_rgb.shape
-                    q_img = QtGui.QImage(img_rgb.data, w, h, ch * w, QtGui.QImage.Format_RGB888).copy()
-                    pixmap = QtGui.QPixmap.fromImage(q_img)
-                    
-                    self.ui.rapsodoLabel.setScaledContents(True) 
-                    w_label = max(self.ui.rapsodoLabel.width(), 500)
-                    h_label = max(self.ui.rapsodoLabel.height(), 500)
-                    scaled_pixmap = pixmap.scaled(w_label, h_label, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    self.ui.rapsodoLabel.setMinimumSize(150, 150)
-                    self.ui.rapsodoLabel.setPixmap(scaled_pixmap)
-                    self.ui.rapsodoLabel.setAlignment(Qt.AlignCenter)
-                    self.ui.rapsodoLabel.show()
-                else:
-                    self.ui.rapsodoLabel.clear()
-            except Exception as e:
-                print(f"Error drawing sprayChart.jpg: {e}")
-                self.ui.rapsodoLabel.clear()
-        else:
-            if hasattr(self.ui, 'rapsodoLabel'): self.ui.rapsodoLabel.clear()
 
     def get_kpts_by_frame(self, frame_num):
         """從 Dataframe 獲取指定幀的關鍵點陣列"""
@@ -2548,7 +2538,7 @@ class Analysis3DWidget(QWidget):
         self.draw_swing_trajectory(0)
         self.updateFrame(frame_num = 0)
         video_size = self.video_loader.video_size
-        self.ui.ResolutionLabel.setText(f"(0,0) - {video_size[0]} x {video_size[1]}")
+        self.ui.ResolutionLabel.setText(clip_title(self.folder))
 
     def calBackKneeAngleEditLabel(self, points_3d_centered):
         """計算並更新 UI 上的後膝角度"""

@@ -28,14 +28,14 @@ import pyqtgraph as pg
 from utils.model import Model
 from utils.phase_detect2d import PhaseDetector, PhaseResult
 from ocr import ocr_capture_1time as ocr
-from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS
+from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS, clip_title
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
 from utils.bat_speed2d import blast_metrics_2d, read_frame_times
 from utils.stereo_calibration import load_stereo_params
 from utils.body_metrics import (SideScale, frame_interval, keypoints_by_frame, pelvis_speed, side_scale_from_stereo,
                                 stride_length, undistort_keypoints)
 from utils.bat_speed2d import BAT_LENGTH_M
-from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts
+from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
 class AnalysisBar(QWidget):
     def __init__(self, parent=None):
@@ -1108,36 +1108,8 @@ class Analysis2dWidget(QWidget):
             except Exception as e:
                 print(f"Error loading {json_path}: {e}")
 
-        spray_chart_path = os.path.abspath(os.path.join(folder_path, 'sprayChart.jpg')).replace('\\', '/')
-        if not os.path.exists(spray_chart_path):
-            spray_chart_path = os.path.abspath(os.path.join(os.path.dirname(folder_path), 'sprayChart.jpg')).replace('\\', '/')
-
-        if os.path.exists(spray_chart_path) and hasattr(self.ui, 'rapsodoLabel'):
-            try:
-                # 像 keyphase 一樣，用 cv2 讀取圖片，避開 QPixmap 直接讀檔的 Thread 限制
-                # cv2.imdecode 可以支援中文路徑
-                img_bgr = cv2.imdecode(np.fromfile(spray_chart_path, dtype=np.uint8), cv2.IMREAD_COLOR)
-                if img_bgr is not None:
-                    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                    h, w, ch = img_rgb.shape
-                    q_img = QtGui.QImage(img_rgb.data, w, h, ch * w, QtGui.QImage.Format_RGB888).copy()
-                    pixmap = QtGui.QPixmap.fromImage(q_img)
-                    
-                    self.ui.rapsodoLabel.setScaledContents(True) 
-                    w_label = max(self.ui.rapsodoLabel.width(), 500)
-                    h_label = max(self.ui.rapsodoLabel.height(), 500)
-                    scaled_pixmap = pixmap.scaled(w_label, h_label, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    self.ui.rapsodoLabel.setMinimumSize(150, 150)
-                    self.ui.rapsodoLabel.setPixmap(scaled_pixmap)
-                    self.ui.rapsodoLabel.setAlignment(Qt.AlignCenter)
-                    self.ui.rapsodoLabel.show()
-                else:
-                    self.ui.rapsodoLabel.clear()
-            except Exception as e:
-                print(f"Error drawing sprayChart.jpg: {e}")
-                self.ui.rapsodoLabel.clear()
-        else:
-            if hasattr(self.ui, 'rapsodoLabel'): self.ui.rapsodoLabel.clear()
+        if hasattr(self.ui, 'rapsodoLabel'):
+            show_spray_chart(self.ui.rapsodoLabel, folder_path)
 
     def get_kpts_by_frame(self, frame_num):
         """從 Dataframe 獲取指定幀的關鍵點陣列"""
@@ -2035,7 +2007,7 @@ class Analysis2dWidget(QWidget):
         self.updateFrame(frame_num=0)
         self.model.setImageSize(self.video_loader.video_size)
         video_size = self.video_loader.video_size
-        self.ui.ResolutionLabel.setText(f"(0,0) - {video_size[0]} x {video_size[1]}")
+        self.ui.ResolutionLabel.setText(clip_title(self.video_loader.video_path))
         self.is_play = False
         self.ui.playBtn.click()
 

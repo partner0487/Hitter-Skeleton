@@ -4,7 +4,12 @@
 .ui 產生的版面是一層層的 QHBoxLayout，標題、數值、單位各自分開、寬度比例不一，
 這裡把原有元件取出重排（物件名稱不變，其他程式照常 setText），沒用到的元件（空白、單位欄）隱藏。
 """
+import os
+
+import cv2
+import numpy as np
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QLabel, QSizePolicy
 
 MISSING = "—"
@@ -119,3 +124,31 @@ def rapsodo_texts(data: dict):
     return (fmt(exit_mph * 1.60934 if exit_mph is not None else None, "km/h"),
             fmt(launch, "°"),
             fmt(dist_ft * 0.3048 if dist_ft is not None else None, "m"))
+
+
+SPRAY_BLANK_MAX = 10   # 落點圖最亮的像素不到這個值視為空白（Rapsodo 截圖失敗時存下的是全黑圖）
+NO_RAPSODO_TEXT = "無 Rapsodo 落點圖"
+
+
+def show_spray_chart(label: QLabel, folder_path: str):
+    """在 label 顯示 sprayChart.jpg（錄影資料夾或上一層）；沒有檔案或圖是全黑時顯示提示文字"""
+    img = None
+    for d in (folder_path, os.path.dirname(folder_path or "")):
+        path = os.path.join(d or "", "sprayChart.jpg")
+        if d and os.path.isfile(path):
+            img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)  # imdecode 支援中文路徑
+            break
+    label.setMinimumSize(150, 150)
+    if img is None or int(img.max()) <= SPRAY_BLANK_MAX:
+        label.clear()
+        label.setScaledContents(False)
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet("color: #888888; font-size: 16pt;")
+        label.setText(NO_RAPSODO_TEXT)
+        return
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    h, w, ch = rgb.shape
+    pixmap = QPixmap.fromImage(QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888).copy())
+    label.setStyleSheet("")
+    label.setScaledContents(True)  # 填滿格子，底部與關鍵幀圖片對齊
+    label.setPixmap(pixmap)
