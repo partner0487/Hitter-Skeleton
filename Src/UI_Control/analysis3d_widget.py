@@ -31,7 +31,7 @@ from PyQt5 import QtGui
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
 from utils.stereo_calibration import fundamental_side_to_front, load_stereo_params
 from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, keypoints_by_frame, peak_separation,
-                                pelvis_speed, separation_series, stride_length)
+                                pelvis_speed, rotation_speed_peaks, separation_series, stride_length)
 from utils.bat_speed2d import read_frame_times
 from utils.bat_speed3d import bat_track_3d, blast_metrics_3d
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts
@@ -325,6 +325,13 @@ class Analysis3DWidget(QWidget):
         self.swingTimeLabel.setToolTip("前腳著地到擊球；Blast 的 Time to Contact 從開始下揮算起，這裡以著地為起點")
         self.maxSepCaption = new_label_like(ui.hipShoulderLabel2, "最大分離角:")
         self.maxSepLabel = new_label_like(ui.hipShoulderEditLabel2)
+        # 骨盆、軀幹最大轉速（取代動力鏈 1～4 號：60 fps 下各部位峰值只差 1～2 幀，順序判斷不可靠）
+        self.pelvisRotCaption = new_label_like(ui.hipShoulderLabel2, "骨盆轉速:")
+        self.pelvisRotLabel = new_label_like(ui.hipShoulderEditLabel2)
+        self.torsoRotCaption = new_label_like(ui.hipShoulderLabel2, "軀幹轉速:")
+        self.torsoRotLabel = new_label_like(ui.hipShoulderEditLabel2)
+        for label, part in ((self.pelvisRotLabel, "骨盆（兩髖連線）"), (self.torsoRotLabel, "軀幹（兩肩連線）")):
+            label.setToolTip(f"{part}在水平面上的最大轉速，取著地前 10 幀到擊球後 2 幀之間")
         sep_tip = "肩髖分離角：正值 = 肩落後髖（蓄力），負值 = 肩已轉過髖"
         for label in (ui.hipShoulderEditLabel1, ui.hipShoulderEditLabel2, ui.hipShoulderEditLabel3, self.maxSepLabel):
             label.setToolTip(sep_tip)
@@ -332,7 +339,8 @@ class Analysis3DWidget(QWidget):
             (ui.gridLayout_6, [[(ui.centerGravity, ui.centerGravityLabel), (self.strideTimeCaption, self.strideTimeLabel)],
                                [(ui.hipShoulderLabel, ui.hipShoulderEditLabel1), (self.swingTimeCaption, self.swingTimeLabel)]]),
             (ui.gridLayout, [[(ui.centerGravity2, ui.centerGravityLabel2), (ui.strideDis, ui.strideDisLabel)],
-                             [(ui.hipShoulderLabel2, ui.hipShoulderEditLabel2), (self.maxSepCaption, self.maxSepLabel)]]),
+                             [(ui.hipShoulderLabel2, ui.hipShoulderEditLabel2), (self.maxSepCaption, self.maxSepLabel)],
+                             [(self.pelvisRotCaption, self.pelvisRotLabel), (self.torsoRotCaption, self.torsoRotLabel)]]),
             (ui.gridLayout_5, [[(ui.batSpeed, ui.batSpeedLabel), (ui.horizontalAngleLabel, ui.horizontalAngleEditLabel)],
                                [(ui.forefoot, ui.forefootLabel), (ui.backfoot, ui.backfootLabel)],
                                [(ui.hipShoulderLabel3, ui.hipShoulderEditLabel3), (ui.verticalAngleLabel, ui.verticalAngleEditLabel)]]),
@@ -692,200 +700,6 @@ class Analysis3DWidget(QWidget):
         
         points_3d_centered = points_3d - self.origin
         return points_3d_centered
-
-    def _get_velocity_peaks_3d(self, impact_frame=None):
-        """
-        計算 3D 動力鏈 (頸部、骨盆、膝蓋、手腕) 的速度峰值幀號。
-        回傳: dict, 例如 {"neck": 120, "hip": 125, "knee": 130, "wrist": 140}
-        """
-        if not hasattr(self, 'person_3d_df') or self.person_3d_df is None or self.person_3d_df.empty:
-            self.person_3d_df = self.triangularPersonPointsAllFrames()
-            
-        if self.person_3d_df is None or self.person_3d_df.empty:
-            return {}
-            
-        import numpy as np
-        try:
-            from scipy.signal import savgol_filter
-        except ImportError:
-            return {}
-
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        fps = get_video_fps(self.video_loader)
-        
-        # 定義關節索引 (與 2D 保持一致)
-        neck_idx = 18 
-        if is_righty:
-            hip_idx, knee_idx, wrist_idx = 19, 13, 9
-        else:
-            hip_idx, knee_idx, wrist_idx = 19, 14, 10
-            
-        all_rows = []
-        for _, row in self.person_3d_df.iterrows():
-            kpts = row.get("keypoints_3d")
-            if kpts is not None and len(kpts) > max(neck_idx, hip_idx, knee_idx, wrist_idx):
-                all_rows.append((row.get("frame_number", 0), np.array(kpts)))
-                
-        if len(all_rows) < 4:
-            return {}
-
-        frames = []
-        v_neck, v_hip, v_knee, v_wrist = [], [], [], []
-        
-        dt = 1.0 / fps
-        for i in range(2, len(all_rows) - 1):
-            frame_num = all_rows[i][0]
-            prev_kpts = all_rows[i-2][1]
-            next_kpts = all_rows[i+1][1]
-            
-            frames.append(frame_num)
-            # 3D 歐氏距離 / (3 * dt)
-            denom = 3.0 * dt
-            v_neck.append(np.linalg.norm(next_kpts[neck_idx] - prev_kpts[neck_idx]) / denom)
-            v_hip.append(np.linalg.norm(next_kpts[hip_idx] - prev_kpts[hip_idx]) / denom)
-            v_knee.append(np.linalg.norm(next_kpts[knee_idx] - prev_kpts[knee_idx]) / denom)
-            v_wrist.append(np.linalg.norm(next_kpts[wrist_idx] - prev_kpts[wrist_idx]) / denom)
-            
-        # 平滑
-        window_size = 11
-        if len(frames) < window_size:
-            window_size = len(frames) if len(frames) % 2 != 0 else len(frames) - 1
-        
-        if window_size > 3:
-            v_neck = np.maximum(savgol_filter(v_neck, window_size, 3), 0)
-            v_hip = np.maximum(savgol_filter(v_hip, window_size, 3), 0)
-            v_knee = np.maximum(savgol_filter(v_knee, window_size, 3), 0)
-            v_wrist = np.maximum(savgol_filter(v_wrist, window_size, 3), 0)
-            
-        # 找峰值 (排除頭尾 5 幀)
-        peaks = {}
-        for name, v_arr in [("neck", v_neck), ("hip", v_hip), ("knee", v_knee), ("wrist", v_wrist)]:
-            if len(v_arr) > 10:
-                if impact_frame is not None:
-                    # 限制在 <= impact_frame + 2 幀以內
-                    valid_indices = [idx for idx, fn in enumerate(frames) if fn <= impact_frame + 2]
-                    if len(valid_indices) > 5:
-                        search_indices = [idx for idx in valid_indices if idx >= 5 and idx < len(v_arr) - 5]
-                        if len(search_indices) > 0:
-                            v_slice = [v_arr[idx] for idx in search_indices]
-                            max_local_idx = np.argmax(v_slice)
-                            max_idx = search_indices[max_local_idx]
-                        else:
-                            max_idx = np.argmax(v_arr[5:-5]) + 5
-                    else:
-                        max_idx = np.argmax(v_arr[5:-5]) + 5
-                else:
-                    v_slice = v_arr[5:-5]
-                    max_idx = np.argmax(v_slice) + 5
-                peaks[name] = int(frames[max_idx])
-            else:
-                peaks[name] = None
-        return peaks
-
-    def showJointVelocityChart3D(self):
-        """顯示指定打擊者的 3D 關節速度變化圖表 (公尺/秒)"""
-        # 取得 3D 數據
-        if not hasattr(self, 'person_3d_df') or self.person_3d_df is None or self.person_3d_df.empty:
-            self.person_3d_df = self.triangularPersonPointsAllFrames()
-            
-        if self.person_3d_df is None or self.person_3d_df.empty:
-            print("無 3D 骨架資料，無法繪製 3D 關節速度圖")
-            return
-            
-        import pyqtgraph as pg
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout
-        import numpy as np
-        
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        fps = get_video_fps(self.video_loader)
-        
-        # 定義關節索引 (與 2D 保持一致)
-        neck_idx = 18 
-        if is_righty:
-            hip_idx, knee_idx, wrist_idx = 19, 13, 9
-            title_prefix = "右打者 (3D)"
-            side_name = "左"
-        else:
-            hip_idx, knee_idx, wrist_idx = 19, 14, 10
-            title_prefix = "左打者 (3D)"
-            side_name = "右"
-            
-        all_rows = []
-        for _, row in self.person_3d_df.iterrows():
-            kpts = row.get("keypoints_3d")
-            if kpts is not None and len(kpts) > max(neck_idx, hip_idx, knee_idx, wrist_idx):
-                all_rows.append((row.get("frame_number", 0), np.array(kpts)))
-                
-        if len(all_rows) < 4:
-            print("3D 速度計算失敗：有效幀不足")
-            return
-
-        frames = []
-        v_neck, v_hip, v_knee, v_wrist = [], [], [], []
-        
-        dt = 1.0 / fps
-        for i in range(2, len(all_rows) - 1):
-            frame_num = all_rows[i][0]
-            prev_kpts = all_rows[i-2][1]
-            next_kpts = all_rows[i+1][1]
-            
-            frames.append(frame_num)
-            # 3D 歐氏距離 / (3 * dt) -> m/s (假設單位是米)
-            denom = 3.0 * dt
-            v_neck.append(np.linalg.norm(next_kpts[neck_idx] - prev_kpts[neck_idx]) / denom)
-            v_hip.append(np.linalg.norm(next_kpts[hip_idx] - prev_kpts[hip_idx]) / denom)
-            v_knee.append(np.linalg.norm(next_kpts[knee_idx] - prev_kpts[knee_idx]) / denom)
-            v_wrist.append(np.linalg.norm(next_kpts[wrist_idx] - prev_kpts[wrist_idx]) / denom)
-            
-        # 套用 Savitzky-Golay 平滑濾波
-        try:
-            from scipy.signal import savgol_filter
-            window_size = 11
-            if len(frames) < window_size:
-                window_size = len(frames) if len(frames) % 2 != 0 else len(frames) - 1
-            if window_size > 3:
-                v_neck = np.maximum(savgol_filter(v_neck, window_size, 3), 0)
-                v_hip = np.maximum(savgol_filter(v_hip, window_size, 3), 0)
-                v_knee = np.maximum(savgol_filter(v_knee, window_size, 3), 0)
-                v_wrist = np.maximum(savgol_filter(v_wrist, window_size, 3), 0)
-        except Exception as e:
-            print(f"3D 速度平滑濾波失敗: {e}")
-            
-        # 建立彈出視窗
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"{title_prefix} 3D 關節速度圖表 (m/s)")
-        dialog.resize(800, 500)
-        
-        layout = QVBoxLayout(dialog)
-        plot_widget = pg.PlotWidget(title=f"{title_prefix} 各關節 3D 瞬間速度")
-        layout.addWidget(plot_widget)
-        
-        plot_widget.addLegend()
-        plot_widget.setLabel('bottom', 'Frame Number')
-        plot_widget.setLabel('left', 'Velocity (m/s)')
-        plot_widget.showGrid(x=True, y=True)
-        
-        plot_widget.plot(frames, v_neck, pen=pg.mkPen('m', width=2), name="頸部 (Neck)")
-        plot_widget.plot(frames, v_hip, pen=pg.mkPen('g', width=2), name="臀部 (Pelvis)")
-        plot_widget.plot(frames, v_knee, pen=pg.mkPen('c', width=2), name=f"{side_name}膝 (Knee)")
-        plot_widget.plot(frames, v_wrist, pen=pg.mkPen('y', width=2), name=f"{side_name}腕 (Wrist)")
-        
-        # 標示最大值
-        impact_frame = getattr(self, 'phase_result', None) and self.phase_result.F_impact
-        peaks = self._get_velocity_peaks_3d(impact_frame)
-        for name, color, v_arr in [("neck", 'm', v_neck), ("hip", 'g', v_hip), ("knee", 'c', v_knee), ("wrist", 'y', v_wrist)]:
-            f_num = peaks.get(name)
-            if f_num is not None and f_num in frames:
-                idx = frames.index(f_num)
-                val = v_arr[idx]
-                scatter = pg.ScatterPlotItem([f_num], [val], size=12, pen=pg.mkPen(None), brush=pg.mkBrush(color))
-                plot_widget.addItem(scatter)
-                text = pg.TextItem(f"{val:.2f}", color=color, anchor=(0.5, 1.5))
-                text.setPos(f_num, val)
-                plot_widget.addItem(text)
-        
-        self._velocity_chart_dialog_3d = dialog
-        dialog.show()
 
     def triangularPersonPointsAllFrames(self) -> pd.DataFrame:
         """
@@ -1925,7 +1739,6 @@ class Analysis3DWidget(QWidget):
             # self.bat_speed_plot.graph.show()  # 獨立視窗暫時關閉（仍用最高速覆寫 Impact）
             
         # [NEW] 顯示 3D 關節速度圖表（獨立視窗暫時關閉）
-        # self.showJointVelocityChart3D()
 
     def detectPhases(self):
         # 這裡直接做階段偵測
@@ -2042,21 +1855,6 @@ class Analysis3DWidget(QWidget):
             if f2 is not None: markers.append((f2/total, 'b'))
             if f3 is not None: markers.append((f3/total, 'c'))
 
-            # 動力啟動順序 (1,2,3,4)
-            try:
-                peaks = self._get_velocity_peaks_3d(f3)
-                valid_peaks = {k: v for k, v in peaks.items() if v is not None}
-                sorted_peaks = sorted(valid_peaks.items(), key=lambda item: item[1])
-                rank_dict = {name: rank + 1 for rank, (name, frame) in enumerate(sorted_peaks)}
-                
-                for name, f_num in valid_peaks.items():
-                    if total > 1:
-                        ratio = f_num / total
-                        rank_text = str(rank_dict[name])
-                        markers.append((ratio, rank_text))
-            except Exception as e:
-                print("Slider peak marker set error (3D):", e)
-
             if hasattr(self.analysis_bar, 'set_markers'):
                 self.analysis_bar.set_markers(markers)
 
@@ -2149,7 +1947,7 @@ class Analysis3DWidget(QWidget):
         ui = self.ui
         value_labels = (ui.centerGravityLabel, ui.centerGravityLabel2, ui.strideDisLabel,
                         ui.hipShoulderEditLabel1, ui.hipShoulderEditLabel2, ui.hipShoulderEditLabel3,
-                        self.maxSepLabel, ui.forefootLabel, ui.backfootLabel)
+                        self.maxSepLabel, ui.forefootLabel, ui.backfootLabel, self.pelvisRotLabel, self.torsoRotLabel)
         for label in value_labels:
             label.setText(MISSING)
         self.stride_cm = None
@@ -2170,6 +1968,16 @@ class Analysis3DWidget(QWidget):
             self.maxSepLabel.setText(fmt(peak[0], "°", signed=True))
             self.maxSepLabel.setToolTip(f"離地到擊球之間最大的肩髖分離角，出現在第 {peak[1]} 幀")
             print(f"[Keyphase3D] 最大肩髖分離角 {peak[0]:+.1f}°（第 {peak[1]} 幀）")
+
+        # 骨盆、軀幹最大轉速
+        fps = get_video_fps(self.video_loader)
+        frame_times = read_frame_times(self.folder) or read_frame_times(os.path.dirname(self.folder or ""))
+        rotation = rotation_speed_peaks(kpts, f_land, f_impact, up, frame_interval(fps, frame_times, f_impact))
+        for label, key in ((self.pelvisRotLabel, "pelvis"), (self.torsoRotLabel, "torso")):
+            if key in rotation:
+                label.setText(fmt(rotation[key][0], "°/s", 0))
+        if rotation:
+            print("[Keyphase3D] 最大轉速 " + "、".join(f"{k} {v:.0f}°/s（第 {f} 幀）" for k, (v, f) in rotation.items()))
 
         # 擊球時前、後膝角度：髖-膝-腳跟夾角
         k = kpts.get(f_impact)
@@ -2387,84 +2195,6 @@ class Analysis3DWidget(QWidget):
                     # 計算後腿角度
                     back_knee_angle = self.calculate_angle(p1, p2, p3)
 
-                # ---- 新增繪製動力啟動順序標籤 (1, 2, 3, 4) ----
-                try:
-                    # 擷取 1,2,3,4 的發生順序 (3D 速度峰值)
-                    impact_frame = getattr(self, 'phase_result', None) and self.phase_result.F_impact
-                    peaks = self._get_velocity_peaks_3d(impact_frame)
-                    valid_peaks = {k: v for k, v in peaks.items() if v is not None}
-                    # 依照出現的 frame_number 升冪排序
-                    sorted_peaks = sorted(valid_peaks.items(), key=lambda item: item[1])
-                    
-                    # rank_dict: 例如 {"knee": 1, "hip": 2, "neck": 3, "wrist": 4}
-                    rank_dict = {name: rank + 1 for rank, (name, frame) in enumerate(sorted_peaks)}
-                    
-                    # 準備關節的坐標
-                    joint_coords = {}
-                    neck_idx = 18
-                    if is_righty:
-                        hip_idx, knee_idx, wrist_idx = 19, 13, 9
-                        offset_x_val = -180 # 向後拉 (左方)
-                    else:
-                        hip_idx, knee_idx, wrist_idx = 19, 14, 10
-                        offset_x_val = 180 # 向後拉 (右方)
-                        
-                    if len(kpts) > max(neck_idx, hip_idx, knee_idx, wrist_idx):
-                        joint_coords["neck"] = kpts[neck_idx][:2]
-                        joint_coords["hip"] = kpts[hip_idx][:2]
-                        joint_coords["knee"] = kpts[knee_idx][:2]
-                        joint_coords["wrist"] = kpts[wrist_idx][:2]
-                    else:
-                        # fallback
-                        joint_coords["neck"] = kpts[6][:2] if is_righty else kpts[5][:2]
-                        joint_coords["hip"] = kpts[12][:2] if is_righty else kpts[11][:2]
-                        joint_coords["knee"] = kpts[14][:2] if is_righty else kpts[13][:2]
-                        joint_coords["wrist"] = kpts[10][:2] if is_righty else kpts[9][:2]
-                            
-                    # 圖標目錄
-                    icon_dir = str(ICON_DIR)
-                    icon_size = 90 # 設定 icon 統一大小
-                    
-                    def overlay_transparent(background, overlay, x, y):
-                        bg_h, bg_w, bg_c = background.shape
-                        ov_h, ov_w, ov_c = overlay.shape
-                        if x >= bg_w or y >= bg_h or x + ov_w <= 0 or y + ov_h <= 0: return
-                        x_start, y_start = max(x, 0), max(y, 0)
-                        x_end, y_end = min(x + ov_w, bg_w), min(y + ov_h, bg_h)
-                        ov_y_start, ov_x_start = max(0, -y), max(0, -x)
-                        ov_y_end = ov_y_start + (y_end - y_start)
-                        ov_x_end = ov_x_start + (x_end - x_start)
-                        alpha = overlay[ov_y_start:ov_y_end, ov_x_start:ov_x_end, 3] / 255.0
-                        alpha_inv = 1.0 - alpha
-                        for c in range(3):
-                            background[y_start:y_end, x_start:x_end, c] = (
-                                alpha * overlay[ov_y_start:ov_y_end, ov_x_start:ov_x_end, c] +
-                                alpha_inv * background[y_start:y_end, x_start:x_end, c]
-                            )
-
-                    for part, rank in rank_dict.items():
-                        icon_path = os.path.join(icon_dir, f"number{rank}.png")
-                        if os.path.exists(icon_path):
-                            icon_img = cv2.imread(icon_path, cv2.IMREAD_UNCHANGED)
-                            if icon_img is not None:
-                                icon_img = cv2.resize(icon_img, (icon_size, icon_size))
-                                cx, cy = int(joint_coords[part][0]), int(joint_coords[part][1])
-                                
-                                # 動態位移，避免完全疊在一起或擋住身體
-                                # 使用者要求 1, 4 畫在右邊
-                                if rank in [1, 4]:
-                                    offset_x = 180
-                                else:
-                                    offset_x = offset_x_val
-                                    
-                                offset_y = -20
-                                    
-                                cv2.line(draw_img, (cx, cy), (cx + offset_x, cy + offset_y), (255, 255, 255), 4)
-                                px = int(cx + offset_x - icon_size // 2)
-                                py = int(cy + offset_y - icon_size // 2)
-                                overlay_transparent(draw_img, icon_img, px, py)
-                except Exception as e:
-                    print("Sequence marker draw error:", e)
         self._set_label_pixmap_with_crop(label, draw_img)
         # # 3. 轉為 QPixmap 並顯示
         # img_rgb = cv2.cvtColor(draw_img, cv2.COLOR_BGR2RGB)
