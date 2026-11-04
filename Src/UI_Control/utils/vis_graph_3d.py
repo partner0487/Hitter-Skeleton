@@ -2,7 +2,7 @@ import pyqtgraph as pg
 import numpy as np
 import pandas as pd
 
-from utils.body_metrics import separation_series
+from utils.body_metrics import ground_up, separation_series
 
 class HeelCurvePlotter:
     """
@@ -518,7 +518,7 @@ class HipShoulderAngleGraph:
         if "keypoints_3d" in person_df:
             kpts = {int(f): np.asarray(k, dtype=np.float64) for f, k in zip(person_df["frame_number"], person_df["keypoints_3d"])}
             series = separation_series(kpts, getattr(phase_result, "F_landing", None),
-                                       getattr(phase_result, "F_impact", None), is_righty)
+                                       getattr(phase_result, "F_impact", None), is_righty, ground_up(kpts))
             self.sep_vals = np.array([series.get(int(f), np.nan) for f in self.frames], dtype=np.float32)
         else:
             self.sep_vals = ((self.hip_vals - self.shd_vals + 180) % 360 - 180).astype(np.float32)

@@ -3,8 +3,10 @@
 關節為 Halpe26：肩 5/6、髖 11/12、腳跟 24/25（左/右）。
 - 重心：兩髖中點。速度用前後各 SPEED_HALF_WINDOW 幀的位移（中央差分）；
   單幀差分在 60 fps 下骨架抖動 1 px 就差 0.2 m/s
-- 跨步距離：著地時前後腳跟的水平距離（2D 取畫面水平方向、3D 取 XZ 平面）
-- 肩髖分離角：髖連線與肩連線在水平面（側面相機座標的 XZ，假設相機水平）上的夾角，
+- 跨步距離：著地時前後腳跟的水平距離（2D 取畫面水平方向、3D 取水平面）
+- 3D 的水平面：3D 座標是側面相機座標（Y 向下），相機不一定水平（WeiShu 2026-10-29 約往下俯 3～10°），
+  所以用整段腳跟、腳趾落地時的點擬合地面，法向量當鉛垂方向（ground_up）；擬合不合理時退回相機的 XZ 平面
+- 肩髖分離角：髖連線與肩連線在水平面上的夾角，
   正值 = 髖比肩轉得多（肩落後髖、蓄力），負值 = 肩已轉過髖。
   轉動方向取著地 → 擊球後髖的轉動方向。側面遮擋時三角化的髖寬、肩寬會縮短、連線方向不可信：
   繞垂直軸轉動不會改變水平投影的寬度，所以寬度小於整段中位數 WIDTH_MIN_RATIO 倍的幀不採用，
@@ -31,7 +33,12 @@ WIDTH_MIN_RATIO = 0.7
 SEPARATION_SMOOTH = 5
 ROTATION_MIN_DEG = 20.0      # 著地 → 擊球後髖轉不到這麼多時，轉動方向改用打擊方向判斷
 ROTATION_LOOKAHEAD = 10      # 轉動方向看到擊球後幾幀
-HORIZONTAL_3D = (0, 2)       # 側面相機座標 X 右、Y 下、Z 深度
+FOOT_POINTS = list(range(20, 26))  # 腳趾 20～23、腳跟 24～25
+FOOT_LOW_PERCENTILE = 60     # 每個腳點取最低的 40% 幀，當作踩在地上
+GROUND_MAX_TILT_DEG = 20.0   # 地面法向量與相機 -Y 的夾角超過這麼多視為擬合失敗
+GROUND_MIN_SPREAD = 0.12     # 腳點在地面上兩個方向的分布比（第二／第一奇異值），太小表示點幾乎排成一線（WeiShu T座 H04 為 0.20）
+GROUND_MAX_RESIDUAL_M = 0.03
+CAMERA_UP = np.array([0.0, -1.0, 0.0])  # 側面相機座標 X 右、Y 下、Z 深度
 
 
 def front_back_heels(is_righty: bool) -> Tuple[int, int]:
@@ -84,12 +91,48 @@ def pelvis_speed(kpts: Dict[int, np.ndarray], frame: Optional[int], frame_dt: fl
     return float(np.linalg.norm(d)) * scale / ((f1 - f0) * frame_dt)
 
 
-def stride_length(k: Optional[np.ndarray], is_righty: bool, scale: float = 1.0, axes=(0,)) -> Optional[float]:
-    """前後腳跟的水平距離 × scale；2D 預設只取畫面 x（投手方向），3D 傳 HORIZONTAL_3D"""
+def ground_up(kpts3d: Dict[int, np.ndarray]) -> Optional[np.ndarray]:
+    """由腳點擬合地面，回傳朝上的單位法向量；擬合不合理時回傳 None（呼叫端用相機座標）"""
+    if len(kpts3d) < 10:
+        return None
+    feet = np.stack([kpts3d[f][FOOT_POINTS] for f in sorted(kpts3d)])  # (F, 6, 3)
+    up = CAMERA_UP
+    for _ in range(2):  # 先用相機 Y 挑踩地的點，再用第一次擬合的地面重挑一次
+        height = feet @ up
+        low = [feet[height[:, j] <= np.percentile(height[:, j], 100 - FOOT_LOW_PERCENTILE), j]
+               for j in range(feet.shape[1])]
+        pts = np.concatenate(low)
+        pts = pts[np.isfinite(pts).all(axis=1)]
+        if len(pts) < 10:
+            return None
+        center = pts.mean(axis=0)
+        _, sv, vt = np.linalg.svd(pts - center, full_matrices=False)
+        normal = vt[2] if vt[2] @ CAMERA_UP > 0 else -vt[2]
+        tilt = np.degrees(np.arccos(np.clip(normal @ CAMERA_UP, -1, 1)))
+        residual = float(np.median(np.abs((pts - center) @ normal)))
+        if tilt > GROUND_MAX_TILT_DEG or sv[1] < GROUND_MIN_SPREAD * sv[0] or residual > GROUND_MAX_RESIDUAL_M:
+            return None
+        up = normal
+    return up
+
+
+def horizontal_basis(up: Optional[np.ndarray] = None) -> np.ndarray:
+    """(3, 2)：水平面上兩個正交單位向量；第一個是相機 X 投影到水平面，up 為 None 時就是相機的 X、Z"""
+    up = CAMERA_UP if up is None else up / np.linalg.norm(up)
+    e1 = np.array([1.0, 0.0, 0.0]) - up[0] * up
+    e1 /= np.linalg.norm(e1)
+    return np.stack([e1, np.cross(up, e1)], axis=1)
+
+
+def stride_length(k: Optional[np.ndarray], is_righty: bool, scale: float = 1.0, axes=(0,),
+                  basis: Optional[np.ndarray] = None) -> Optional[float]:
+    """前後腳跟的水平距離 × scale；2D 預設只取畫面 x（投手方向），3D 傳 horizontal_basis()"""
     if k is None:
         return None
     front, back = front_back_heels(is_righty)
-    return float(np.linalg.norm((k[front] - k[back])[list(axes)])) * scale
+    d = k[front] - k[back]
+    d = d @ basis if basis is not None else d[list(axes)]
+    return float(np.linalg.norm(d)) * scale
 
 
 def _wrap(deg):
@@ -97,14 +140,15 @@ def _wrap(deg):
 
 
 def separation_series(kpts3d: Dict[int, np.ndarray], f_landing: Optional[int], f_impact: Optional[int],
-                      is_righty: bool) -> Dict[int, float]:
-    """每幀的肩髖分離角（度，正 = 肩落後髖）；遮擋而不可信的幀不列入"""
+                      is_righty: bool, up: Optional[np.ndarray] = None) -> Dict[int, float]:
+    """每幀的肩髖分離角（度，正 = 肩落後髖）；遮擋而不可信的幀不列入。up 為 ground_up() 的鉛垂方向"""
     frames = np.array(sorted(kpts3d))
     if len(frames) < SEPARATION_SMOOTH:
         return {}
     pts = np.stack([kpts3d[f] for f in frames])
-    v_hip = (pts[:, R_HIP] - pts[:, L_HIP])[:, list(HORIZONTAL_3D)]
-    v_shd = (pts[:, R_SHOULDER] - pts[:, L_SHOULDER])[:, list(HORIZONTAL_3D)]
+    basis = horizontal_basis(up)
+    v_hip = (pts[:, R_HIP] - pts[:, L_HIP]) @ basis
+    v_shd = (pts[:, R_SHOULDER] - pts[:, L_SHOULDER]) @ basis
     hip_w, shd_w = np.linalg.norm(v_hip, axis=1), np.linalg.norm(v_shd, axis=1)
     reliable = (hip_w >= WIDTH_MIN_RATIO * np.median(hip_w)) & (shd_w >= WIDTH_MIN_RATIO * np.median(shd_w))
 
