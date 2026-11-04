@@ -2,6 +2,8 @@ import pyqtgraph as pg
 import numpy as np
 import pandas as pd
 
+from utils.body_metrics import separation_series
+
 class HeelCurvePlotter:
     """
     地板基準：
@@ -481,16 +483,9 @@ class HipShoulderAngleGraph:
                 hip_deg = 0.0
                 shd_deg = 0.0
             else:
-                # 使用 arctan 求出嚴格落在 -90 ~ 90 度的旋轉角度 (完全符合圖片公式)
-                if abs(v_hip_proj[0]) < 1e-6:
-                    hip_deg = 90.0 * np.sign(v_hip_proj[1])
-                else:
-                    hip_deg = np.degrees(np.arctan(v_hip_proj[1] / v_hip_proj[0]))
-                    
-                if abs(v_shd_proj[0]) < 1e-6:
-                    shd_deg = 90.0 * np.sign(v_shd_proj[1])
-                else:
-                    shd_deg = np.degrees(np.arctan(v_shd_proj[1] / v_shd_proj[0]))
+                # atan2 保留連線方向（-180～180），之後整段 unwrap 成連續角度，轉過 ±90 度時不會跳 180
+                hip_deg = np.degrees(np.arctan2(v_hip_proj[1], v_hip_proj[0]))
+                shd_deg = np.degrees(np.arctan2(v_shd_proj[1], v_shd_proj[0]))
 
             # 2) 前腳膝蓋的彎曲角度：Hip-Knee-Heel 夾角
             # 右打留左膝，左打留右膝
@@ -516,13 +511,17 @@ class HipShoulderAngleGraph:
             knee_angles.append(knee_deg)
 
         self.frames = np.array(frames, dtype=np.int32)
-        # 取消 unwrap，讓數值嚴格保持在 -90 ~ 90 度之間
-        self.hip_vals = np.array(hip_angles, dtype=np.float32)
-        self.shd_vals = np.array(shd_angles, dtype=np.float32)
-        
-        # 真正分離角：肩部角度減去髖部角度，並強制映射到 -90 ~ 90 度區間
-        sep = self.shd_vals - self.hip_vals
-        self.sep_vals = (sep + 90) % 180 - 90
+        self.hip_vals = np.degrees(np.unwrap(np.radians(hip_angles))).astype(np.float32)
+        self.shd_vals = np.degrees(np.unwrap(np.radians(shd_angles))).astype(np.float32)
+
+        # 分離角與 3D 頁數值相同（utils/body_metrics.py）：正 = 肩落後髖，遮擋不可信的幀為 NaN（曲線斷開）
+        if "keypoints_3d" in person_df:
+            kpts = {int(f): np.asarray(k, dtype=np.float64) for f, k in zip(person_df["frame_number"], person_df["keypoints_3d"])}
+            series = separation_series(kpts, getattr(phase_result, "F_landing", None),
+                                       getattr(phase_result, "F_impact", None), is_righty)
+            self.sep_vals = np.array([series.get(int(f), np.nan) for f in self.frames], dtype=np.float32)
+        else:
+            self.sep_vals = ((self.hip_vals - self.shd_vals + 180) % 360 - 180).astype(np.float32)
         self.knee_vals = np.array(knee_angles, dtype=np.float32)
 
         if len(self.frames) == 0:
@@ -532,8 +531,8 @@ class HipShoulderAngleGraph:
         self.graph.setXRange(0, max(frame_total, 1))
 
         # Y 軸：依角度自動抓範圍，多留一點空間
-        vmin = min(float(self.hip_vals.min()), float(self.shd_vals.min()), float(self.knee_vals.min()), float(self.sep_vals.min()))
-        vmax = max(float(self.hip_vals.max()), float(self.shd_vals.max()), float(self.knee_vals.max()), float(self.sep_vals.max()))
+        all_vals = np.concatenate([self.hip_vals, self.shd_vals, self.knee_vals, self.sep_vals])
+        vmin, vmax = float(np.nanmin(all_vals)), float(np.nanmax(all_vals))
         if abs(vmax - vmin) < 1e-6:
             pad = 5.0
         else:
@@ -555,7 +554,7 @@ class HipShoulderAngleGraph:
             pen=pg.mkPen('#32CD32', width=2), name="Front Knee Angle"
         )
         self.sep_curve = self.graph.plot(
-            self.frames, self.sep_vals,
+            self.frames, self.sep_vals, connect="finite",
             pen=pg.mkPen('#9370DB', width=2), name="Separation Angle (\u0394\u03B8)"
         )
         
