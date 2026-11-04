@@ -10,7 +10,7 @@ from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import QWidget, QFileDialog, QGraphicsView, QGraphicsScene, QSizePolicy, QMessageBox
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QEvent, QRect
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QPen, QBrush, QStandardItemModel, QStandardItem
-from utils.selector import PersonSelector, KptSelector
+from utils.selector import PersonSelector
 from utils.analyze import PoseAnalyzer, BatAnalyzer
 from utils.vis_graph_3d import HipShoulderAngleGraph, BatKinematicsGraph
 from cv_utils.cv_control_3d import VideoLoader 
@@ -28,6 +28,7 @@ from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
 from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_parts, clip_title
 from PyQt5 import QtGui
+from ui_utils.analysis_bar import AnalysisBar
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
 from utils.stereo_calibration import fundamental_side_to_front, load_stereo_params
 from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, keypoints_by_frame, peak_separation,
@@ -38,117 +39,6 @@ from ui_utils.swing_charts import SwingChartsDialog
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
 
-class AnalysisBar(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        # 1. 增加高度：設為 80，確保交錯標籤 (a, b, c) 完整顯示
-        self.setAttribute(QtCore.Qt.WA_StyledBackground, True) # 支援樣式
-        # self.setFixedHeight(80)
-        # 確保滑鼠穿透(如果你不需要拖拽功能)
-        # self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
-        
-        self.segments = []
-
-    def set_segments(self, segments):
-        self.segments = segments
-        self.update()
-
-    def set_time_of_ratio(self, time_of_ratio):
-        """進度條比例 → 秒數（實際擷取時間），各段秒數用它相減"""
-        self.time_of_ratio = time_of_ratio
-        self.update()
-
-    def _x(self, ratio, w):
-        """比例 → x 像素，與 QSlider 把手中心相同：把手中心從 handle_px/2 走到 w - handle_px/2，
-        直接用 ratio * w 時越靠兩端越偏，把手停在擊球幀也壓不到 c 標記"""
-        handle = getattr(self, "handle_px", 0)
-        return int(round(handle / 2 + ratio * (w - handle)))
-
-    def set_markers(self, markers):
-        """設定在進度條上標註的點位: [(ratio, 'text'), ...]"""
-        self.markers = markers
-        self.update()
-
-    def paintEvent(self, event):
-        if not hasattr(self, 'segments') or not self.segments:
-            return
-
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.Antialiasing)
-            w = self.width()
-            h = self.height() 
-            
-            # --- 垂直佈局調整 ---
-            bar_h = 12
-            # 色塊位置：置中偏下一點點，騰出上方給大字體
-            bar_y = int(h * 0.52) - (bar_h // 2)  
-            total_duration = 1.5
-
-            # 1. 繪製色塊 (底層)
-            for start_ratio, end_ratio, color in self.segments:
-                x = self._x(start_ratio, w)
-                seg_w = self._x(end_ratio, w) - x
-                if seg_w <= 0: continue
-                painter.fillRect(QRect(x, bar_y, seg_w, bar_h), QColor(color))
-
-            # 2. 繪製標記 (1,2,3 與 a,b,c) - 緊貼邊緣
-            if hasattr(self, 'markers') and self.markers:
-                # 紀錄每個 mx 座標上已繪製的動力鏈標記數量
-                from collections import defaultdict
-                mx_counts = defaultdict(int)
-                
-                for ratio, marker_text in self.markers:
-                    mx = self._x(max(0.0, min(ratio, 1.0)), w)
-                    marker_str = str(marker_text)
-                    
-                    if marker_str in ['1', '2', '3', '4']:
-                        radius = 12
-                        count = mx_counts[mx]
-                        mx_counts[mx] += 1
-                        cy = bar_y - radius - count * 24 # 全部都放 bar 上面，但高度遞增錯開
-                        bg = {'1': QColor(220, 0, 0), '2': QColor(0, 170, 230), '3': QColor(0, 180, 0), '4': QColor(128, 0, 128)}.get(marker_str, Qt.gray)
-                        font_size = 12
-                    else:
-                        radius = 12
-                        cy = bar_y + bar_h + radius # 貼齊色塊下緣
-                        bg = {'a': QColor(255, 50, 50), 'b': QColor(255, 150, 0), 'c': QColor(0, 200, 255)}.get(marker_str, Qt.gray)
-                        font_size = 12
-
-                    rect = QRect(mx - radius, cy - radius, radius * 2, radius * 2)
-                    painter.setBrush(QBrush(bg))
-                    painter.setPen(QPen(Qt.black, 1))
-                    painter.drawEllipse(rect)
-                    
-                    painter.setFont(QFont("Arial", font_size, QFont.Bold))
-                    painter.setPen(QPen(Qt.white))
-                    painter.drawText(rect, Qt.AlignCenter, marker_str)
-
-            # 3. 畫秒數文字 (字體變大、向下靠近 Bar)
-            for start_ratio, end_ratio, color in self.segments:
-                x = self._x(start_ratio, w)
-                seg_w = self._x(end_ratio, w) - x
-                if seg_w < 15: continue
-                
-                time_of = getattr(self, "time_of_ratio", None) or (lambda r: r * total_duration)
-                seconds = time_of(end_ratio) - time_of(start_ratio)
-                t_color = QColor(color)
-                t_color.setAlpha(255)
-                painter.setPen(t_color)
-                
-                # --- 修改點：字體放大至 14 ---
-                painter.setFont(QFont("Arial", 14, QFont.Bold))
-                
-                # --- 修改點：位置向下沈，貼近 Bar ---
-                text_h = 24 # 增加文字框高度容納大字體
-                text_y = bar_y - text_h - 4 # 距離色塊頂部僅 4px，會與標記圓圈部分重疊
-                
-                painter.drawText(QRect(x, text_y, seg_w, text_h), Qt.AlignCenter, f"{seconds:.2f}s")
-                
-        finally:
-            painter.end()
 
 class Analysis3DWidget(QWidget):
     """
@@ -420,7 +310,6 @@ class Analysis3DWidget(QWidget):
         self.ground_initialized = False
         self.P1 = None
         self.P2 = None
-        print("Loading Parameters Success!")
         self.computeEssenMatrix()
         # 校正沒換時保留使用者調整過的視角（例如載入同一天的下一個資料夾）
         source = params.source if params else None
@@ -480,8 +369,6 @@ class Analysis3DWidget(QWidget):
         """Use normalized projection matrices for triangulation."""
         self.P1 = np.hstack([np.eye(3), np.zeros((3,1))])   # normalized domain # side camera
         self.P2 = np.hstack([self.R, self.t])               # normalized domain # front camera
-        print("Compute Essential Matrix Successs!")
-        print("Projection matrices (normalized) ready.")
 
 
     # ======================================================
@@ -875,7 +762,6 @@ class Analysis3DWidget(QWidget):
         coord_max = float(pts.max())
         coord_range = coord_max - coord_min if coord_max > coord_min else 1.0
 
-        print(f"[GROUND] coord_range = {coord_range:.4f}")
 
         l_toe = pts[l_big_toe_idx]
         r_toe = pts[r_big_toe_idx]
@@ -886,11 +772,9 @@ class Analysis3DWidget(QWidget):
         # 地板高度 = 腳趾平均高度 + 一點點向下偏移
         ground_y = float(toe_y + offset_scale * coord_range)
 
-        print(f"[GROUND] toe_y = {toe_y:.4f}, ground_y = {ground_y:.4f}")
 
         # 地板邊長大小，也用座標範圍決定
         size = coord_range * size_scale
-        print(f"[GROUND] size = {size:.4f}")
 
         ground_pts = np.array(
             [
@@ -1307,7 +1191,6 @@ class Analysis3DWidget(QWidget):
     
     def toggleShowSkeleton(self, state:int):
         """Toggle skeleton detection and FPS control."""
-        print("skeleton state: "+ str(state))
         # if state == 2:
         #     self.ui.showSkeletonCheckBox.setCheckState(0)
         #     QMessageBox.warning(self, "無法選擇人", "請選擇顯示人體骨架!")
@@ -1477,10 +1360,8 @@ class Analysis3DWidget(QWidget):
                 self.bat_analyzer_2.appendHeadTail(frame_num)
 
         if frame_num == self.video_loader_dual.total_frames - 1:
-            print("DEBUG: Emission condition met, emitting processFinished")
             self.video_loader_dual.saveDualVideo(False)
             self.video_loader_dual.saveDualVideo(True)
-            print(f"DEBUG: Emitting signal with folder: {self.video_loader_dual.output_folder}")
             self.processFinished.emit(self.video_loader_dual.output_folder)
             self.is_dual = False
 
@@ -1563,7 +1444,7 @@ class Analysis3DWidget(QWidget):
                     elif current_rate > 0:
                         # 當速度小於 1，成比例加上額外的延遲 (0.5倍加約33ms，0.25倍加約99ms)
                         delay = int((1.0 / current_rate - 1.0) * 33) + 1
-            except:
+            except Exception:
                 pass
                 
             cv2.waitKey(max(1, delay))
@@ -1637,7 +1518,7 @@ class Analysis3DWidget(QWidget):
             
             if os.path.exists(p):
                 try: return pd.read_json(p, orient='records')
-                except: pass
+                except Exception: pass
             return pd.DataFrame()
 
         # 1. 讀取所有資料
@@ -1828,7 +1709,6 @@ class Analysis3DWidget(QWidget):
         if self.phase_result is None:
             self.phase_result = PhaseResult()
             
-        print(f"[DEBUG] Original PhaseResult: F_liftoff={self.phase_result.F_liftoff}, F_landing={self.phase_result.F_landing}, F_impact={self.phase_result.F_impact}")
 
         if self.phase_result.F_liftoff is None and self.phase_result.F_landing is None and self.phase_result.F_impact is None:
             # self.phase_result.F_liftoff = min(15, max(0, total_frames - 3))
@@ -1842,12 +1722,11 @@ class Analysis3DWidget(QWidget):
                     if self.phase_result.F_impact is not None and fallback_landing >= self.phase_result.F_impact:
                         fallback_landing = self.phase_result.F_impact - 1
                     self.phase_result.F_landing = min(fallback_landing, max(0, total_frames - 1))
-                    print(f"[DEBUG] Landing missing. Fallback to Liftoff + 10: {self.phase_result.F_landing}")
+                    print(f"[Analysis3D] Landing missing. Fallback to Liftoff + 10: {self.phase_result.F_landing}")
                 elif self.phase_result.F_impact is not None:
                     self.phase_result.F_landing = max(0, self.phase_result.F_impact - 5)
-                    print(f"[DEBUG] Landing & Liftoff missing. Fallback Landing to Impact - 5: {self.phase_result.F_landing}")
+                    print(f"[Analysis3D] Landing & Liftoff missing. Fallback Landing to Impact - 5: {self.phase_result.F_landing}")
         
-        print(f"[DEBUG] Final PhaseResult: {self.phase_result}")
         # ---------------------------------
         
         self.setPhaseResult(self.phase_result)
@@ -2124,7 +2003,7 @@ class Analysis3DWidget(QWidget):
                                 font_val = ImageFont.truetype(path, 65) # 數值大字體
                                 font_lbl = ImageFont.truetype(path, 45) # 標籤中字體
                                 break
-                            except:
+                            except Exception:
                                 continue
                         
                         if font_val is None:
@@ -2333,51 +2212,6 @@ class Analysis3DWidget(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)  
 
-    def eventFilter1(self, source, event):
-        # 監聽 Slider 的 Resize 事件
-        if source == self.ui.frameSlider and event.type() == QEvent.Resize:
-            slider_w = source.width()
-            slider_h = source.height()
-            
-            # 建立樣式選項來獲取 Slider 的內部佈局細節 (Groove)
-            opt = QtWidgets.QStyleOptionSlider()
-            source.initStyleOption(opt)
-            groove_rect = source.style().subControlRect(
-                QtWidgets.QStyle.CC_Slider, opt, QtWidgets.QStyle.SC_SliderGroove, source
-            )
-            
-            # 調整 AnalysisBar 的位置與大小
-            # 讓其高度足夠大 (80) 並居中對齊滑軌
-            bar_h = self.analysis_bar.height() # 已經在 __init__ 設為 80
-            
-            # 定位在 Slider 的中心，並與滑軌 (Groove) 的寬度對齊
-            self.analysis_bar.setGeometry(
-                groove_rect.left(), 
-                groove_rect.center().y() - bar_h // 2, 
-                groove_rect.width(), 
-                bar_h
-            )
-        
-            # 重要：強制提到最上層，防止被 UI 樣式覆蓋
-            self.analysis_bar.raise_()
-        # if source == self.ui.frameSlider and event.type() == QEvent.Resize:
-        #     # 獲取 Slider 的寬度
-        #     slider_w = source.width()
-        #     slider_h = source.height()
-            
-        #     # 通常 QSlider 的軌道位在中間，我們將 AnalysisBar 定位在稍微偏下的地方
-        #     # 這裡的座標 (0, 18) 需要根據你的 Slider 樣式微調
-        #     self.analysis_bar.setGeometry(0, int(slider_h/2) + 2, slider_w, 8)
-            
-        if event.type() == QEvent.Resize:
-            if hasattr(self.ui, 'keyphaseLabel1') and source == self.ui.keyphaseLabel1:
-                self.update_keyphase_label_image(self.ui.keyphaseLabel1)
-            elif hasattr(self.ui, 'keyphaseLabel2') and source == self.ui.keyphaseLabel2:
-                self.update_keyphase_label_image(self.ui.keyphaseLabel2)
-            elif hasattr(self.ui, 'keyphaseLabel3') and source == self.ui.keyphaseLabel3:
-                self.update_keyphase_label_image(self.ui.keyphaseLabel3)
-        return super().eventFilter(source, event)
-
 
     def eventFilter(self, source, event):
         if source == self.ui.frameSlider and event.type() == QEvent.Resize:
@@ -2497,23 +2331,6 @@ class Analysis3DWidget(QWidget):
         
         return data
 
-    def getBatDf(self, DataFrame: pd.DataFrame, frame_num=None):
-        """
-        離線版，對應側面相機的 bat 資料。
-        介面盡量模仿 PoseEstimater.getPersonDf：
-        - frame_num: 指定幀，如果為 None 則回傳整個 DataFrame
-        """
-        if DataFrame is None or DataFrame.empty:
-            return pd.DataFrame()
-        condition = pd.Series([True] * len(DataFrame))  # 初始條件設為全為 True
-        if frame_num is not None:
-            condition &= (DataFrame['frame_number'] == frame_num)
-        data = DataFrame.loc[condition].copy()
-
-        if data.empty:
-            return None
-        
-        return data
 
     def getBathtDf(self, DataFrame: pd.DataFrame, frame_num=None):
         """
@@ -2567,10 +2384,6 @@ class Analysis3DWidget(QWidget):
         self.draw_ground_once(pts3d)
         self.draw_3d_pose(pts3d)
         self.draw_hip_shoulder_angle(pts3d)
-        # self.calBackKneeAngleEditLabel(pts3d)   # 計算並更新後膝角度
-        # self.calFrontKneeAngleEditLabel(pts3d)  # 計算並更新前膝角度 (建議新增)
-        # self.calKPHipShoulderEditLabel(pts3d)   # 更新關鍵幀區域的肩髖分離角
-        # self.draw_ball_3d(ball_3d)
         self.draw_bat_3d(tail_3d, head_3d)
         # 2. 畫出隨時間生長的軌跡 (淺色)
         self.draw_swing_trajectory(0)
@@ -2578,25 +2391,6 @@ class Analysis3DWidget(QWidget):
         video_size = self.video_loader.video_size
         self.ui.ResolutionLabel.setText(clip_title(self.folder))
 
-    def calBackKneeAngleEditLabel(self, points_3d_centered):
-        """計算並更新 UI 上的後膝角度"""
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        # 索引分配：右打後腳為右(12, 14, 25)；左打後腳為左(11, 13, 24)
-        b_hip, b_knee, b_ankle = (12, 14, 25) if is_righty else (11, 13, 24)
-        
-        angle = self._calculate_3d_joint_angle(points_3d_centered, b_hip, b_knee, b_ankle)
-        if angle is not None:
-            self.ui.kpbackKneeAngleLabel.setText(f"{angle:.1f}")
-
-    def calFrontKneeAngleEditLabel(self, points_3d_centered):
-        """計算並更新 UI 上的前膝角度"""
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        # 索引分配：右打前腳為左(11, 13, 24)；左打前腳為右(12, 14, 25)
-        f_hip, f_knee, f_ankle = (11, 13, 24) if is_righty else (12, 14, 25)
-        
-        angle = self._calculate_3d_joint_angle(points_3d_centered, f_hip, f_knee, f_ankle)
-        if angle is not None:
-            self.ui.kpfrontKneeAngleLabel.setText(f"{angle:.1f}")
 
     def _calculate_3d_joint_angle(self, pts, idx1, idx2, idx3):
         """通用 3D 夾角計算工具"""
@@ -2605,7 +2399,7 @@ class Analysis3DWidget(QWidget):
             v2 = pts[idx3] - pts[idx2]
             cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
             return np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
-        except:
+        except Exception:
             return None
 
     def setFrameTimes(self, folder):
@@ -2752,7 +2546,7 @@ class Analysis3DWidget(QWidget):
                     elif current_rate > 0:
                         # 當速度小於 1，成比例加上額外的延遲 (0.5倍加約33ms，0.25倍加約99ms)
                         delay = int((1.0 / current_rate - 1.0) * 33) + 1
-            except:
+            except Exception:
                 pass
                 
             cv2.waitKey(max(1, delay))
@@ -2763,9 +2557,6 @@ class Analysis3DWidget(QWidget):
             self.frame = 0
         self.updateFrame(self.frame)
 
-    def setFrame(self, f):
-        self.frame = f
-        self.updateFrame(f)
 
     # ======================================================
     # reset

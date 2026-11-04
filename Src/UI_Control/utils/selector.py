@@ -30,7 +30,6 @@ class PersonSelector:
 
     
     def get_select_id(self):
-        print(self.selected_id)
         return self.selected_id
     
     def reset(self):
@@ -61,7 +60,6 @@ class KptSelector:
         self.selected_id = selected_id
     
     def get_select_id(self):
-        print(self.selected_id)
         return self.selected_id
 
     def reset(self):
