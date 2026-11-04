@@ -163,7 +163,6 @@ class FlirCameraSystem(SingleCameraSystem):
         int:
             - int: Height of the camera system.
         """
-        # print(self.full_config)
         return int(self.full_config['acquisition_settings']['fps'])
     def release(self) -> bool:
         """

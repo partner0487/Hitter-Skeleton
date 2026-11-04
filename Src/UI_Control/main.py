@@ -12,7 +12,6 @@ if conda_prefix:
 
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
-# from dual_video_onlyProcess_widget import PoseHitVideoTabControlDualInit
 from ui.main_window import Ui_MainWindow
 # Import the Mode Select UI
 from utils.model import Model
@@ -33,8 +32,6 @@ class Main(QMainWindow):
         self.init_tabs()
 
     def init_tabs(self):
-        # self.hitterRecordWidget = HitterRecordWidget(self.model)
-        # self.ui.Two_d_Tab.addTab(self.hitterRecordWidget, "Record")
         self.analysis2dWidget = Analysis2dWidget(self.model)
         self.ui.Two_d_Tab.addTab(self.analysis2dWidget, "2D")
         self.analysis3dWidget = Analysis3DWidget(self.model)
