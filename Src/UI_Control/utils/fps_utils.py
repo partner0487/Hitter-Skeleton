@@ -43,4 +43,4 @@ def frame_seconds(frame: int, total_frames: int, frame_times: dict = None) -> fl
         span = frame_times[total_frames - 1] - start
         if span > 0:
             return (frame_times[frame] - start) / span * NOMINAL_DURATION_S
-    return frame / (total_frames - 1) * NOMINAL_DURATION_S if total_frames > 1 else 0.0
+    return frame / (total_frames - 1) * NOMINAL_DURATION_S if total_frames and total_frames > 1 else 0.0
