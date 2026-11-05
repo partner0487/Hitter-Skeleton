@@ -24,7 +24,7 @@ import pyqtgraph as pg
 from utils.model import Model
 from utils.phase_detect2d import PhaseDetector, PhaseResult
 from ocr import ocr_capture_1time as ocr
-from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS, clip_title
+from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS, clip_title, clip_videos
 from ui_utils.analysis_bar import AnalysisBar
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
 from utils.bat_speed2d import read_frame_times
@@ -396,15 +396,10 @@ class Analysis2dWidget(QWidget):
         if hasattr(self.ui, 'attackDisLabel'): self.ui.attackDisLabel.setText("")
         if hasattr(self.ui, 'rapsodoLabel'): self.ui.rapsodoLabel.clear()
 
-        import glob
-        mp4_files = sorted(glob.glob(os.path.join(folder_path, '*.mp4')))
-        
-        if len(mp4_files) < 2: return
+        # 正面 CF、側面 CS；只有側面影片（純側面錄影）時正面為 None
+        self.video_path, self.video_path2 = clip_videos(folder_path)
+        if not self.video_path2: return
 
-        # 固定配對：第一個為 Front(CF), 第二個為 Side(CS)
-        self.video_path = mp4_files[0]
-        self.video_path2 = mp4_files[1]
-        
         # 進入與自動錄影後相同的處理流程
         self.is_process = self.is_video = self.is_dual = True
         self.is_processed_json = True
@@ -540,7 +535,7 @@ class Analysis2dWidget(QWidget):
             self.ui.hitballNum.setText(f"球數: {self.hitBallNum:02d}")
 
     def get_selected_camera(self):
-        if self.ui.sideCamera.isChecked():
+        if self.ui.sideCamera.isChecked() or self.camera.video_thread.camera1 is None:
             return self.camera.video_thread.camera2 # 側面
         else:
             self.ui.frontCamera.setChecked(True)
@@ -579,9 +574,22 @@ class Analysis2dWidget(QWidget):
             self.trigger_cooldown = 0
             self.ball_was_in_roi = False
             self.is_video = False
-            frame_width, frame_height, fps = self.camera.toggle_camera(True)
+            # 用哪幾台相機由相機設定決定；側面沒接上時無法錄影，正面沒接上改成只錄側面
+            try:
+                frame_width, frame_height, fps = self.camera.toggle_camera(True)
+            except Exception as e:
+                self.camera.close_camera()
+                self.is_video = True
+                self.ui.cameraCheckBox.blockSignals(True)
+                self.ui.cameraCheckBox.setCheckState(0)
+                self.ui.cameraCheckBox.blockSignals(False)
+                QMessageBox.warning(self, "無法開啟相機", str(e))
+                return
+            if self.camera.notice:
+                QMessageBox.information(self, "只錄側面", self.camera.notice)
             self.model.setImageSize((frame_width, frame_height))
-            self.ui.ResolutionLabel.setText(f"(0, 0) - ({frame_width} x {frame_height}), FPS: {fps}")
+            mode = "　［純側面 2D］" if self.camera.side_only else ""
+            self.ui.ResolutionLabel.setText(f"(0, 0) - ({frame_width} x {frame_height}), FPS: {fps}{mode}")
             self.timer.start(1)
             self.videoSilder(visible=False)
             self.updateCameraSliders()
@@ -639,23 +647,21 @@ class Analysis2dWidget(QWidget):
         os.makedirs(output_dir, exist_ok=True)
         
         # Increment ball count and update UI
-        video_filename = os.path.join(output_dir, f'CF_{ball_folder}.mp4')
+        # 只開側面相機（純側面 2D）時正面畫面為 None，只寫 CS_ 影片
+        frame1, frame2 = full_video[0]
+        video_filename = os.path.join(output_dir, f'CF_{ball_folder}.mp4') if frame1 is not None else None
         video_filename_2 = os.path.join(output_dir, f'CS_{ball_folder}.mp4')
         self.video_path = video_filename
         self.video_path2 = video_filename_2
-        frame1, frame2 = full_video[0]
-        h1, w1 = frame1.shape[:2]
-        h2, w2 = frame2.shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out1 = cv2.VideoWriter(video_filename, fourcc, fps, (w1, h1))
-        out2 = cv2.VideoWriter(video_filename_2, fourcc, fps, (w2, h2))
-        
-        for f1, f2 in full_video:
-            out1.write(f1)
-            out2.write(f2)
-
-        out1.release()
-        out2.release()
+        for index, path in ((0, video_filename), (1, video_filename_2)):
+            if path is None:
+                continue
+            h, w = full_video[0][index].shape[:2]
+            out = cv2.VideoWriter(path, fourcc, fps, (w, h))
+            for frames in full_video:
+                out.write(frames[index])
+            out.release()
         # 每幀實際擷取時間：掉幀時 mp4 的固定 fps 不準，分析應以此為準
         if recorder.frame_times:
             t0 = recorder.frame_times[0]
@@ -664,7 +670,7 @@ class Analysis2dWidget(QWidget):
                 for i, t in enumerate(recorder.frame_times):
                     f.write(f"{i},{t - t0:.6f}\n")
 
-        print(f"Videos saved: {video_filename}, {video_filename_2}")
+        print(f"Videos saved: {video_filename or '（純側面，沒有正面影片）'}, {video_filename_2}")
 
         # --- 即時模式下也儲存側面 JSON 資料 (即使是空的) ---
         try:
@@ -731,7 +737,7 @@ class Analysis2dWidget(QWidget):
         current_time = now.strftime("%H%M%S")
         current_time_hhmm = now.strftime("%H%M")
         try:
-            fps = int(self.camera.video_thread.camera1.get_fps())
+            fps = int(self.camera.video_thread.camera2.get_fps())
         except Exception:
             fps = 180
 
@@ -740,9 +746,10 @@ class Analysis2dWidget(QWidget):
         ball_folder = f"{hitter_name}_H{self.hitBallNum:02d}"
         output_dir = os.path.join(DB_DIR, hitter_name, current_date, current_mode_zh, ball_folder)
         os.makedirs(output_dir, exist_ok=True)
-        video_filename = os.path.join(output_dir, f'CF_{ball_folder}.mp4')
+        # 只開側面相機（純側面 2D）時不寫正面影片
+        video_filename = None if self.camera.side_only else os.path.join(output_dir, f'CF_{ball_folder}.mp4')
         video_filename_2 = os.path.join(output_dir, f'CS_{ball_folder}.mp4')
-        
+
         # 紀錄已錄製影片路徑供後續自動載入分析
         self.video_path = video_filename  
         self.video_path2 = video_filename_2
@@ -804,8 +811,10 @@ class Analysis2dWidget(QWidget):
                 self.handleVideoEnd()
 
         else:   
-            if not self.camera.frame_buffer.empty() and not self.camera.frame_buffer_2.empty():
-                frame = self.camera.frame_buffer.get().copy()
+            # 只開側面相機時正面緩衝一直是空的
+            needs_front = not self.camera.side_only
+            if not self.camera.frame_buffer_2.empty() and not (needs_front and self.camera.frame_buffer.empty()):
+                frame = self.camera.frame_buffer.get().copy() if needs_front else None
                 frame_2 = self.camera.frame_buffer_2.get().copy()
                 if self.is_hitting:
                     self.hitterAnaylze(frame_2)
@@ -942,9 +951,8 @@ class Analysis2dWidget(QWidget):
         self.display_phase_image(self.ui.keyphaseLabel3, phase_result.F_impact, 'impact')
 
         # [NEW] 在 Keyphase 計算完成後，載入 Rapsodo 數據
-        if hasattr(self, 'video_loader') and self.video_loader and hasattr(self.video_loader, 'video_path'):
-            folder_path = os.path.dirname(self.video_loader.video_path)
-            self._loadRapsodoData(folder_path)
+        if hasattr(self, 'video_loader') and self.video_loader and self.clipPath():
+            self._loadRapsodoData(os.path.dirname(self.clipPath()))
 
     def _loadRapsodoData(self, folder_path: str):
         """讀取 Rapsodo 資料 (data.json 與 sprayChart.jpg) 並更新 UI"""
@@ -986,7 +994,7 @@ class Analysis2dWidget(QWidget):
 
     def _calibration(self):
         """(資料夾, 側面相機校正)；校正依錄影日期與打擊方向挑選，找不到時為 None"""
-        folder = os.path.dirname(self.video_loader.video_path) if self.video_loader.video_path else None
+        folder = os.path.dirname(self.clipPath()) if self.clipPath() else None
         side = "right" if self.ui.batterInput.currentText() == "右打" else "left"
         return folder, (load_stereo_params(folder, side) if folder else None)
 
@@ -994,7 +1002,7 @@ class Analysis2dWidget(QWidget):
         """側面畫面的公尺換算：有正面骨架時用校正三角化的打者深度，否則用棒長（utils/metrics2d.py）"""
         detector = getattr(self, "phase_detector", None)
         return side_scale(folder, calib, detector.bat_head_track() if detector is not None else None, impact_frame,
-                          get_video_fps(self.video_loader), bat_for_clip(self.video_loader.video_path))
+                          get_video_fps(self.video_loader), bat_for_clip(self.clipPath()))
 
     def calculateKeyphaseMetrics(self, phase_result: PhaseResult):
         """重心速度（離地、著地）與跨步距離（著地）：側面 2D 關鍵點換算成公尺（utils/body_metrics.py）"""
@@ -1277,7 +1285,7 @@ class Analysis2dWidget(QWidget):
         """揮棒速度與攻擊角度，採 Blast Motion 定義：擊球瞬間甜蜜點（距棒頭 6 吋）的速度與移動方向（見 utils/bat_speed2d.py）"""
         detector = getattr(self, "phase_detector", None)
         folder, calib = self._calibration()
-        bat = bat_for_clip(self.video_loader.video_path)   # 畫面上的球棒像素長度 = 棒長，換算成公尺
+        bat = bat_for_clip(self.clipPath())   # 畫面上的球棒像素長度 = 棒長，換算成公尺
         result = bat_metrics_2d(detector.bat_head_track() if detector is not None else None, impact_frame,
                                 get_video_fps(self.video_loader), read_frame_times(folder), calib, bat)
         if result is None:
@@ -1365,8 +1373,8 @@ class Analysis2dWidget(QWidget):
             print("播放結束，回到監控模式...")
             
             # 儲存 JSON (如果是首次處理)
-            if not getattr(self, 'is_processed_json', False) and self.is_video and hasattr(self.video_loader, 'video_path') and self.video_loader.video_path:
-                folder_path = os.path.dirname(self.video_loader.video_path)
+            if not getattr(self, 'is_processed_json', False) and self.is_video and self.clipPath():
+                folder_path = os.path.dirname(self.clipPath())
                 try:
                     # 改為檢查側面相機資料 (分析 2D 主要是使用 side view)
                     if not self.pose_estimater_2.person_df.empty:
@@ -1560,11 +1568,10 @@ class Analysis2dWidget(QWidget):
         if self.is_video and frame_num is not None:
             frame= self.video_loader.getVideoImage(frame_num)
             frame_2 = self.video_loader.getVideoImage2(frame_num)
-            if frame is None or frame_2 is None:
-                return
-        elif frame is None or frame_2 is None:
+        # 純側面（沒有正面影片或只開側面相機）時 frame 為 None，正面區顯示說明
+        if frame_2 is None:
             return
-        drawed_img = self.image_drawer.drawInfo(frame, frame_num, self.pose_estimater.kpt_buffer)
+        drawed_img = self.image_drawer.drawInfo(frame, frame_num, self.pose_estimater.kpt_buffer) if frame is not None else None
         drawed_img_2 = self.image_drawer_2.drawInfo(frame_2, frame_num, self.pose_estimater_2.kpt_buffer)
         
         # --- Draw ROI on Side View ---
@@ -1585,7 +1592,10 @@ class Analysis2dWidget(QWidget):
                     cv2.rectangle(drawed_img_2, (rect.x(), rect.y()), (rect.x() + rect.width(), rect.y() + rect.height()), (0, 165, 255), 2, cv2.LINE_AA)
                     cv2.putText(drawed_img_2, "Drawing ROI...", (rect.x(), rect.y() - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
 
-        self.showImage(drawed_img, self.view_scene, self.ui.FrameView) # 正面
+        if drawed_img is not None:
+            self.showImage(drawed_img, self.view_scene, self.ui.FrameView) # 正面
+        else:
+            self.showNoFrontView()
         self.showImage(drawed_img_2, self.view_scene2, self.ui.FrameView_2) # 側面
         # Update the enlarged dialog if open
         if self.enlarged_dialog is not None and self.enlarged_dialog.isVisible():
@@ -1600,11 +1610,11 @@ class Analysis2dWidget(QWidget):
     def resetRecordTimer(self):
         video_path = getattr(self, 'video_path', None)
         video_path2 = getattr(self, 'video_path2', None)
-        if video_path:
-            print(f"影片已存檔: {video_path}")
+        if video_path or video_path2:
+            print(f"影片已存檔: {video_path or video_path2}")
             # [NEW] OCR 觸發：手動與自動錄影皆會執行此處
             try:
-                output_dir = os.path.dirname(video_path)
+                output_dir = os.path.dirname(video_path or video_path2)
                 print(f"啟動 OCR 辨識 (Rapsodo)... 路徑: {output_dir}")
                 ocr.run_ocr_and_save(output_dir, camera_index=0)
             except Exception as e:
@@ -1631,8 +1641,8 @@ class Analysis2dWidget(QWidget):
             return
         if hasattr(self.ui, 'fileNameLabel'):
             # 使用 os.path.basename 只取得檔案名稱，去除長長的路徑
-            name1 = os.path.basename(self.video_loader.video_name)
-            if name1.startswith("CF_"):
+            name1 = os.path.basename(self.video_loader.video_name or self.video_loader.video_name2)
+            if name1.startswith(("CF_", "CS_")):
                 name1 = name1[3:]
             self.ui.fileNameLabel.setText(f"{name1}")
         # 影片讀取完成後更新 UI 元素
@@ -1642,12 +1652,12 @@ class Analysis2dWidget(QWidget):
     def updateVideoInfo(self):
         """更新與影片相關的資訊顯示在 UI 上。"""
         self.reset()
-        self.setFrameTimes(os.path.dirname(self.video_loader.video_path) if self.video_loader.video_path else None)
+        self.setFrameTimes(os.path.dirname(self.clipPath()) if self.clipPath() else None)
         self.initFrameSlider()
 
         # 自動從 JSON 載入先前的骨架分析
-        if getattr(self, 'is_processed_json', False) and hasattr(self.video_loader, 'video_path') and self.video_loader.video_path:
-            folder_path = os.path.dirname(self.video_loader.video_path)
+        if getattr(self, 'is_processed_json', False) and self.clipPath():
+            folder_path = os.path.dirname(self.clipPath())
             from cv_utils.cv_control_dual import DualJsonLoader
             loader = DualJsonLoader(folder_path)
             data = loader.load()
@@ -1673,12 +1683,13 @@ class Analysis2dWidget(QWidget):
         self.toggleShowSkeleton(2)
         frame = self.video_loader.getVideoImage(0)
         frame_2 = self.video_loader.getVideoImage2(0)
-        if frame is not None and frame_2 is not None:
+        if frame_2 is not None:
             _, _, _, _,_= self.pose_estimater_2.detectKpt(frame_2, 0, is_video=True)
         self.updateFrame(frame_num=0)
         self.model.setImageSize(self.video_loader.video_size)
         video_size = self.video_loader.video_size
-        self.ui.ResolutionLabel.setText(clip_title(self.video_loader.video_path))
+        title = clip_title(self.clipPath())
+        self.ui.ResolutionLabel.setText(title if self.video_loader.video_path else f"{title}（純側面 2D）")
         self.is_play = False
         self.ui.playBtn.click()
 
@@ -1739,6 +1750,21 @@ class Analysis2dWidget(QWidget):
         if self.enlarged_dialog is not None:
             self.enlarged_dialog.close()
             self.enlarged_dialog = None
+
+    def clipPath(self):
+        """目前影片的路徑（推錄影資料夾用）：有正面用正面，純側面錄影用側面"""
+        loader = getattr(self, "video_loader", None)
+        return (loader.video_path or loader.video_path2) if loader is not None else None
+
+    def showNoFrontView(self):
+        """正面區：沒有正面畫面（只接側面相機或錄影沒有正面影片）時顯示說明"""
+        self.view_scene.clear()
+        text = self.view_scene.addText("未使用正面相機\n（純側面 2D）")
+        text.setDefaultTextColor(QColor("gray"))
+        text.setFont(QFont(self.font().family(), 16))
+        self.ui.FrameView.setScene(self.view_scene)
+        self.ui.FrameView.resetTransform()
+        self.ui.FrameView.setAlignment(Qt.AlignCenter)
 
     def showImage(self, image: np.ndarray, scene: QGraphicsScene, GraphicsView: QGraphicsView):
         """Display an image in the QGraphicsView."""

@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import QGraphicsScene
 from utils.vis_image_dual import ImageDrawer
 from cv_utils.cv_thread_dual import VideoCaptureThread, VideoWriterThread, VideoToImagesThread
 from utils.paths import RECORD_DIR
+from utils.camera_roles import resolve_cameras
 from PyQt5.QtWidgets import *
 import EasyPySpin
 import cv2
@@ -89,6 +90,7 @@ class Camera:
         self.video_writer1 = None
         self.video_writer2 = None
         self.video_thread = None
+        self.notice = ""   # 開相機時的提示（例如找不到正面相機、改成只錄側面）
         self.frame_size=None
         self.continuous_recorder = ContinuousRecorder(pre_roll_frames=50, post_roll_frames=40)
 
@@ -103,12 +105,19 @@ class Camera:
 
     def get_stream_fps(self) -> float:
         """buffer_frame 實際收到的名目 fps（相機 fps ÷ 抽幀間隔）"""
-        return self.video_thread.camera1.get_fps() / VideoCaptureThread.EMIT_EVERY
-    
+        return self.video_thread.camera2.get_fps() / VideoCaptureThread.EMIT_EVERY
+
+    @property
+    def side_only(self) -> bool:
+        """只開了側面相機（沒接正面或相機設定選了不使用），錄影只寫 CS_ 影片"""
+        return self.video_thread is not None and self.video_thread.side_only
+
     def open_camera(self):
-        # 開啟相機，並設置回調來處理每一幀
+        """開啟相機，並設置回調來處理每一幀。用哪幾台由相機設定決定（utils/camera_roles.py）；
+        側面相機沒接上時丟 RuntimeError；正面沒接上改成只開側面，原因放在 self.notice"""
         self.frame_count = 0
-        self.video_thread = VideoCaptureThread(camera_index=self.camera_idx)
+        front_sn, side_sn, self.notice = resolve_cameras()
+        self.video_thread = VideoCaptureThread(front_sn=front_sn, side_sn=side_sn)
         self.video_thread.frame_ready.connect(self.buffer_frame)
         self.video_thread.start_capture()
         self.is_opened = True
@@ -122,19 +131,16 @@ class Camera:
         self.is_opened = False
         self.frame_buffer = queue.Queue(maxsize=self.FRAME_BUFFER_SIZE)
         self.frame_buffer_2 = queue.Queue(maxsize=self.FRAME_BUFFER_SIZE)
-        if self.video_writer1 is not None:
-            self.video_writer1.release()
-            self.video_writer1 = None
-            self.video_writer2.release()
-            self.video_writer2 = None
+        self.stop_recording()
 
     def toggle_camera(self, is_checked:bool):
-        # 根據checkbox狀態切換相機
+        # 根據checkbox狀態切換相機；畫面大小與 fps 以側面相機為準（純側面錄影沒有正面）
         if is_checked:
             self.open_camera()
-            frame_width = int(self.video_thread.camera1.get_width())
-            frame_height = int(self.video_thread.camera1.get_height())
-            fps = int(self.video_thread.camera1.get_fps())
+            camera = self.video_thread.camera2
+            frame_width = int(camera.get_width())
+            frame_height = int(camera.get_height())
+            fps = int(camera.get_fps())
             self.frame_size=(frame_width,frame_height)
             return (frame_width, frame_height, fps)
         else:
@@ -142,8 +148,8 @@ class Camera:
             self.frame_size=None
             return (0, 0, 0)
 
-    def buffer_frame(self, frame:np.ndarray, frame2:np.ndarray, grab_time:float):
-        # 接收每一幀並進行處理
+    def buffer_frame(self, frame, frame2:np.ndarray, grab_time:float):
+        # 接收每一幀並進行處理；只開側面相機時 frame（正面）為 None
         self.frame_count += 1
         
         # 更新 ContinuousRecorder
@@ -151,34 +157,38 @@ class Camera:
             self.continuous_recorder.add_frame(frame, frame2, grab_time)
             
         if self.is_opened and self.frame_count % self.fps_control ==0:
-            self._put_latest(self.frame_buffer, frame)
+            if frame is not None:
+                self._put_latest(self.frame_buffer, frame)
             self._put_latest(self.frame_buffer_2, frame2)
 
-        if self.video_writer1 is not None and self.video_writer1.is_writing:
-            self.video_writer1.write_frame(frame)
-            self.video_writer2.write_frame(frame2)
+        for writer, image in ((self.video_writer1, frame), (self.video_writer2, frame2)):
+            if writer is not None and writer.is_writing and image is not None:
+                writer.write_frame(image)
 
-    def start_recording(self, filename: str, filename2:str):
-        # 開始錄製影片
+    def start_recording(self, filename, filename2:str):
+        # 開始錄製影片；filename（正面）為 None 時只錄側面
         if self.video_thread is None:
             return
-        frame_width = int(self.video_thread.camera1.get_width())
-        frame_height = int(self.video_thread.camera1.get_height())
+        camera = self.video_thread.camera2
+        frame_width = int(camera.get_width())
+        frame_height = int(camera.get_height())
         fps = self.get_stream_fps()
         self.video_path = filename
         self.video_path2 = filename2
-        self.video_writer1 = VideoWriterThread(filename, frame_width, frame_height, fps=fps)
+        self.video_writer1 = VideoWriterThread(filename, frame_width, frame_height, fps=fps) if filename else None
         self.video_writer2 = VideoWriterThread(filename2, frame_width, frame_height, fps=fps)
-        self.video_writer1.start_writing()
-        self.video_writer2.start_writing()
+        for writer in (self.video_writer1, self.video_writer2):
+            if writer is not None:
+                writer.start_writing()
 
     def stop_recording(self):
-        # 停止錄製影片
-        if self.video_writer1 is not None and self.video_writer2 is not None:
-            self.video_writer1.stop_writing()  # 停止寫入
-            self.video_writer2.stop_writing()  # 停止寫入
-            self.video_writer2.release()  # 釋放執行緒
-            self.video_writer1.release()  # 釋放執行緒
+        # 停止錄製影片：先送出結束訊號，再等兩個寫入執行緒寫完
+        writers = [w for w in (self.video_writer1, self.video_writer2) if w is not None]
+        for writer in writers:
+            writer.stop_writing()
+        for writer in writers:
+            writer.release()
+        self.video_writer1 = self.video_writer2 = None
 
     def set_camera_idx(self, new_idx: int):
         self.camera_idx = new_idx

@@ -52,25 +52,34 @@ class VideoToImagesThread(QThread):
         self._run_flag = False
         print("stop video to image thread")
 
-from camera_objects.single_camera import FlirCameraSystem 
-from camera_objects.two_cameras import DualFlirSystem
+from camera_objects.single_camera import FlirCameraSystem
 
 class VideoCaptureThread(QThread):
-    frame_ready = pyqtSignal(np.ndarray, np.ndarray, float)
+    # 正面相機沒用時第一個畫面為 None（純側面錄影），所以用 object 而非 np.ndarray
+    frame_ready = pyqtSignal(object, object, float)
     # 相機 180 fps，每 EMIT_EVERY 幀送出一次（180 → 60 fps，與論文資料集一致）
     EMIT_EVERY = 3
 
 
-    def __init__(self, parent=None, camera_index=0):
+    def __init__(self, parent=None, front_sn=None, side_sn=None):
+        """front_sn 為 None 時只開側面相機；序號由 utils/camera_roles.resolve_cameras 決定"""
         super().__init__(parent)
-        CONFIG = str(CAMERA_CONFIG_DIR / "GH3_camera_config.yaml")
-        CONFIG_2 = str(CAMERA_CONFIG_DIR / "GH3_camera_config_2.yaml")
-        SN1 = "25083472" # 正面（Db/Calibration/camera_roles.json）
-        SN2 = "21091470" # 側面
-        self.camera1 = FlirCameraSystem(CONFIG,SN1)
-        self.camera2 = FlirCameraSystem(CONFIG_2,SN2)
-        self.cameras = DualFlirSystem(self.camera1,self.camera2)
+        CONFIG = str(CAMERA_CONFIG_DIR / "GH3_camera_config.yaml")    # 正面
+        CONFIG_2 = str(CAMERA_CONFIG_DIR / "GH3_camera_config_2.yaml")  # 側面
+        self.camera2 = FlirCameraSystem(CONFIG_2, side_sn)
+        try:
+            self.camera1 = FlirCameraSystem(CONFIG, front_sn) if front_sn else None
+        except Exception:
+            try:
+                self.camera2.release()
+            except Exception:
+                pass
+            raise
         self.running = False
+
+    @property
+    def side_only(self):
+        return self.camera1 is None
 
     def start_capture(self):
         self.running = True
@@ -81,15 +90,23 @@ class VideoCaptureThread(QThread):
         self.running = False
         self.wait()
 
+    def grab(self):
+        """(成功, 正面, 側面)；只開側面時正面為 None"""
+        ok2, frame_2 = self.camera2.get_grayscale_image()
+        if self.camera1 is None:
+            return ok2 and frame_2 is not None, None, frame_2
+        ok1, frame_1 = self.camera1.get_grayscale_image()
+        return ok1 and ok2 and frame_1 is not None and frame_2 is not None, frame_1, frame_2
+
     def run(self):
         count = 0
         fail_count = 0
         max_fail = 30  # 連續失敗超過此次數才視為相機斷線
         try:
             while self.running:
-                ret, frame_1, frame_2 = self.cameras.get_grayscale_images()
+                ret, frame_1, frame_2 = self.grab()
                 grab_time = time.perf_counter()
-                if not ret or frame_1 is None or frame_2 is None:
+                if not ret:
                     fail_count += 1
                     if fail_count >= max_fail:
                         print(f"Error: 連續 {max_fail} 次擷取失敗，停止相機")
@@ -99,13 +116,15 @@ class VideoCaptureThread(QThread):
 
                 # 只轉換要送出的幀，避免浪費運算
                 if count % self.EMIT_EVERY == 0:
-                    rgb_frame_1 = cv2.cvtColor(frame_1, cv2.COLOR_BayerBG2BGR)
+                    rgb_frame_1 = cv2.cvtColor(frame_1, cv2.COLOR_BayerBG2BGR) if frame_1 is not None else None
                     rgb_frame_2 = cv2.cvtColor(frame_2, cv2.COLOR_BayerBG2BGR)
                     self.frame_ready.emit(rgb_frame_1, rgb_frame_2, grab_time)
                 count += 1
         finally:
             # 無論正常結束或發生例外都要釋放相機
-            self.cameras.release()
+            for camera in (self.camera1, self.camera2):
+                if camera is not None:
+                    camera.release()
 
 
 class VideoWriterThread(QThread):
