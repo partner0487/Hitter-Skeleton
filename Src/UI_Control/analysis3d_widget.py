@@ -689,6 +689,39 @@ class Analysis3DWidget(QWidget):
             # 更新位置的同時也更新顏色 (確保顏色同步)
             self.bat_line.set_data(pos=bat_pts, color=bat_color)
 
+        # 握把與棒尾被雙手遮住、遮罩量不到：從握把端沿球棒方向補到完整棒長，半透明表示是推算的
+        handle_m = getattr(self, "bat_handle_m", 0.0)
+        direction = np.asarray(tail_3d, dtype=np.float32) - np.asarray(head_3d, dtype=np.float32)
+        norm = float(np.linalg.norm(direction))
+        handle_pts = None
+        if handle_m > 0 and norm > 1e-6:
+            handle_pts = np.vstack([tail_3d, tail_3d + direction / norm * handle_m]).astype(np.float32)
+        if handle_pts is None:
+            if getattr(self, "bat_handle_line", None) is not None:
+                self.bat_handle_line.visible = False
+            return
+        handle_color = (0.0, 0.4, 1.0, 0.35)
+        if getattr(self, "bat_handle_line", None) is None:
+            self.bat_handle_line = scene.visuals.Line(pos=handle_pts, color=handle_color, width=4,
+                                                      parent=self.view.scene, method='gl')
+        else:
+            self.bat_handle_line.set_data(pos=handle_pts, color=handle_color)
+        self.bat_handle_line.visible = True
+
+    def updateBatHandleLength(self):
+        """3D 畫面補畫的握把長度 = 打者設定棒長（沒設定用預設）− 這支錄影遮罩露出段的中位數"""
+        lengths = []
+        for f in range(int(getattr(self.video_loader, "total_frames", 0) or 0)):
+            tail, head = self.triangulate_bat(f)
+            if tail is not None and head is not None:
+                lengths.append(float(np.linalg.norm(np.asarray(tail) - np.asarray(head))))
+        if not lengths or not self.has_metric_scale:
+            self.bat_handle_m = 0.0
+            return
+        visible = float(np.median(lengths))
+        self.bat_handle_m = max(bat_for_clip(self.folder).length_m - visible, 0.0)
+        print(f"[Bat 3D] 遮罩露出段中位數 {visible:.2f} m，補畫握把 {self.bat_handle_m:.2f} m")
+
     def draw_3d_pose(self, points3d):
         """
         在 3D 視圖裡更新骨架：
@@ -2323,6 +2356,7 @@ class Analysis3DWidget(QWidget):
         self.initGraph()
         pts3d = self.triangularPersonPoints(0)
         ball_3d = self.triangulateBallPoint(0)
+        self.updateBatHandleLength()
         tail_3d, head_3d = self.triangulate_bat(0)
         self.draw_ground_once(pts3d)
         self.draw_3d_pose(pts3d)
