@@ -981,8 +981,8 @@ class Analysis3DWidget(QWidget):
     # 🔹 Tab 初始化與 UI 連動
     # ======================================================
     def bindUI(self):
-        self.ui.loadProcessFolderBtn.setText("📁 載入資料夾分析")
-        self.ui.loadProcessFolderBtn.clicked.connect(self.loadFolder)
+        # 選清單裡的錄影就會載入分析，不另外提供手動選資料夾
+        self.ui.loadProcessFolderBtn.hide()
 
         # 安裝 EventFilter 給 keyphaseLabel1~3 以偵測 Resize
         if hasattr(self.ui, 'keyphaseLabel1'):
