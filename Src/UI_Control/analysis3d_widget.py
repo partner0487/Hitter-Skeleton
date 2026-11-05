@@ -1997,7 +1997,10 @@ class Analysis3DWidget(QWidget):
             print(f"[SideOnly 2D] 擊球點 {impact} 附近沒有足夠的棒頭資料")
 
         scale = side_scale(self.folder, calib, track, impact, fps, bat)
-        if scale is not None:
+        if scale is None:
+            self.side_kpts3d, self.side_bat3d = {}, {}
+        else:
+            self.buildSideOnly3D(scale.m_per_px, track)
             body = body_metrics_2d(self.person_side_df, phase_result, scale, calib, fps, frame_times, is_righty)
             self.stride_cm = body["stride_cm"]
             ui.centerGravityLabel.setText(fmt(body["cog_liftoff"], "m/s", 2))
@@ -2441,7 +2444,7 @@ class Analysis3DWidget(QWidget):
         if getattr(self, "side_only", False):
             self.updateVideoInfoSideOnly()
             return
-        self.show3DView(True)
+        self.setFlatMode(False)
         self.reset()
         self.setFrameTimes(self.folder)
         self.initFrameSlider()
@@ -2462,41 +2465,67 @@ class Analysis3DWidget(QWidget):
 
 
     def updateVideoInfoSideOnly(self):
-        """純側面 2D：只用側面骨架與球棒偵測關鍵幀、算指標；不三角化，3D 畫面與正面畫面顯示說明文字"""
+        """純側面 2D：只用側面骨架與球棒偵測關鍵幀、算指標；不三角化。
+        3D 畫面照樣畫骨架與球棒，但少了深度：側面關鍵點放在同一個深度（見 sideOnlyTo3D）"""
         self.reset()
         self.setFrameTimes(self.folder)
         self.initFrameSlider()
-        self.show3DView(False)
+        self.setFlatMode(True)
         self.person_3d_df = pd.DataFrame(columns=["frame_number", "keypoints_3d"])
+        self.side_kpts3d, self.side_bat3d = {}, {}
+        self.bat_handle_m = 0.0
         self.hip_shoulder_plot = None
         self.bat_speed_plot = None
-        self.detectPhases()
+        self.detectPhases()   # 算指標時得到比例尺，接著建立扁平的 3D 骨架（buildSideOnly3D）
         self.updateFrame(frame_num=0)
         self.ui.ResolutionLabel.setText(f"{clip_title(self.folder)}（純側面 2D）")
 
     def calibrationFor(self, folder):
-        """依錄影日期與打擊方向挑校正；純側面錄影只用錄影當天或之前的校正，
-        早於所有校正時不用（可能是別台相機拍的，例如 2024 年的 TSG），改用棒長換算"""
-        side_only = getattr(self, "side_only", False)
-        params = load_stereo_params(folder, self.currentBatterSide(), fallback=not side_only)
-        self.side_calib = params if side_only else None
+        """依錄影日期與打擊方向挑校正（沒有對應日期時用最新的）；純側面錄影用它的側面相機內參去畸變"""
+        params = load_stereo_params(folder, self.currentBatterSide())
+        self.side_calib = params if getattr(self, "side_only", False) else None
         return params
 
-    def show3DView(self, visible: bool):
-        """純側面錄影沒有 3D：3D 畫面換成說明文字"""
-        canvas = getattr(self, "canvas", None)
-        if canvas is None:
+    def setFlatMode(self, flat: bool):
+        """純側面錄影的 3D 畫面沒有深度：肩髖連線與夾角、揮棒軌跡面沒有意義，隱藏"""
+        for name in ("hip_line", "shoulder_line", "swing_mesh", "swing_lines", "bat_handle_line"):
+            visual = getattr(self, name, None)
+            if visual is not None and (flat or name in ("hip_line", "shoulder_line")):
+                visual.visible = not flat
+
+    def sideOnlyTo3D(self, pts_px, m_per_px: float) -> np.ndarray:
+        """側面像素座標 → 側面相機座標系的 3D 點（公尺），全部放在同一個深度：
+        深度 = 每像素公尺數 × 焦距（比例尺由棒長估計）。沒有校正時直接用像素 × 比例尺、深度 0"""
+        pts = np.asarray(pts_px, dtype=np.float64).reshape(-1, 2)
+        calib = self.side_calib
+        if calib is None:
+            return np.column_stack([pts * m_per_px, np.zeros(len(pts))])
+        norm = cv2.undistortPoints(pts.reshape(-1, 1, 2), calib.K_side, calib.dist_side).reshape(-1, 2)
+        depth = m_per_px * float(calib.K_side[0, 0])
+        return np.column_stack([norm * depth, np.full(len(norm), depth)])
+
+    def buildSideOnly3D(self, m_per_px: float, track):
+        """每幀的扁平 3D 骨架與棒頭、棒尾（以第一幀兩腳趾中點為原點，與 3D 骨架相同）"""
+        LEFT_TOE_IDX, RIGHT_TOE_IDX = 20, 21
+        self.side_kpts3d, self.side_bat3d = {}, {}
+        kpts = keypoints_by_frame(self.person_side_df)
+        if not kpts:
             return
-        native = canvas.native
-        if getattr(self, "no3d_label", None) is None:
-            parent = native.parentWidget()
-            self.no3d_label = QtWidgets.QLabel("沒有正面影片，無法顯示 3D\n（純側面 2D 分析）", parent)
-            self.no3d_label.setAlignment(Qt.AlignCenter)
-            self.no3d_label.setStyleSheet("color: gray; font-size: 14pt;")
-            if parent is not None and parent.layout() is not None:
-                parent.layout().addWidget(self.no3d_label)
-        native.setVisible(visible)
-        self.no3d_label.setVisible(not visible)
+        origin = None
+        for frame in sorted(kpts):
+            pts = self.sideOnlyTo3D(np.asarray(kpts[frame])[:, :2], m_per_px)
+            if origin is None:
+                origin = (pts[LEFT_TOE_IDX] + pts[RIGHT_TOE_IDX]) / 2.0
+            self.side_kpts3d[frame] = pts - origin
+        if track is None or track.empty:
+            return
+        # 棒尾用手腕（握把被手遮住），與 2D 頁甜蜜點的算法相同
+        valid = track.dropna(subset=["head_x", "head_y", "wrist_x", "wrist_y"])
+        if "rejected" in valid:
+            valid = valid[~valid["rejected"].fillna(False).astype(bool)]
+        for _, row in valid.iterrows():
+            tail, head = self.sideOnlyTo3D([[row.wrist_x, row.wrist_y], [row.head_x, row.head_y]], m_per_px) - origin
+            self.side_bat3d[int(row.frame)] = (tail, head)
 
     def showNoFrontView(self):
         """純側面錄影：正面畫面顯示說明文字"""
@@ -2597,6 +2626,11 @@ class Analysis3DWidget(QWidget):
             self.getBathtDf(self.batht_side_df, frame_num), self.getBallDf(self.ball_side_df, frame_num))
         self.showNoFrontView()
         self.showImage(drawed_img2, self.view_scene2, self.ui.FrameView_2)
+        pts = getattr(self, "side_kpts3d", {}).get(frame_num)
+        if pts is not None:
+            self.draw_ground_once(pts)
+            self.draw_3d_pose(pts)
+        self.draw_bat_3d(*getattr(self, "side_bat3d", {}).get(frame_num, (None, None)))
 
     def showImage(self, image: np.ndarray, scene: QGraphicsScene, GraphicsView: QGraphicsView):
         """Display an image in the QGraphicsView."""
