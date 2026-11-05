@@ -509,8 +509,8 @@ class PhaseDetector:
 
         speeds = track["speed_px_per_frame"]
         # 只看棒頭往投手方向移動的幀：收棒時棒頭往回繞。左打者面向側面相機，收棒在身前繞過、畫面上很快，
-        # 收棒最高速常是擊球的 1～2.3 倍（Orangetallboy 2026-10-29），只取最高速會抓到收棒；
-        # 右打收棒繞到身後，只有擊球的 0.30～0.64 倍。兩者擊球時都往投手方向、收棒高峰都往回（WeiShu、Orangetallboy 實測）
+        # 收棒最高速常是擊球的 1～2.3 倍（ChengXuan 2026-10-29），只取最高速會抓到收棒；
+        # 右打收棒繞到身後，只有擊球的 0.30～0.64 倍。兩者擊球時都往投手方向、收棒高峰都往回（WeiShu、ChengXuan 實測）
         toward = speeds.where(track["toward_pitcher_px"] > 0) if self.pitcher_dir else None
         best = self._fastest_non_spike(speeds, toward)
         if best is None and toward is not None:
