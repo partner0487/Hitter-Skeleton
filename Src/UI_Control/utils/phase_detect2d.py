@@ -61,6 +61,7 @@ class PhaseDetector:
         self.toe_frames, self.toe_vals = self._extract_toe_data(person_df, batter_index)
         # 雙手腕中點，用來分辨球棒遮罩哪一端是握把
         self.wrists = self._extract_wrist_centers(person_df)
+        self.is_lefty = batter_index == 1
         # 雙手的上臂、前臂骨架線段，用來排除把手臂誤判成球棒的遮罩
         self.arm_segments = self._extract_arm_segments(person_df)
 
@@ -339,6 +340,12 @@ class PhaseDetector:
     LAND_TOL_RATIO = 0.05
     # 擊球點：棒頭最高速的前後幀都低於它的此比例時視為孤立尖峰（遮罩誤判）
     SPIKE_RATIO = 0.35
+    # 左打的擊球點：取最高速之前「第一個達到最高速 FIRST_PEAK_RATIO 倍」的段落，往後最多 FIRST_PEAK_CLIMB 幀爬到峰值。
+    # 左打者面向側面相機，收棒時球棒在身前繞過、畫面上移動很快，收棒最高速常是擊球的 1～2.3 倍
+    # （Orangetallboy 2026-10-29 16 支；右打 WeiShu 19 支收棒只有擊球的 0.30～0.64 倍，揮棒前不到 0.35 倍）。
+    # 剪成 90 幀時 0.5 倍 15/16 在 ±2 幀內（原本只取最高速 9/16，錯的都是抓到收棒）；右打不套用
+    FIRST_PEAK_RATIO = 0.5
+    FIRST_PEAK_CLIMB = 4
     # 離地：腳尖高度在抬腿前最低點 + LIFT_TOL_PX 以內視為還踩在地上（腳跟翹起時腳尖會被帶高 3～4 px）
     LIFT_TOL_PX = 4.0
     # 腳跟資料少於此幀數時不判斷各階段
@@ -461,12 +468,31 @@ class PhaseDetector:
         """
         valid = speeds.dropna()
         for i in valid.sort_values(ascending=False).index:
-            nb = [speeds.get(j) for j in (i - 1, i + 1)]
-            if all(v is not None and not np.isnan(v) and v > 0 for v in nb) and max(nb) < self.SPIKE_RATIO * speeds[i]:
-                print(f"略過孤立尖峰：第 {i} 列 {speeds[i]:.1f} px/幀（前後 {nb[0]:.1f}、{nb[1]:.1f}）")
+            if self._is_spike(speeds, i):
+                print(f"略過孤立尖峰：第 {i} 列 {speeds[i]:.1f} px/幀（前後 {speeds.get(i - 1):.1f}、{speeds.get(i + 1):.1f}）")
                 continue
             return int(i)
         return int(valid.idxmax()) if not valid.empty else None
+
+    def _is_spike(self, speeds: pd.Series, i) -> bool:
+        nb = [speeds.get(j) for j in (i - 1, i + 1)]
+        return all(v is not None and not np.isnan(v) and v > 0 for v in nb) and max(nb) < self.SPIKE_RATIO * speeds[i]
+
+    def _first_strong_peak(self, speeds: pd.Series, best: int) -> int:
+        """左打：最高速之前第一個達到 FIRST_PEAK_RATIO 倍最高速的段落（非孤立尖峰），往後爬到該段峰值（見 FIRST_PEAK_RATIO）"""
+        valid = speeds.dropna()
+        for i in valid.index:
+            if i >= best:
+                break
+            if valid[i] < self.FIRST_PEAK_RATIO * speeds[best] or self._is_spike(speeds, i):
+                continue
+            j = i
+            while (j + 1 - i <= self.FIRST_PEAK_CLIMB and j + 1 in speeds.index
+                   and not np.isnan(speeds[j + 1]) and speeds[j + 1] >= speeds[j]):
+                j += 1
+            print(f"左打：最高速在第 {best} 列（收棒），改用較早的峰值第 {j} 列 {speeds[j]:.1f} px/幀")
+            return int(j)
+        return best
 
     def _detect_impact(self, side: str = "right") -> Optional[int]:
         """
@@ -484,6 +510,8 @@ class PhaseDetector:
 
         speeds = track["speed_px_per_frame"]
         best = self._fastest_non_spike(speeds)
+        if best is not None and self.is_lefty:
+            best = self._first_strong_peak(speeds, best)
         if best is not None:
             best_frame = int(track.at[best, "frame"])
             print(f"✅ 成功找到擊球點！影格: {best_frame}, 棒頭最高速: {speeds[best]:.2f}")
