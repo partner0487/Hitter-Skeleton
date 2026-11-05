@@ -2,6 +2,7 @@
 Module for FLIR camera system.
 """
 import logging
+import re
 from typing import Tuple
 
 import cv2
@@ -163,7 +164,6 @@ class FlirCameraSystem(SingleCameraSystem):
         int:
             - int: Height of the camera system.
         """
-        # print(self.full_config)
         return int(self.full_config['acquisition_settings']['fps'])
     def release(self) -> bool:
         """
@@ -607,6 +607,53 @@ class FlirCameraSystem(SingleCameraSystem):
                 node_balance_ratio.SetValue(white_balance_config['white_balance_red_ratio'])
                 logging.info('White balance red ratio of camera %s is set to %f.',
                              serial_number, white_balance_config['white_balance_red_ratio'])
+
+    def get_exposure_settings(self) -> dict:
+        """目前的曝光時間（μs）、增益（dB）與相機允許的範圍"""
+        nodemap: PySpin.NodeMap = self.cam.GetNodeMap()
+        exposure = PySpin.CFloatPtr(nodemap.GetNode('ExposureTime'))
+        gain = PySpin.CFloatPtr(nodemap.GetNode('Gain'))
+        return {
+            'exposure_time': exposure.GetValue(),
+            'exposure_range': (exposure.GetMin(), exposure.GetMax()),
+            'gain': gain.GetValue(),
+            'gain_range': (gain.GetMin(), gain.GetMax()),
+        }
+
+    def update_exposure(self, exposure_time: float = None, gain: float = None) -> Tuple[float, float]:
+        """
+        串流中直接改曝光時間（μs）與增益（dB），超出範圍會被夾住；實際值寫回 yaml，下次開相機沿用。
+
+        Returns
+        -------
+        Tuple[float, float]
+            實際套用的曝光時間與增益。
+        """
+        nodemap: PySpin.NodeMap = self.cam.GetNodeMap()
+        for name, value, section, key in (('ExposureTime', exposure_time, 'exposure_settings', 'exposure_time'),
+                                          ('Gain', gain, 'gain_settings', 'gain_value')):
+            if value is None:
+                continue
+            node = PySpin.CFloatPtr(nodemap.GetNode(name))
+            if not PySpin.IsWritable(node):
+                raise ValueError(f"{name} of camera {self.serial_number} is not writable")
+            node.SetValue(min(max(float(value), node.GetMin()), node.GetMax()))
+            self.full_config[section][key] = round(node.GetValue(), 1)
+            logging.info('%s of camera %s is set to %s', name, self.serial_number, node.GetValue())
+        self._save_exposure_to_yaml()
+        settings = self.get_exposure_settings()
+        return settings['exposure_time'], settings['gain']
+
+    def _save_exposure_to_yaml(self) -> None:
+        """只改 yaml 的 exposure_time、gain_value 兩行，保留其他設定與註解（與校正工具的「存成預設」相同）"""
+        with open(self.config_yaml_path, 'r', encoding='utf-8', newline='') as f:
+            text = f.read()
+        for key, value in (('exposure_time', self.full_config['exposure_settings']['exposure_time']),
+                           ('gain_value', self.full_config['gain_settings']['gain_value'])):
+            text = re.sub(r'(?m)^(\s*{}:\s*)[-\d.]+'.format(key), lambda m: m.group(1) + '{:g}'.format(value),
+                          text, count=1)
+        with open(self.config_yaml_path, 'w', encoding='utf-8', newline='') as f:
+            f.write(text)
 
     def update_white_balance(self, red_ratio: float = None, blue_ratio: float = None, gain: float = None):
             """

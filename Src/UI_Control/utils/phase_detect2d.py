@@ -313,31 +313,6 @@ class PhaseDetector:
 
         return centers
 
-    def _extract_bat_segment_2d(self):
-        """
-        從 batht_df 抽出 {frame: (head, tail)} 的 dict。
-        head, tail 皆為 np.array([x, y]).
-        支援欄位名為 frame_num 或 frame_number。
-        """
-        segments = {}
-        if self.bat_df is None or self.bat_df.empty:
-            return segments
-
-        for _, row in self.bat_df.iterrows():
-            if "frame_num" in row:
-                f = int(row["frame_num"])
-            else:
-                f = int(row["frame_number"])
-
-            head = np.array(row["head"], dtype=np.float32)
-            tail = np.array(row["tail"], dtype=np.float32)
-            if head.shape[0] < 2 or tail.shape[0] < 2:
-                continue
-            head = head[:2]
-            tail = tail[:2]
-            segments[f] = (head, tail)
-
-        return segments
 
     # 棒頭離前後各 JUMP_WINDOW 幀的中位數超過 JUMP_MAX_PX 像素視為錯誤偵測。
     # 依 WeiShu 2026-10-29 T座 H01、H02：揮棒時最多偏 36 px，誤抓手臂的幀 144 px 以上
@@ -561,39 +536,6 @@ class PhaseDetector:
             print(f"最高速幀 {raw_impact} 之後 {invalid} 幀遮罩無效（動態模糊），擊球點改為 {raw_impact + invalid}")
         return max(self.IMPACT_OFFSET, invalid)
 
-    def _point_to_segment_distance(self, p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
-        """
-        計算點 p 到線段 a-b 的最短距離（2D 空間）。
-        p: 球心座標 [x, y]
-        a: 球棒端點 1 (head) [x, y]
-        b: 球棒端點 2 (tail) [x, y]
-        """
-        # 將輸入轉換為 numpy array 確保向量運算正確
-        p = np.array(p, dtype=np.float32)
-        a = np.array(a, dtype=np.float32)
-        b = np.array(b, dtype=np.float32)
-
-        # 線段向量 ab 與點到 a 的向量 ap
-        ab = b - a
-        ap = p - a
-
-        # 計算投影長度比例 t
-        # t = (ap ‧ ab) / |ab|^2
-        ab2 = np.sum(ab**2)
-        
-        # 若 a, b 重合為一點，則直接計算 p 到 a 的距離
-        if ab2 == 0:
-            return float(np.linalg.norm(ap))
-
-        # 計算投影參數 t，並限制在 [0, 1] 之間，代表點落在線段範圍內
-        t = np.dot(ap, ab) / ab2
-        t = max(0.0, min(1.0, t))
-
-        # 找到線段上距離 p 最近的點 (projection point)
-        closest_point = a + t * ab
-
-        # 回傳球心到最近點的歐幾里得距離
-        return float(np.linalg.norm(p - closest_point))
 
     def _detect_landing(self, F_liftoff: Optional[int], F_impact: Optional[int]) -> Optional[int]:
         """
@@ -638,8 +580,6 @@ class PhaseDetector:
 
     def detect_phases(self) -> PhaseResult:
         """主函式：偵測順序為 Impact -> Liftoff -> Landing。"""
-        print("====== detect_phases START ======")
-        print(f"heel_frames length: {len(self.heel_frames)}")
         
         if len(self.heel_frames) < self.MIN_FOOT_FRAMES:
             print(f"❌ ERROR: 腳跟資料只有 {len(self.heel_frames)} 幀！person_df 可能沒有腳跟被偵測到，或是 batter_index 設定錯誤。")
@@ -649,14 +589,10 @@ class PhaseDetector:
         Fend = int(self.heel_frames[-1])
 
         # 步驟 1: 先找擊球點（棒頭最高速，不依賴腳的資料）
-        print("準備呼叫 _detect_impact...")
         F_impact = self._detect_impact(side="right") 
-        print(f"_detect_impact 回傳: {F_impact}")
 
         # 步驟 2、3: 離地、著地（以擊球前抬腿最高點為準）
         F_liftoff, F_landing = self.detect_foot_phases(F_impact)
-        print(f"F_liftoff: {F_liftoff}")
-        print(f"F_landing: {F_landing}")
 
         # 若球的 frame 超過腳跟範圍，就把 Fend 往後拉
         if self.ball_df is not None and not self.ball_df.empty:

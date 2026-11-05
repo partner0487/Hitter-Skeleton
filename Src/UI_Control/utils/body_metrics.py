@@ -228,3 +228,42 @@ def side_scale_from_stereo(folder: Optional[str], calib) -> Optional[SideScale]:
         return SideScale(m_per_px=z / float(calib.K_side[0, 0]), depth_m=z,
                          source=f"雙相機校正三角化的打者深度 {z:.2f} m")
     return None
+
+
+ROTATION_SMOOTH = 7          # 轉速：Savitzky–Golay 視窗（幀）
+ROTATION_BEFORE_LANDING = 10  # 最大轉速的搜尋範圍：著地前幾幀 ～ 擊球後 2 幀
+ROTATION_AFTER_IMPACT = 2
+
+
+def _yaw_rate(pts, a, b, basis, reliable, frame_dt):
+    """兩點連線在水平面上的轉速（度/秒）；不可信的幀先以前後內插補上，再平滑微分"""
+    from scipy.signal import savgol_filter
+    v = (pts[:, b] - pts[:, a]) @ basis
+    ang = np.unwrap(np.arctan2(v[:, 1], v[:, 0]))
+    idx = np.arange(len(ang))
+    if reliable.sum() >= 2 and not reliable.all():
+        ang = np.interp(idx, idx[reliable], ang[reliable])
+    return np.degrees(savgol_filter(ang, ROTATION_SMOOTH, 2, deriv=1, delta=frame_dt))
+
+
+def rotation_speed_peaks(kpts3d: Dict[int, np.ndarray], f_landing: Optional[int], f_impact: Optional[int],
+                         up: Optional[np.ndarray], frame_dt: float) -> Dict[str, Tuple[float, int]]:
+    """{"pelvis": (最大轉速 °/s, 幀), "torso": (...)}：兩髖、兩肩連線在水平面上的轉速，
+    取著地前 ROTATION_BEFORE_LANDING 幀到擊球後 ROTATION_AFTER_IMPACT 幀之間的最大值。
+    只回報大小、不判斷峰值先後：60 fps 下骨盆、軀幹峰值常只差 1～2 幀，與三角化及平滑的誤差相當"""
+    frames = np.array(sorted(kpts3d))
+    if f_landing is None or f_impact is None or len(frames) < ROTATION_SMOOTH or frame_dt <= 0:
+        return {}
+    # 依幀的順序微分（3D 骨架通常每一幀都有，缺幀時視為相鄰）
+    pts = np.stack([kpts3d[f] for f in frames])
+    basis = horizontal_basis(up)
+    out = {}
+    for name, (a, b) in (("pelvis", (L_HIP, R_HIP)), ("torso", (L_SHOULDER, R_SHOULDER))):
+        width = np.linalg.norm((pts[:, b] - pts[:, a]) @ basis, axis=1)
+        reliable = width >= WIDTH_MIN_RATIO * np.median(width)
+        rate = np.abs(_yaw_rate(pts, a, b, basis, reliable, frame_dt))
+        window = (frames >= f_landing - ROTATION_BEFORE_LANDING) & (frames <= f_impact + ROTATION_AFTER_IMPACT)
+        if window.any():
+            i = int(np.argmax(np.where(window, rate, -1.0)))
+            out[name] = (float(rate[i]), int(frames[i]))
+    return out

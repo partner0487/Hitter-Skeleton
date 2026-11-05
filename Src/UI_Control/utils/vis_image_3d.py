@@ -158,11 +158,7 @@ class ImageDrawer():
             image = self.drawPointsandSkeleton(image, person_data, self.joints['haple']['skeleton_links'], points_palette_samples=10)
             image = self.draw_bat(image, batht_data, frame_num)
             image = self.draw_ball(image, ball_data, frame_num)
-        # if self.show_angle_info:
-        #     image = self.drawAngleInfo(image, frame_num)
 
-        # image = self.draw_bat(image, frame_num)
-        # image = self.drawBatTraj(image, frame_num)
 
         return image
     
@@ -340,7 +336,6 @@ class ImageDrawer():
             ).astype(np.uint8)[:, -2::-1].tolist()
 
         circle_size = max(1, min(image.shape[:2]) // 160)  # ToDo Shape it taking into account the size of the detection
-        # circle_size = max(2, int(np.sqrt(np.max(np.max(points, axis=0) - np.min(points, axis=0)) // 16)))
         for i, pt in enumerate(points):
         
             unlabel = False if pt[0] != 0 and pt[1] != 0 else True
