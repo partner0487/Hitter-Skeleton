@@ -78,8 +78,10 @@ class Analysis3DWidget(QWidget):
         self.initVispyCanvas()
 
     def shutdown(self):
-        """關閉程式前停止計時器與影片載入執行緒"""
+        """關閉程式前停止計時器、處理迴圈與影片載入執行緒"""
         self.timer.stop()
+        if self.isProcessing():
+            self.abortProcessing()   # 否則處理迴圈會在視窗關掉後繼續跑完這支
         # cv_control_3d 的 VideoLoader 沒有 abort_loading，直接停止它的載入執行緒
         for loader in (self.video_loader, self.video_loader_raw):
             v_t = getattr(loader, 'v_t', None)
@@ -1217,6 +1219,8 @@ class Analysis3DWidget(QWidget):
     def toggleDetect(self): 
         # Check if video is loaded
         if self.video_loader_dual.video_frames1 is None:
+            if getattr(self, "batch_queue", None) is None:
+                self.setProcessingLock(False)
             QMessageBox.warning(self, "無法處理", "請先讀取影片!")
             return
 
@@ -1226,7 +1230,7 @@ class Analysis3DWidget(QWidget):
         frame_2 = self.video_loader_dual.getVideoImage2(0)
         self.detectDualKpt(frame, frame_2, 0)
         self.ui.selectCheckBox.setChecked(True)
-        self.ui.playBtn.click()
+        self.playBtnClicked()   # 處理中播放鍵是停用的（setProcessingLock），click() 不會觸發
     
     def toggleShowSkeleton(self, state:int):
         """Toggle skeleton detection and FPS control."""
@@ -1265,6 +1269,7 @@ class Analysis3DWidget(QWidget):
     def loadVideo4Process(self, video_path=None, video_path2=None):
         """載入一組正面（CF）、側面（CS）影片，讀完後自動開始處理（checkVideoLoad4Process → toggleDetect）；
         沒給路徑時跳出選資料夾的對話框"""
+        self.setProcessingLock(True)
         self._auto_process_pending = True
         self.reset4Process()
         # 畫面已換成新錄影，切換右打／左打時不可再重算、改寫先前資料夾的 3D
@@ -1323,6 +1328,7 @@ class Analysis3DWidget(QWidget):
             finished = self.batch_total - len(self.batch_queue)
             stopped = self.batch_stop and self.batch_queue
             self.batch_queue = None
+            self.setProcessingLock(False)
             self.ui.processVideosBtn.setText("批量處理")
             QMessageBox.information(self, "批量處理", f"{'已停止，' if stopped else ''}完成 {finished}/{self.batch_total} 支")
             return
@@ -1359,6 +1365,50 @@ class Analysis3DWidget(QWidget):
             print(f"[處理完成] 側面結果複製到 2D 失敗：{e}")
         if getattr(self, "batch_queue", None) is not None:
             QTimer.singleShot(300, self._startNextBatchClip)
+        else:
+            self.setProcessingLock(False)
+
+    def isProcessing(self) -> bool:
+        """正在處理影片（單支或批量處理中）"""
+        return getattr(self, "processing", False) or getattr(self, "batch_queue", None) is not None
+
+    def setProcessingLock(self, locked):
+        """處理影片時鎖住會打斷處理的操作。處理迴圈逐幀讓出介面（playFrame4Process 的 waitKey），
+        期間點清單載入別支會把剩下的幀變成播放那支（這支不會存檔、批量處理也停在這裡），
+        播放鍵會暫停處理、拖進度條會跳幀、換打擊方向會換掉選手腕與校正。批量處理只留「停止批量處理」"""
+        self.processing = locked
+        if self.headless:
+            return
+        ui = self.ui
+        for widget in (ui.listView, ui.loadVideoBtn, ui.playBtn, ui.frameSlider, ui.backKeyBtn, ui.forwardKeyBtn,
+                       ui.impactBtn, ui.landingBtn, ui.liftoffBtn, ui.batterInput,
+                       getattr(ui.batterInput, "radio_container", None)):
+            if widget is not None:
+                widget.setEnabled(not locked)
+        ui.listView.setToolTip("處理中，完成後才能切換錄影" if locked else "")
+
+    def confirmClose(self) -> bool:
+        """處理中關閉視窗：確認後停止處理（目前這支不存檔），取消則不關閉"""
+        if not self.isProcessing():
+            return True
+        queue = getattr(self, "batch_queue", None)
+        progress = f"批量處理 {self.batch_total - len(queue)}/{self.batch_total}" if queue is not None else "處理影片"
+        answer = QMessageBox.question(
+            self, "正在處理影片",
+            f"{progress} 進行中。\n關閉後目前這支不會存檔（已處理完的不受影響），下次要重新處理。\n\n確定要關閉嗎？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return False
+        self.abortProcessing()
+        return True
+
+    def abortProcessing(self):
+        """停止處理迴圈（playFrame4Process 看 is_play 停下），不存目前這支、不接下一支"""
+        self.batch_queue = None
+        self.batch_stop = True
+        self.is_play = False
+        self.is_dual = False
+        self.setProcessingLock(False)
 
     BATCH_DRAW_EVERY = 5
 
@@ -1435,6 +1485,8 @@ class Analysis3DWidget(QWidget):
         # 1. 檢查是否有路徑（選資料夾時按取消就沒有，也不要留著待處理的旗標）
         if not self.video_loader_dual.video_path and not self.video_loader_dual.video_path2:
             self._auto_process_pending = False
+            if getattr(self, "batch_queue", None) is None:
+                self.setProcessingLock(False)
             return
         
         # 2. 若還在讀取中，或者 total_frames 尚未被賦值（None），則繼續等待
