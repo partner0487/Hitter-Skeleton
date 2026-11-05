@@ -24,10 +24,12 @@ from cv_utils.cv_control_dual import DualJsonLoader, VideoLoader as VideoLoaderD
 from skeleton.detect_skeleton_dual import PoseEstimater
 from ui.dual_camera_system_cp import Ui_hitter_ui_dual
 from ui_utils.analysis_bar import AnalysisBar
+from ui_utils.playback_clock import TICK_MS, PlaybackClock, rate_from_text
 from ui_utils.metric_grid import MISSING, VALUE_SAMPLE, rapsodo_texts, show_spray_chart
 from ui_utils.radio_choice import batter_radio_buttons
 from ui_utils.worker3d import METRICS_FILE, Worker3D
 from utils.analyze import BatAnalyzer, PoseAnalyzer
+from utils.fps_utils import get_video_fps
 from utils.paths import DB_DIR, NON_HITTER_DIRS, clip_parts, clip_title
 from utils.phase_detect2d import PhaseResult
 from utils.vis_image_dual import ImageDrawer as ImageDrawerDual
@@ -109,6 +111,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         self.is_playing = False
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frames_timer)
+        self.clock = PlaybackClock()
 
         # 背景 3D 程序：main3d.py 傳入錄影頁那一個；沒傳就自己開（第一次要算時才啟動）
         self.worker3d = worker3d or Worker3D(self)
@@ -690,25 +693,23 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         return self.frameSlider.value() >= self.frameSlider.maximum()
 
     def update_playback_speed(self):
+        """開始播放或播放中換倍率：以目前幀重新計時（ui_utils/playback_clock.py）"""
         if not self.is_playing:
             return
-
-        # UI combobox "1.0x", "0.5x", "0.25x"
-        speed_text = self.slowMotionInput_2.currentText()
-        if "0.25x" in speed_text:
-            interval = 132 # 33 * 4
-        elif "0.5x" in speed_text:
-            interval = 66  # 33 * 2
-        else:
-            interval = 33  # Normal
-
-        self.timer.start(interval)
+        loaded = self.p1 if self.p1.total_frames > 0 else self.p2
+        self.clock.start(self.frameSlider.value(), get_video_fps(loaded.video_loader),
+                         rate_from_text(self.slowMotionInput_2.currentText()))
+        self.timer.start(TICK_MS)
 
     def update_frames_timer(self):
-        # 當任何一個播放器還沒到底的時候，繼續播
-        if not self._is_at_end():
-            self.frameSlider.setValue(self.frameSlider.value() + 1)
-        else:
+        # 依經過時間跳到該播的幀，畫面來不及時跳過中間幀；播放中拖了拉條就從新位置重新計時
+        if self.frameSlider.value() != getattr(self, "_played_frame", None):
+            self.update_playback_speed()
+        target = min(self.clock.target(), self.frameSlider.maximum())
+        if target > self.frameSlider.value():
+            self.frameSlider.setValue(target)
+        self._played_frame = self.frameSlider.value()
+        if self._is_at_end():
             self.toggle_play()
 
     def step_frame(self, step):
