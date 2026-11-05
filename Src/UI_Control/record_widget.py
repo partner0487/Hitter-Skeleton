@@ -15,6 +15,7 @@ from PyQt5.QtCore import QProcess, QProcessEnvironment
 from PyQt5.QtWidgets import QGroupBox, QPushButton, QVBoxLayout, QWidget
 
 from analysis2d_widget import Analysis2dWidget
+from ui_utils.bat_settings_dialog import BatSettingsDialog
 from ui_utils.camera_settings_dialog import CameraSettingsDialog
 from ui_utils.radio_choice import batter_radio_buttons
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, new_label_like
@@ -66,6 +67,7 @@ class RecordWidget(Analysis2dWidget):
         ui.tabWidget.hide()
         ui.horizontalLayout_2.insertWidget(index, panel, 2)
         self.addExposureControls()
+        self.addBatSettings()
         self.batterRadios = batter_radio_buttons(ui.batterInput)
 
     # ---------- 相機：曝光時間與增益移到「相機設定」視窗（紅藍白平衡拿掉；原本標「曝光」的滑桿其實是增益） ----------
@@ -80,6 +82,16 @@ class RecordWidget(Analysis2dWidget):
         button.setToolTip("調整正面、側面相機的曝光時間與增益（自動儲存）")
         button.clicked.connect(self.showCameraSettings)
         ui.verticalLayout_12.insertWidget(0, button)
+
+    def addBatSettings(self):
+        """打擊者區加「球棒設定…」：目前選的打者的棒長、棒重（沒設定用預設棒長）"""
+        self.batSettingsDialog = BatSettingsDialog(self.ui.hitterNameInput.currentText, self)
+        button = QPushButton("球棒設定…")
+        button.setToolTip("目前打者的棒長與棒重（自動儲存）；棒長用於 2D 揮棒速度換算")
+        button.clicked.connect(lambda: (self.batSettingsDialog.show(), self.batSettingsDialog.raise_()))
+        self.ui.hitterNameInput.currentIndexChanged.connect(
+            lambda *_: self.batSettingsDialog.isVisible() and self.batSettingsDialog.refresh())
+        self.ui.horizontalLayout_5.addWidget(button, 1)
 
     def openedCameras(self):
         """(正面, 側面) 相機；沒開時回傳 None"""
