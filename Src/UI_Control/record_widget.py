@@ -1,6 +1,7 @@
 """main3d.py 的錄影頁：現場錄影與錄完的 2D 即時分析沿用 Analysis2dWidget（與 main.py 的 2D 頁相同），
 2D 結果顯示後交給背景程序（tools/process3d_worker.py）做 3D，算完把指標換成 3D 的數值並補上 3D 才有的指標。
 
+- 右側控制區把原本的「相機」「設定」分頁合成一欄，不提供載入影片與最近錄影清單（過往錄影在分析頁看）
 - 指標區排成與分析頁相同的格線；肩髖分離角、垂直棒角、最大分離角、骨盆／軀幹轉速 2D 量不到，3D 算完前顯示「計算中…」
 - 左上角標題後面標示目前數值的來源：2D 結果（3D 分析中…）→ 3D
 - 已做過 3D 的錄影（CF_ 子資料夾裡有 metrics_3d.json）直接顯示，不重算
@@ -11,6 +12,7 @@ import os
 import sys
 
 from PyQt5.QtCore import QProcess, QProcessEnvironment
+from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QWidget
 
 from analysis2d_widget import Analysis2dWidget
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, new_label_like
@@ -28,7 +30,42 @@ class RecordWidget(Analysis2dWidget):
         self.worker = None
         self.worker_buffer = ""
         self.result_source = ""   # 標題後的來源標示
+        self.mergeControlPanel()
         self.startWorker()
+
+    # ---------- 右側控制區：相機與設定合成一欄，不提供選檔（過往錄影在分析頁看） ----------
+    def mergeControlPanel(self):
+        ui = self.ui
+        for widget in (ui.fileName, ui.fileNameLabel, ui.loadVideoBtn, ui.listView):
+            widget.hide()
+        # 相機分頁底部的彈性空白會把下面的區塊擠開，拿掉
+        for i in reversed(range(ui.gridLayout_3.count())):
+            if ui.gridLayout_3.itemAt(i).spacerItem() is not None:
+                ui.gridLayout_3.removeItem(ui.gridLayout_3.itemAt(i))
+        camera_box = QGroupBox("相機")
+        camera_layout = QVBoxLayout(camera_box)
+        camera_layout.setContentsMargins(0, 0, 0, 0)
+        ui.tabWidget.removeTab(ui.tabWidget.indexOf(ui.tab))
+        camera_layout.addWidget(ui.tab)
+        ui.tab.show()
+
+        panel = QWidget()
+        panel.setFont(ui.tabWidget.font())   # 原本字型繼承自分頁元件（12pt）
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(ui.groupBox)        # 打擊者、打擊方向、模式
+        layout.addWidget(camera_box)         # 相機選擇、曝光、開啟相機、開始打擊、手動錄影、打區
+        ui.fileGroupBox_2.setFont(panel.font())  # .ui 裡標題是 10pt，與其他區塊一致
+        layout.addWidget(ui.fileGroupBox_2)  # 關鍵幀跳轉
+        layout.addStretch(1)
+
+        index = ui.horizontalLayout_2.indexOf(ui.tabWidget)
+        ui.horizontalLayout_2.removeWidget(ui.tabWidget)
+        ui.tabWidget.hide()
+        ui.horizontalLayout_2.insertWidget(index, panel, 2)
+
+    def populateRecentVideosList(self):
+        pass  # 錄影頁不列過往錄影
 
     # ---------- 版面：與分析頁相同 ----------
     def arrangeMetricLabels(self):
