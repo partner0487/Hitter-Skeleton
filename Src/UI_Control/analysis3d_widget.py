@@ -35,7 +35,7 @@ from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, key
                                 pelvis_speed, rotation_speed_peaks, separation_series, stride_length)
 from utils.bat_speed2d import read_frame_times
 from utils.bat_speed3d import bat_track_3d, blast_metrics_3d, sweet_spot_speeds
-from utils.bat_profile import bat_for_clip
+from utils.bat_profile import HIDDEN_GRIP_M, bat_for_clip
 from ui_utils.swing_charts import SwingChartsDialog
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
@@ -2220,16 +2220,18 @@ class Analysis3DWidget(QWidget):
               f"{result.duration_s * 1000:.1f} ms，兩台相機都有效 {result.frames_used} 幀，棒長中位數 {result.bat_m:.2f} m")
 
     def _batLengthCheck(self, measured_m: float) -> str:
-        """揮棒速度的提示：3D 量到的棒長，與打者球棒設定比對。
-        WeiShu 21 支實測都約 0.66 m（預設 0.84 m 的 75～81%），還不確定短在握把端（手遮住）還是棒尖"""
+        """揮棒速度的提示：3D 量到的棒長（手腕前露出的那段），與打者球棒設定扣掉手握住的長度比對。
+        握把與棒尾被雙手遮住，遮罩只有手腕前那段（WeiShu 21 支都約 0.66 m）；甜蜜點從棒頭往回算，不受影響，
+        但露出段明顯短於預期時代表遮罩少抓棒尖，甜蜜點內縮、揮棒速度偏低"""
         bat = bat_for_clip(self.folder)
-        text = f"3D 實測棒長 {measured_m:.2f} m"
+        text = f"3D 實測露出棒長 {measured_m:.2f} m（握把被手遮住的部分量不到）"
         if bat.is_default:
-            return text + "（未設定球棒，無法比對）"
-        ratio = measured_m / bat.length_m
-        text += f"，設定 {bat.length_m:.2f} m（{ratio:.0%}）"
+            return text + "\n未設定球棒，無法比對"
+        expected = bat.length_m - HIDDEN_GRIP_M
+        ratio = measured_m / expected
+        text += f"\n設定棒長 {bat.length_m:.2f} m − 手握 {HIDDEN_GRIP_M:.2f} m = 預期 {expected:.2f} m（實測 {ratio:.0%}）"
         if ratio < BAT_SHORT_RATIO:
-            text += "\n實測偏短：可能是握把端被手遮住（不影響速度），或遮罩少抓棒尖（甜蜜點內縮，揮棒速度偏低）"
+            text += "\n實測偏短：遮罩可能少抓棒尖，甜蜜點內縮，揮棒速度可能偏低"
         return text
 
     def loadVideo(self):
