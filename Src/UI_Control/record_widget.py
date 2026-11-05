@@ -9,20 +9,17 @@
 """
 import json
 import os
-import sys
 
-from PyQt5.QtCore import QProcess, QProcessEnvironment
 from PyQt5.QtWidgets import QGroupBox, QPushButton, QVBoxLayout, QWidget
 
 from analysis2d_widget import Analysis2dWidget
 from ui_utils.bat_settings_dialog import BatSettingsDialog
 from ui_utils.camera_settings_dialog import CameraSettingsDialog
 from ui_utils.radio_choice import batter_radio_buttons
+from ui_utils.worker3d import METRICS_FILE, Worker3D
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, new_label_like
 from utils.paths import clip_title
 
-WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "process3d_worker.py")
-METRICS_FILE = "metrics_3d.json"
 PENDING = "計算中…"
 BLOCK_GAP_PX = 16
 
@@ -30,11 +27,13 @@ BLOCK_GAP_PX = 16
 class RecordWidget(Analysis2dWidget):
     def __init__(self, model, parent=None):
         super().__init__(model, parent)
-        self.worker = None
-        self.worker_buffer = ""
+        # 背景 3D 程序：比較頁也共用這一個（main3d.py 傳給 Compare3DWidget）
+        self.worker3d = Worker3D(self)
+        self.worker3d.done.connect(self.apply3D)
+        self.worker3d.failed.connect(self.fail3D)
         self.result_source = ""   # 標題後的來源標示
         self.mergeControlPanel()
-        self.startWorker()
+        self.worker3d.start()
 
     # ---------- 右側控制區：相機與設定合成一欄，不提供選檔（過往錄影在分析頁看） ----------
     def mergeControlPanel(self):
@@ -78,7 +77,7 @@ class RecordWidget(Analysis2dWidget):
                        ui.redRatioSlider, ui.blueRatioSlider, ui.gainValue, ui.redRatioValue, ui.blueRatioValue):
             widget.hide()
         self.cameraSettingsDialog = CameraSettingsDialog(self.openedCameras, self)
-        button = QPushButton("相機設定…")
+        button = QPushButton("相機設定")
         button.setToolTip("調整正面、側面相機的曝光時間與增益（自動儲存）")
         button.clicked.connect(self.showCameraSettings)
         ui.verticalLayout_12.insertWidget(0, button)
@@ -241,42 +240,10 @@ class RecordWidget(Analysis2dWidget):
         self.setSource("2D 結果（3D 無法分析）")
 
     # ---------- 背景程序 ----------
-    def startWorker(self):
-        self.worker = QProcess(self)
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("PYTHONIOENCODING", "utf-8")
-        env.insert("QT_QPA_PLATFORM", "offscreen")
-        self.worker.setProcessEnvironment(env)
-        self.worker.setProcessChannelMode(QProcess.MergedChannels)
-        self.worker.readyReadStandardOutput.connect(self.readWorker)
-        self.worker.finished.connect(lambda *_: print("[錄影頁] 背景 3D 程序已結束"))
-        self.worker.start(sys.executable, ["-u", WORKER])
-
     def request3D(self, folder):
-        if self.worker is None or self.worker.state() == QProcess.NotRunning:
-            self.startWorker()
         side = "right" if self.ui.batterInput.currentText() == "右打" else "left"
-        self.worker.write(f"{folder}\t{side}\n".encode("utf-8"))
-
-    def readWorker(self):
-        self.worker_buffer += bytes(self.worker.readAllStandardOutput()).decode("utf-8", errors="replace")
-        *lines, self.worker_buffer = self.worker_buffer.split("\n")
-        for line in lines:
-            line = line.rstrip("\r")
-            if line.startswith("WORKER "):
-                print(f"[錄影頁] {line}")
-                kind, _, rest = line[len("WORKER "):].partition(" ")
-                folder, _, detail = rest.partition("\t")
-                if kind == "DONE":
-                    self.apply3D(folder, detail)
-                elif kind == "ERROR":
-                    self.fail3D(folder, detail)
-            elif "Traceback" in line or "Error" in line:
-                print(f"[背景 3D] {line}")
+        self.worker3d.request(folder, side)
 
     def shutdown(self):
         super().shutdown()
-        if self.worker is not None and self.worker.state() != QProcess.NotRunning:
-            self.worker.closeWriteChannel()  # 背景程序讀到 EOF 後自行結束
-            if not self.worker.waitForFinished(3000):
-                self.worker.kill()
+        self.worker3d.shutdown()
