@@ -35,8 +35,11 @@ from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, key
                                 pelvis_speed, rotation_speed_peaks, separation_series, stride_length)
 from utils.bat_speed2d import read_frame_times
 from utils.bat_speed3d import bat_track_3d, blast_metrics_3d, sweet_spot_speeds
+from utils.bat_profile import bat_for_clip
 from ui_utils.swing_charts import SwingChartsDialog
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
+
+BAT_SHORT_RATIO = 0.9   # 3D 實測棒長低於球棒設定的這個比例時提示
 
 
 class Analysis3DWidget(QWidget):
@@ -2209,11 +2212,25 @@ class Analysis3DWidget(QWidget):
             print(f"[BatMetrics 3D] 擊球點 {impact_frame} 附近側面、正面沒有同時偵測到球棒")
             return
         self.ui.batSpeedLabel.setText(fmt(result.speed_kmh, "km/h"))
+        self.ui.batSpeedLabel.setToolTip(self._batLengthCheck(result.bat_m))
         self.ui.horizontalAngleEditLabel.setText(fmt(result.attack_angle_deg, "°", signed=True))
         self.ui.verticalAngleEditLabel.setText(fmt(result.vertical_bat_angle_deg, "°", signed=True))
         print(f"[BatMetrics 3D] 揮棒速度 {result.speed_kmh:.1f} km/h、攻擊角度 {result.attack_angle_deg:+.1f}°、"
               f"垂直棒角 {result.vertical_bat_angle_deg:+.1f}°：甜蜜點 幀 {result.from_frame}→{result.to_frame}，"
               f"{result.duration_s * 1000:.1f} ms，兩台相機都有效 {result.frames_used} 幀，棒長中位數 {result.bat_m:.2f} m")
+
+    def _batLengthCheck(self, measured_m: float) -> str:
+        """揮棒速度的提示：3D 量到的棒長，與打者球棒設定比對。
+        WeiShu 21 支實測都約 0.66 m（預設 0.84 m 的 75～81%），還不確定短在握把端（手遮住）還是棒尖"""
+        bat = bat_for_clip(self.folder)
+        text = f"3D 實測棒長 {measured_m:.2f} m"
+        if bat.is_default:
+            return text + "（未設定球棒，無法比對）"
+        ratio = measured_m / bat.length_m
+        text += f"，設定 {bat.length_m:.2f} m（{ratio:.0%}）"
+        if ratio < BAT_SHORT_RATIO:
+            text += "\n實測偏短：可能是握把端被手遮住（不影響速度），或遮罩少抓棒尖（甜蜜點內縮，揮棒速度偏低）"
+        return text
 
     def loadVideo(self):
         self.video_loader.loadVideo(self.video_side_path, self.video_front_path)

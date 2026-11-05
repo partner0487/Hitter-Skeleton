@@ -31,7 +31,7 @@ from utils.bat_speed2d import blast_metrics_2d, read_frame_times
 from utils.stereo_calibration import load_stereo_params
 from utils.body_metrics import (SideScale, frame_interval, keypoints_by_frame, pelvis_speed, side_scale_from_stereo,
                                 stride_length, undistort_keypoints)
-from utils.bat_speed2d import BAT_LENGTH_M
+from utils.bat_profile import bat_for_clip
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
 
@@ -996,15 +996,17 @@ class Analysis2dWidget(QWidget):
         if scale is not None:
             return scale
         detector = getattr(self, "phase_detector", None)
+        bat = bat_for_clip(self.video_loader.video_path)
         result = blast_metrics_2d(
             detector.bat_head_track() if detector is not None else None, impact_frame,
             fps=get_video_fps(self.video_loader),
             K=calib.K_side if calib else None, dist=calib.dist_side if calib else None,
+            bat_length_m=bat.length_m,
         )
         if result is None:
             return None
         return SideScale(m_per_px=result.m_per_px, depth_m=None,
-                         source=f"球棒長 {BAT_LENGTH_M} m 估計（這支影片沒有正面骨架）")
+                         source=f"{bat.describe()}估計（這支影片沒有正面骨架）")
 
     def calculateKeyphaseMetrics(self, phase_result: PhaseResult):
         """重心速度（離地、著地）與跨步距離（著地）：側面 2D 關鍵點換算成公尺（utils/body_metrics.py）"""
@@ -1299,6 +1301,7 @@ class Analysis2dWidget(QWidget):
         """揮棒速度與攻擊角度，採 Blast Motion 定義：擊球瞬間甜蜜點（距棒頭 6 吋）的速度與移動方向（見 utils/bat_speed2d.py）"""
         detector = getattr(self, "phase_detector", None)
         folder, calib = self._calibration()
+        bat = bat_for_clip(self.video_loader.video_path)   # 畫面上的球棒像素長度 = 棒長，換算成公尺
         result = blast_metrics_2d(
             detector.bat_head_track() if detector is not None else None,
             impact_frame,
@@ -1306,6 +1309,7 @@ class Analysis2dWidget(QWidget):
             frame_times=read_frame_times(folder),
             K=calib.K_side if calib else None,
             dist=calib.dist_side if calib else None,
+            bat_length_m=bat.length_m,
         )
         if result is None:
             print(f"[BatMetrics] 擊球點 {impact_frame} 附近沒有足夠的棒頭資料")
@@ -1314,7 +1318,8 @@ class Analysis2dWidget(QWidget):
             return
         self.ui.batSpeedLabel.setText(fmt(result.speed_kmh, "km/h"))
         self.ui.horizontalAngleEditLabel.setText(fmt(result.attack_angle_deg, "°", signed=True))
-        print(f"[BatMetrics] 揮棒速度 {result.speed_kmh:.1f} km/h、攻擊角度 {result.attack_angle_deg:+.1f}°："
+        self.ui.batSpeedLabel.setToolTip(f"以{bat.describe()}換算")
+        print(f"[BatMetrics] {bat.describe()}；揮棒速度 {result.speed_kmh:.1f} km/h、攻擊角度 {result.attack_angle_deg:+.1f}°："
               f"甜蜜點 幀 {result.from_frame}→{result.to_frame}，{result.duration_s * 1000:.1f} ms（{result.timed_by}），"
               f"球棒 {result.bat_px:.0f} px，{'已' if result.undistorted else '未'}去畸變")
 
