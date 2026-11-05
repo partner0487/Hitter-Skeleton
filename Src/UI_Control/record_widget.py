@@ -11,12 +11,11 @@ import json
 import os
 import sys
 
-import math
-
-from PyQt5.QtCore import QProcess, QProcessEnvironment, Qt
-from PyQt5.QtWidgets import QDoubleSpinBox, QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt5.QtCore import QProcess, QProcessEnvironment
+from PyQt5.QtWidgets import QGroupBox, QPushButton, QVBoxLayout, QWidget
 
 from analysis2d_widget import Analysis2dWidget
+from ui_utils.camera_settings_dialog import CameraSettingsDialog
 from ui_utils.radio_choice import batter_radio_buttons
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, new_label_like
 from utils.paths import clip_title
@@ -57,7 +56,7 @@ class RecordWidget(Analysis2dWidget):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(ui.groupBox)        # 打擊者、打擊方向、模式
-        layout.addWidget(camera_box)         # 相機選擇、曝光、開啟相機、開始打擊、手動錄影、打區
+        layout.addWidget(camera_box)         # 相機設定、開啟相機、開始打擊、手動錄影、打區
         ui.fileGroupBox_2.setFont(panel.font())  # .ui 裡標題是 10pt，與其他區塊一致
         layout.addWidget(ui.fileGroupBox_2)  # 關鍵幀跳轉
         layout.addStretch(1)
@@ -69,78 +68,39 @@ class RecordWidget(Analysis2dWidget):
         self.addExposureControls()
         self.batterRadios = batter_radio_buttons(ui.batterInput)
 
-    # ---------- 相機：只調曝光時間與增益（紅藍白平衡拿掉；原本標「曝光」的滑桿其實是增益） ----------
+    # ---------- 相機：曝光時間與增益移到「相機設定」視窗（紅藍白平衡拿掉；原本標「曝光」的滑桿其實是增益） ----------
     def addExposureControls(self):
         ui = self.ui
-        for widget in (ui.gain, ui.red_ratio, ui.blue_ratio, ui.gainSlider, ui.redRatioSlider, ui.blueRatioSlider,
-                       ui.gainValue, ui.redRatioValue, ui.blueRatioValue):
+        # 視窗裡正面、側面並排，不需要先選相機
+        for widget in (ui.sideCamera, ui.frontCamera, ui.gain, ui.red_ratio, ui.blue_ratio, ui.gainSlider,
+                       ui.redRatioSlider, ui.blueRatioSlider, ui.gainValue, ui.redRatioValue, ui.blueRatioValue):
             widget.hide()
-        self.exposureSpin = QDoubleSpinBox()
-        self.exposureSpin.setDecimals(0)
-        self.exposureSpin.setRange(1, 1000000)
-        self.exposureSpin.setSingleStep(100)
-        self.exposureSpin.setSuffix(" μs")
-        self.gainSpin = QDoubleSpinBox()
-        self.gainSpin.setDecimals(1)
-        self.gainSpin.setRange(0, 48)
-        self.gainSpin.setSingleStep(1)
-        self.gainSpin.setSuffix(" dB")
-        row = QHBoxLayout()
-        for caption, spin in (("曝光時間", self.exposureSpin), ("增益", self.gainSpin)):
-            # 打字時不要每按一鍵就送到相機，按 Enter 或離開欄位才套用；方向鍵／滾輪仍即時套用
-            spin.setKeyboardTracking(False)
-            spin.setAlignment(Qt.AlignRight)
-            spin.valueChanged.connect(self.onExposureChanged)
-            row.addWidget(QLabel(caption))
-            row.addWidget(spin, 1)
-        ui.verticalLayout_12.addLayout(row)
-        self.disableExposureControls()
+        self.cameraSettingsDialog = CameraSettingsDialog(self.openedCameras, self)
+        button = QPushButton("相機設定…")
+        button.setToolTip("調整正面、側面相機的曝光時間與增益（自動儲存）")
+        button.clicked.connect(self.showCameraSettings)
+        ui.verticalLayout_12.insertWidget(0, button)
 
-    def disableExposureControls(self):
-        """相機沒開：欄位顯示「—」且不能調"""
-        for spin in (self.exposureSpin, self.gainSpin):
-            spin.blockSignals(True)
-            spin.setSpecialValueText("—")
-            spin.setValue(spin.minimum())
-            spin.setEnabled(False)
-            spin.blockSignals(False)
+    def openedCameras(self):
+        """(正面, 側面) 相機；沒開時回傳 None"""
+        thread = getattr(self.camera, "video_thread", None)
+        if not getattr(self.camera, "is_opened", False) or thread is None:
+            return None
+        return thread.camera1, thread.camera2
+
+    def showCameraSettings(self):
+        self.cameraSettingsDialog.show()
+        self.cameraSettingsDialog.raise_()
+        self.cameraSettingsDialog.activateWindow()
 
     def updateCameraSliders(self):
-        """開相機、切換正面／側面時，顯示該相機目前的曝光時間與增益"""
-        try:
-            cam = self.get_selected_camera()
-            settings = cam.get_exposure_settings()
-        except Exception as e:  # 相機還沒開
-            print(f"讀取相機曝光設定失敗: {e}")
-            return
-        for spin, value, (low, high) in ((self.exposureSpin, settings["exposure_time"], settings["exposure_range"]),
-                                         (self.gainSpin, settings["gain"], settings["gain_range"])):
-            spin.blockSignals(True)
-            step = 10 ** -spin.decimals()  # 直接 setRange 會把上限四捨五入而超過相機上限
-            spin.setSpecialValueText("")
-            spin.setRange(math.ceil(low / step) * step, math.floor(high / step) * step)
-            spin.setValue(value)
-            spin.setEnabled(True)
-            spin.blockSignals(False)
-        self.exposureSpin.setToolTip("相機允許 {:.0f} ~ {:.0f} μs（上限受幀率限制）".format(*settings["exposure_range"]))
-        self.gainSpin.setToolTip("相機允許 {:.1f} ~ {:.1f} dB".format(*settings["gain_range"]))
-
-    def onExposureChanged(self, *_):
-        try:
-            cam = self.get_selected_camera()
-            exposure, gain = cam.update_exposure(self.exposureSpin.value(), self.gainSpin.value())
-        except Exception as e:
-            print(f"設定相機曝光失敗: {e}")
-            return
-        for spin, value in ((self.exposureSpin, exposure), (self.gainSpin, gain)):
-            spin.blockSignals(True)
-            spin.setValue(value)   # 顯示實際套用的值（超出範圍會被夾住）
-            spin.blockSignals(False)
+        """開關相機時，開著的相機設定視窗跟著更新"""
+        if self.cameraSettingsDialog.isVisible():
+            self.cameraSettingsDialog.refresh()
 
     def toggleCamera(self, state: int):
         super().toggleCamera(state)
-        if state != 2:
-            self.disableExposureControls()
+        self.updateCameraSliders()
 
     def populateRecentVideosList(self):
         pass  # 錄影頁不列過往錄影
