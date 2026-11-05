@@ -17,6 +17,7 @@ from PyQt5.QtCore import QProcess, QProcessEnvironment, Qt
 from PyQt5.QtWidgets import QDoubleSpinBox, QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from analysis2d_widget import Analysis2dWidget
+from ui_utils.radio_choice import batter_radio_buttons
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, new_label_like
 from utils.paths import clip_title
 
@@ -66,6 +67,7 @@ class RecordWidget(Analysis2dWidget):
         ui.tabWidget.hide()
         ui.horizontalLayout_2.insertWidget(index, panel, 2)
         self.addExposureControls()
+        self.batterRadios = batter_radio_buttons(ui.batterInput)
 
     # ---------- 相機：只調曝光時間與增益（紅藍白平衡拿掉；原本標「曝光」的滑桿其實是增益） ----------
     def addExposureControls(self):

@@ -533,7 +533,6 @@ class Analysis2dWidget(QWidget):
         """Change the pitcher based on input value. 9: "左腕", 10: "右腕","""
         kpt_id = 10 if self.ui.batterInput.currentIndex() == 0 else 9
         self.pose_estimater.setKptId(kpt_id)
-        self.pose_estimater.setPitchHandId(kpt_id)
         
         # Reset ball count when hitter changes
         self.hitBallNum = 1
