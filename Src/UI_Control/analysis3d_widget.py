@@ -1055,6 +1055,10 @@ class Analysis3DWidget(QWidget):
 
         self.ui.showSkeletonCheckBox.stateChanged.connect(self.toggleShowSkeleton)
         self.ui.selectCheckBox.stateChanged.connect(self.toggleSelect)
+        # 骨架／選擇人只在處理影片時用，由 toggleDetect 自動勾選；看已處理的錄影時沒有作用
+        # （影片已燒進骨架、資料只留打者），所以不顯示在畫面上
+        self.ui.showSkeletonCheckBox.hide()
+        self.ui.selectCheckBox.hide()
 
         if hasattr(self.ui, 'listView'):
             self.ui.listView.clicked.connect(self.onRecentVideoSelected)
