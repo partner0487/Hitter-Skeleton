@@ -1,11 +1,11 @@
-"""長片段裁成標準錄影長度：擊球前 50 幀、擊球後 40 幀，與錄影頁 ContinuousRecorder 觸發前後保留的幀數相同。
+"""長片段裁成標準錄影長度：擊球前 0.83 秒、擊球後 0.67 秒（60 fps 時為 50、40 幀，與錄影頁 ContinuousRecorder 相同）。
 
 在現場手動錄、事後自己剪的片段長短不一（例如 433 幀），會有兩個問題：
 1. 片段裡有多次試揮，離地、著地、擊球容易抓到別次揮棒
 2. 兩台相機的影格全部讀進記憶體（433 幀約 5.4 GB），處理與載入都慢
 
-做法：先用整段的偵測結果找擊球點（與分析頁同一套），裁出 [擊球-50, 擊球+40) 共 90 幀，
-覆蓋原本的 CF/CS 影片後重新處理。原始影片與整段的處理結果搬到 full_clip/ 子資料夾保留。
+做法：先用整段的偵測結果找擊球點（與分析頁同一套），裁出擊球前後的固定秒數（依影片 fps 換算幀數，
+120 fps 為 100、80 幀），覆蓋原本的 CF/CS 影片後重新處理。原始影片與整段的處理結果搬到 full_clip/ 子資料夾保留。
 """
 import csv
 import os
@@ -16,11 +16,23 @@ import pandas as pd
 
 from utils.phase_detect2d import PhaseDetector
 
-PRE_IMPACT_FRAMES = 50
-POST_IMPACT_FRAMES = 40
-CLIP_FRAMES = PRE_IMPACT_FRAMES + POST_IMPACT_FRAMES
+# 錄影頁在 60 fps 保留擊球前 50、後 40 幀；影片可能是 120、160 fps，改用秒數換算成幀數
+PRE_IMPACT_S = 50 / 60
+POST_IMPACT_S = 40 / 60
+DEFAULT_FPS = 60.0
 FULL_CLIP_DIR = "full_clip"  # 原始長片段的備份；批量處理、找錄影時略過（paths.NON_HITTER_DIRS）
 FRAME_TIMES_FILE = "frame_times.csv"
+
+
+def window_frames(fps: float):
+    """(擊球前幾幀, 擊球後幾幀)：60 fps 為 (50, 40)、120 fps 為 (100, 80)"""
+    fps = fps if fps and fps > 0 else DEFAULT_FPS
+    return int(round(PRE_IMPACT_S * fps)), int(round(POST_IMPACT_S * fps))
+
+
+def clip_frames(fps: float) -> int:
+    """標準錄影長度的幀數（60 fps 為 90）"""
+    return sum(window_frames(fps))
 
 
 def detect_impact(person_side_df, bat_side_df, batter_index: int):
@@ -32,10 +44,11 @@ def detect_impact(person_side_df, bat_side_df, batter_index: int):
     return None if result is None or result.F_impact is None else int(result.F_impact)
 
 
-def trim_window(impact: int, total: int):
-    """[起, 迄) 幀範圍：擊球前 PRE_IMPACT_FRAMES、後 POST_IMPACT_FRAMES；靠近頭尾時整段往內移，長度不變"""
-    lo = min(max(impact - PRE_IMPACT_FRAMES, 0), max(total - CLIP_FRAMES, 0))
-    return lo, min(lo + CLIP_FRAMES, total)
+def trim_window(impact: int, total: int, fps: float = DEFAULT_FPS):
+    """[起, 迄) 幀範圍：擊球前 PRE_IMPACT_S、後 POST_IMPACT_S 秒；靠近頭尾時整段往內移，長度不變"""
+    pre, post = window_frames(fps)
+    lo = min(max(impact - pre, 0), max(total - pre - post, 0))
+    return lo, min(lo + pre + post, total)
 
 
 def _unique_dir(path):
@@ -81,13 +94,13 @@ def _trim_frame_times(src, dst, lo, hi):
             writer.writerow({**r, "frame": int(r["frame"]) - lo, "time_sec": f"{float(r['time_sec']) - t0:.6f}"})
 
 
-def trim_clip(cf_path, cs_path, lo, hi, result_folder=None):
+def trim_clip(cf_path, cs_path, lo, hi, result_folder=None, note=""):
     """把 CF/CS 影片（與 frame_times.csv）裁成 [lo, hi)，覆蓋原檔；原檔與整段的處理結果資料夾搬到 full_clip/。
-    回傳裁好的 (cf_path, cs_path)"""
-    folder = os.path.dirname(cf_path)
+    回傳裁好的 (cf_path, cs_path)；純側面錄影 cf_path 為 None"""
+    folder = os.path.dirname(cf_path or cs_path)
     backup = _unique_dir(os.path.join(folder, FULL_CLIP_DIR))
     os.makedirs(backup)
-    for path in (cf_path, cs_path):
+    for path in filter(None, (cf_path, cs_path)):
         kept = os.path.join(backup, os.path.basename(path))
         shutil.move(path, kept)
         if _write_range(kept, path, lo, hi) != hi - lo:
@@ -100,21 +113,23 @@ def trim_clip(cf_path, cs_path, lo, hi, result_folder=None):
     if result_folder and os.path.isdir(result_folder):
         shutil.move(result_folder, os.path.join(backup, os.path.basename(result_folder)))
     with open(os.path.join(backup, "trim.txt"), "w", encoding="utf-8") as f:
-        f.write(f"原始片段的第 {lo}～{hi - 1} 幀（擊球前 {PRE_IMPACT_FRAMES}、後 {POST_IMPACT_FRAMES} 幀）\n")
-    print(f"[裁剪] {folder}：保留第 {lo}～{hi - 1} 幀，原始影片在 {backup}")
+        f.write(f"原始片段的第 {lo}～{hi - 1} 幀{note}\n")
+    print(f"[裁剪] {folder}：保留第 {lo}～{hi - 1} 幀{note}，原始影片在 {backup}")
     return cf_path, cs_path
 
 
-def result_folder_of(cf_path):
-    """處理結果子資料夾：CF 影片同一層、以 CF 檔名命名（VideoLoaderDual.saveDualVideo）"""
-    return os.path.join(os.path.dirname(cf_path), os.path.splitext(os.path.basename(cf_path))[0])
+def result_folder_of(cf_path, cs_path=None):
+    """處理結果子資料夾：影片同一層、以正面影片檔名命名；純側面錄影以側面影片檔名命名（VideoLoaderDual.saveDualVideo）"""
+    path = cf_path or cs_path
+    return os.path.join(os.path.dirname(path), os.path.splitext(os.path.basename(path))[0])
 
 
-def frame_count(path) -> int:
+def video_info(path):
+    """(幀數, fps)"""
     cap = cv2.VideoCapture(path)
-    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    info = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), cap.get(cv2.CAP_PROP_FPS)
     cap.release()
-    return n
+    return info
 
 
 def _read_records(path):
@@ -125,12 +140,14 @@ def _read_records(path):
 
 
 def trim_if_long(cf_path, cs_path, batter_index: int, person_side_df=None, bat_side_df=None) -> bool:
-    """片段超過 CLIP_FRAMES 幀就裁剪。沒給側面偵測結果時讀先前的處理結果（CF_ 子資料夾）；
+    """片段超過標準長度（依 fps 換算，60 fps 為 90 幀）就裁剪。沒給側面偵測結果時讀先前的處理結果（CF_／CS_ 子資料夾）；
     找不到擊球點就不裁。有裁剪回傳 True（之後要重新處理）"""
-    total = min(frame_count(cf_path), frame_count(cs_path))
-    if total <= CLIP_FRAMES:
+    infos = [video_info(p) for p in (cf_path, cs_path) if p]
+    total = min(n for n, _ in infos)
+    fps = infos[-1][1]  # 側面影片的 fps
+    if total <= clip_frames(fps):
         return False
-    result = result_folder_of(cf_path)
+    result = result_folder_of(cf_path, cs_path)
     if person_side_df is None or bat_side_df is None:
         person_side_df = _read_records(os.path.join(result, "person_side.json"))
         bat_side_df = _read_records(os.path.join(result, "bat_side.json"))
@@ -138,12 +155,14 @@ def trim_if_long(cf_path, cs_path, batter_index: int, person_side_df=None, bat_s
             return False  # 還沒處理過：整段處理完會再來一次（分析頁 trimLongClip）
     impact = detect_impact(person_side_df, bat_side_df, batter_index)
     if impact is None:
-        print(f"[裁剪] {os.path.dirname(cf_path)}：{total} 幀但找不到擊球點，維持整段")
+        print(f"[裁剪] {os.path.dirname(cs_path)}：{total} 幀但找不到擊球點，維持整段")
         return False
-    lo, hi = trim_window(impact, total)
+    lo, hi = trim_window(impact, total, fps)
+    pre, post = window_frames(fps)
     try:
-        trim_clip(cf_path, cs_path, lo, hi, result)
+        trim_clip(cf_path, cs_path, lo, hi, result,
+                  note=f"（{fps:.0f} fps，擊球前 {pre}、後 {post} 幀 = {PRE_IMPACT_S:.2f}、{POST_IMPACT_S:.2f} 秒）")
     except OSError as e:
-        print(f"[裁剪] {os.path.dirname(cf_path)} 失敗：{e}")
+        print(f"[裁剪] {os.path.dirname(cs_path)} 失敗：{e}")
         return False
     return True

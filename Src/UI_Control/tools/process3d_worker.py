@@ -4,6 +4,7 @@
 1. 處理影片（雙相機偵測），結果存到錄影資料夾的 CF_ 子資料夾，側面結果覆蓋給 2D；
    已處理過（例如批量處理過的舊錄影）就跳過這步
 2. 載入資料夾分析，把各指標的顯示文字存成 CF_ 子資料夾裡的 metrics_3d.json
+只有側面影片的錄影做純側面 2D：結果在 CS_ 子資料夾，3D 才有的指標為 —（metrics_3d.json 的 side_only 為 true）
 
 模型只在啟動時載入一次，之後常駐等工作。另開程序是因為處理迴圈會佔住介面執行緒約 15 秒，
 放在錄影頁同一個程序裡會卡住相機畫面與揮棒觸發。
@@ -30,6 +31,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 METRICS_FILE = "metrics_3d.json"
 PROCESSED_FILES = ("person_side.json", "person_front.json", "bat_side.json", "bat_front.json")
+SIDE_ONLY_FILES = ("person_side.json", "bat_side.json")  # 只有側面影片的錄影（純側面 2D，結果在 CS_ 子資料夾）
 JOB_TIMEOUT_S = 400  # 長片段要先整段處理、裁剪後再處理一次
 
 
@@ -82,7 +84,7 @@ def main():
         folder, _, side = line.partition("\t")
         pairs = widget.findClipPairs(folder)
         if not pairs:
-            say("ERROR", f"{folder}\t找不到成對的 CF*.mp4 與 CS*.mp4")
+            say("ERROR", f"{folder}\t找不到側面 CS*.mp4 影片")
             return
         index = widget.ui.batterInput.findText("左打" if side.strip() == "left" else "右打")
         if index >= 0:
@@ -96,9 +98,9 @@ def main():
         # 已處理過的長片段（事後自己剪的）：用先前結果找擊球點裁成 90 幀，結果搬走後下面會重新處理
         cf, cs = pairs[0]
         trim_if_long(cf, cs, widget.ui.batterInput.currentIndex())
-        # 已處理過（CF_ 子資料夾有雙相機偵測結果）就只做分析，不重跑偵測
-        output = result_folder_of(cf)
-        if all(os.path.isfile(os.path.join(output, n)) for n in PROCESSED_FILES):
+        # 已處理過（CF_ 子資料夾有雙相機偵測結果；純側面為 CS_ 子資料夾的側面結果）就只做分析，不重跑偵測
+        output = result_folder_of(cf, cs)
+        if all(os.path.isfile(os.path.join(output, n)) for n in (PROCESSED_FILES if cf else SIDE_ONLY_FILES)):
             state["analyzing"] = output
             widget.load_from_folder(output)
         else:

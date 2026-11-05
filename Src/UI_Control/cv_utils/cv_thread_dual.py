@@ -23,24 +23,18 @@ class VideoToImagesThread(QThread):
         video_images = []
         video_images2 = []
         
-        vidcap = cv2.VideoCapture(input_video_path)
-        fps = vidcap.get(cv2.CAP_PROP_FPS)
-        
-        vidcap2 = cv2.VideoCapture(input_video_path2)
-
-        # 讀取第一部影片
-        while self._run_flag:
-            success, image = vidcap.read()
-            if not success: break
-            video_images.append(image)
-        vidcap.release()
-
-        # 讀取第二部影片
-        while self._run_flag:
-            success2, image2 = vidcap2.read()
-            if not success2: break
-            video_images2.append(image2)
-        vidcap2.release()
+        # 只有側面影片的錄影（純側面 2D）沒有正面影片：該路徑為 None，回傳空的影格列表
+        fps = 0
+        for path, images in ((input_video_path, video_images), (input_video_path2, video_images2)):
+            if not path:
+                continue
+            vidcap = cv2.VideoCapture(path)
+            fps = fps or vidcap.get(cv2.CAP_PROP_FPS)
+            while self._run_flag:
+                success, image = vidcap.read()
+                if not success: break
+                images.append(image)
+            vidcap.release()
 
         # 回傳最大長度與個別列表
         count = max(len(video_images), len(video_images2))

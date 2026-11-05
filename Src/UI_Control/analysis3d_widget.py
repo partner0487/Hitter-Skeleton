@@ -26,11 +26,12 @@ from utils.phase_detect3d import PhaseDetector, PhaseResult
 from utils.phase_detect2d import PhaseDetector as PhaseDetector2D
 from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
-from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_parts, clip_title
+from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_parts, clip_title, clip_videos, is_result_dir
 from PyQt5 import QtGui
 from ui_utils.analysis_bar import AnalysisBar
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
-from utils.clip_trim import CLIP_FRAMES, trim_if_long
+from utils.clip_trim import clip_frames, trim_if_long
+from utils.metrics2d import bat_metrics_2d, body_metrics_2d, knee_angles_2d, side_scale
 from utils.stereo_calibration import fundamental_side_to_front, load_stereo_params
 from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, keypoints_by_frame, peak_separation,
                                 pelvis_speed, rotation_speed_peaks, separation_series, stride_length)
@@ -254,6 +255,7 @@ class Analysis3DWidget(QWidget):
             "tooltips": {k: v.toolTip() for k, v in labels.items() if v.toolTip()},
             "phases": {k: getattr(pr, k, None) for k in ("F_liftoff", "F_landing", "F_impact")},
             "stride_cm": getattr(self, "stride_cm", None),
+            "side_only": bool(getattr(self, "side_only", False)),
         }
 
     def addSwingChartsButton(self):
@@ -291,13 +293,13 @@ class Analysis3DWidget(QWidget):
 
     def onBatterSideChanged(self):
         """右打、左打的側面相機擺位不同，換用對應的校正；已載入資料夾時用新校正重算 3D 畫面與指標"""
-        params = load_stereo_params(self.folder, self.currentBatterSide())
+        params = self.calibrationFor(self.folder)
         # 兩側挑到同一份校正（例如沒標打擊方向的舊校正）時結果相同，不必重算
         if (params.source if params else None) == getattr(self, "calibration_source", ""):
             return
         self.applyStereoCalibration(params)
         # 影片還在讀取時，讀完的 updateVideoInfo 就會用新校正，不必在這裡重算
-        if self.folder and self.video_loader.video_path and not (
+        if self.folder and (self.video_loader.video_path or self.video_loader.video_path2) and not (
                 self.video_loader.is_loading or self.video_loader_raw.is_loading):
             self.updateVideoInfo()
 
@@ -1187,12 +1189,12 @@ class Analysis3DWidget(QWidget):
         folder_path = self.recent_video_model.itemFromIndex(index).data(Qt.UserRole)
         
         # 1. 如果資料夾裡有資料夾，代表處理完，直接呼叫 self.loadFolder 就可以了
-        # 尋找內部的 CF_ 子資料夾 (因為 3D 處理完的完整數據會存在裡面)
+        # 尋找內部的 CF_ 子資料夾 (因為 3D 處理完的完整數據會存在裡面；純側面錄影是 CS_ 子資料夾)
         has_subfolder = False
         target_load_path = folder_path
         try:
             for d in os.listdir(folder_path):
-                if d.startswith("CF_") and os.path.isdir(os.path.join(folder_path, d)):
+                if is_result_dir(d) and os.path.isdir(os.path.join(folder_path, d)):
                     has_subfolder = True
                     target_load_path = os.path.join(folder_path, d)
                     break
@@ -1204,16 +1206,10 @@ class Analysis3DWidget(QWidget):
             self.loadFolder(target_load_path)
             return
 
-        # 2. 若沒有就是 loadVideo4Process -> toggleDetect
-        import glob
-        mp4_files = sorted(glob.glob(os.path.join(folder_path, '*.mp4')))
-        
-        if len(mp4_files) >= 2:
-            # 第一個為正面（CF）、第二個為側面（CS）；讀完後自動處理
-            self.loadVideo4Process(mp4_files[0], mp4_files[1])
-        elif mp4_files:
-            # 如果只有一個影片，就單純載入
-            self.loadFolder(folder_path)
+        # 2. 若沒有就是 loadVideo4Process -> toggleDetect（只有側面影片時正面為 None，做純側面 2D）
+        cf, cs = clip_videos(folder_path)
+        if cs:
+            self.loadVideo4Process(cf, cs)
 
     # ======================================================
     # Process → 2D 骨架
@@ -1284,14 +1280,14 @@ class Analysis3DWidget(QWidget):
 
     @staticmethod
     def findClipPairs(root):
-        """root 底下所有錄影資料夾的 (正面 CF*.mp4, 側面 CS*.mp4)；略過處理結果的 CF_ 子資料夾與校正等非打者資料夾"""
+        """root 底下所有錄影資料夾的 (正面 CF*.mp4, 側面 CS*.mp4)；只有側面影片的錄影正面為 None（純側面 2D）。
+        略過處理結果的 CF_／CS_ 子資料夾與校正等非打者資料夾"""
         pairs = []
-        for d, subdirs, files in os.walk(root):
-            subdirs[:] = sorted(x for x in subdirs if not x.startswith("CF_") and x not in NON_HITTER_DIRS)
-            cf = sorted(f for f in files if f.startswith("CF") and f.lower().endswith(".mp4"))
-            cs = sorted(f for f in files if f.startswith("CS") and f.lower().endswith(".mp4"))
-            if cf and cs:
-                pairs.append((os.path.join(d, cf[0]), os.path.join(d, cs[0])))
+        for d, subdirs, _ in os.walk(root):
+            subdirs[:] = sorted(x for x in subdirs if not is_result_dir(x) and x not in NON_HITTER_DIRS)
+            cf, cs = clip_videos(d)
+            if cs:
+                pairs.append((cf, cs))
         return pairs
 
     def batchProcess(self):
@@ -1305,13 +1301,16 @@ class Analysis3DWidget(QWidget):
             return
         pairs = self.findClipPairs(root)
         if not pairs:
-            QMessageBox.warning(self, "批量處理", "這個資料夾底下沒有成對的 CF*.mp4 與 CS*.mp4 影片")
+            QMessageBox.warning(self, "批量處理", "這個資料夾底下沒有側面 CS*.mp4 影片")
             return
-        done = sum(any(n.startswith("CF_") and os.path.isdir(os.path.join(os.path.dirname(cf), n))
-                       for n in os.listdir(os.path.dirname(cf))) for cf, _ in pairs)
+        done = sum(any(is_result_dir(n) and os.path.isdir(os.path.join(os.path.dirname(cs), n))
+                       for n in os.listdir(os.path.dirname(cs))) for _, cs in pairs)
+        side_only = sum(cf is None for cf, _ in pairs)
         answer = QMessageBox.question(
             self, "批量處理",
-            f"{root}\n\n找到 {len(pairs)} 支錄影，其中 {done} 支已處理過。\n處理結果會覆蓋 CF_ 子資料夾，以及錄影資料夾裡 2D 頁用的 person_side、bat_side、ball_side.json。\n"
+            f"{root}\n\n找到 {len(pairs)} 支錄影，其中 {done} 支已處理過"
+            + (f"、{side_only} 支只有側面影片（純側面 2D）" if side_only else "") + "。\n"
+            f"處理結果會覆蓋 CF_／CS_ 子資料夾，以及錄影資料夾裡 2D 頁用的 person_side、bat_side、ball_side.json。\n"
             f"打擊方向：{self.ui.batterInput.currentText()}\n\n要開始處理嗎？")
         if answer != QMessageBox.Yes:
             return
@@ -1330,9 +1329,9 @@ class Analysis3DWidget(QWidget):
         cf, cs = self.batch_queue.pop(0)
         index = self.batch_total - len(self.batch_queue)
         try:
-            label = os.path.relpath(os.path.dirname(cf), os.path.dirname(self.batch_root))
+            label = os.path.relpath(os.path.dirname(cs), os.path.dirname(self.batch_root))
         except ValueError:  # 不同磁碟機
-            label = os.path.dirname(cf)
+            label = os.path.dirname(cs)
         self.ui.ResolutionLabel.setText(f"批量處理 {index}/{self.batch_total}：{label}")
         print(f"[批量處理] {index}/{self.batch_total} {label}")
         self.loadVideo4Process(cf, cs)
@@ -1365,8 +1364,10 @@ class Analysis3DWidget(QWidget):
 
     def detectDualKpt(self, frame, frame_2, frame_num):
         """先偵測側面（pose_estimater_2）、再偵測正面（pose_estimater）：側面鎖定的打者人框經對極幾何導引正面選人，
-        正投時才不會選到站在正面相機前的投手"""
+        正投時才不會選到站在正面相機前的投手；純側面錄影（frame 為 None）只偵測側面"""
         _, _, fps, _, _ = self.pose_estimater_2.detectKpt(frame_2, frame_num, is_video=True)
+        if frame is None:
+            return fps
         guide = None
         F = getattr(self, "F_side_front", None)
         side_df = self.pose_estimater_2.person_df
@@ -1390,7 +1391,11 @@ class Analysis3DWidget(QWidget):
         fps = 0
         if self.ui.showSkeletonCheckBox.isChecked():
             fps = self.detectDualKpt(frame, frame_2, frame_num)
-            if self.pose_estimater.person_id is not None and self.pose_estimater_2.person_id is not None:
+            if self.isSideOnlyClip():
+                if self.pose_estimater_2.person_id is not None:
+                    self.pose_analyzer_2.addAnalyzeInfo(frame_num)
+                    self.bat_analyzer_2.appendHeadTail(frame_num)
+            elif self.pose_estimater.person_id is not None and self.pose_estimater_2.person_id is not None:
                 self.pose_analyzer.addAnalyzeInfo(frame_num)
                 self.pose_analyzer_2.addAnalyzeInfo(frame_num)
                 self.bat_analyzer.appendHeadTail(frame_num)
@@ -1413,10 +1418,10 @@ class Analysis3DWidget(QWidget):
             self.updateFrame4Process(frame_num=frame_num)
 
     def trimLongClip(self) -> bool:
-        """超過標準長度（90 幀）的片段：用整段的側面偵測結果找擊球點，裁成擊球前 50、後 40 幀，
-        再重新處理裁好的片段（不存整段的結果）；有裁剪回傳 True"""
+        """超過標準長度（依 fps 換算，60 fps 為 90 幀）的片段：用整段的側面偵測結果找擊球點，
+        裁成擊球前 0.83、後 0.67 秒，再重新處理裁好的片段（不存整段的結果）；有裁剪回傳 True"""
         loader = self.video_loader_dual
-        if loader.total_frames <= CLIP_FRAMES:
+        if loader.total_frames <= clip_frames(get_video_fps(loader)):
             return False
         if not trim_if_long(loader.video_path, loader.video_path2, self.ui.batterInput.currentIndex(),
                             self.pose_estimater_2.person_df, self.pose_estimater_2.bat_df):
@@ -1450,7 +1455,8 @@ class Analysis3DWidget(QWidget):
         self.reset()
         self.changeBatter()
         # 正面選人的對極幾何用這支錄影當天、對應打擊方向的校正（與載入資料夾分析時相同的挑法）
-        params = load_stereo_params(self.video_loader_dual.folder_path, self.currentBatterSide())
+        params = None if self.isSideOnlyClip() else load_stereo_params(self.video_loader_dual.folder_path,
+                                                                        self.currentBatterSide())
         self.F_side_front = fundamental_side_to_front(params) if params is not None else None
         self.initFrameSlider(self.video_loader_dual.total_frames)
         self.updateFrame4Process(frame_num = 0)
@@ -1512,11 +1518,14 @@ class Analysis3DWidget(QWidget):
         if frame_num is not None:
             frame= self.video_loader_dual.getVideoImage(frame_num)
             frame_2 = self.video_loader_dual.getVideoImage2(frame_num)
-            if frame is None or frame_2 is None:
+            if frame_2 is None or (frame is None and not self.isSideOnlyClip()):
                 return
-        drawed_img = self.image_drawer_dual.drawInfo(frame, frame_num, self.pose_estimater.kpt_buffer)
         drawed_img_2 = self.image_drawer_2_dual.drawInfo(frame_2, frame_num, self.pose_estimater_2.kpt_buffer)
-        self.showImage(drawed_img, self.view_scene, self.ui.FrameView)
+        if frame is None:
+            self.showNoFrontView()
+        else:
+            drawed_img = self.image_drawer_dual.drawInfo(frame, frame_num, self.pose_estimater.kpt_buffer)
+            self.showImage(drawed_img, self.view_scene, self.ui.FrameView)
         self.showImage(drawed_img_2, self.view_scene2, self.ui.FrameView_2)
     
     def chooseUpdateFrame(self):
@@ -1555,9 +1564,13 @@ class Analysis3DWidget(QWidget):
         folder = folder.replace('\\', '/')
         self.folder = folder
         self.is_dual = False
-        print(f"📁 Loading Folder: {folder}")
+        # 只有側面影片的錄影（結果在 CS_ 子資料夾、沒有正面影片）：純側面 2D，不三角化、不畫 3D
+        self.side_only = os.path.basename(folder).startswith("CS_") or not (
+            glob.glob(os.path.join(folder, "CF*.mp4"))
+            or any(os.path.isfile(os.path.join(folder, n)) for n in ("skel_front.mp4", "raw_front.mp4")))
+        print(f"📁 Loading Folder: {folder}" + ("（純側面 2D）" if self.side_only else ""))
         # 依錄影路徑中的日期與畫面上選的右打／左打，使用當天或之前最新的對應校正
-        self.applyStereoCalibration(load_stereo_params(folder, self.currentBatterSide()))
+        self.applyStereoCalibration(self.calibrationFor(folder))
         self.syncSelectionToFolder(folder)
 
         # 定義輔助函式，支援根目錄或 CF_ 子目錄 (讀取內部那包)
@@ -1609,11 +1622,12 @@ class Analysis3DWidget(QWidget):
             vids = glob.glob(os.path.join(folder, f"{prefix}*.mp4"))
             return vids[0] if vids else None
 
-        self.video_side_path = find_mp4("CF_", "front")
+        self.video_side_path = None if self.side_only else find_mp4("CF_", "front")
         self.video_front_path = find_mp4("CS_", "side")
-        
+
         # Raw 影片路徑
-        self.video_side_raw = (glob.glob(os.path.join(folder, "CF*.mp4")) + [os.path.join(folder, "raw_front.mp4")])[0]
+        self.video_side_raw = None if self.side_only else \
+            (glob.glob(os.path.join(folder, "CF*.mp4")) + [os.path.join(folder, "raw_front.mp4")])[0]
         self.video_front_raw = (glob.glob(os.path.join(folder, "CS*.mp4")) + [os.path.join(folder, "raw_side.mp4")])[0]
 
         # 4. 執行載入
@@ -1830,18 +1844,22 @@ class Analysis3DWidget(QWidget):
         self.ui.landinglabel.setText(str(phase_result.F_landing)+"幀")
         self.ui.impactlabel.setText(str(phase_result.F_impact)+"幀")
         self.updatePhaseTimes(phase_result)
-        if phase_result.F_impact is not None:
-            self.calculateBatAnglesAtImpact(phase_result.F_impact, phase_result.F_landing)
-        # 先算指標：著地圖上的跨步距離標註用它的結果
-        self.calculateKeyphaseMetrics(phase_result)
+        if getattr(self, "side_only", False):
+            self.calculateSideOnlyMetrics(phase_result)
+        else:
+            if phase_result.F_impact is not None:
+                self.calculateBatAnglesAtImpact(phase_result.F_impact, phase_result.F_landing)
+            # 先算指標：著地圖上的跨步距離標註用它的結果
+            self.calculateKeyphaseMetrics(phase_result)
         self.display_phase_image(self.ui.keyphaseLabel1, phase_result.F_liftoff, 'liftoff')
         self.display_phase_image(self.ui.keyphaseLabel2, phase_result.F_landing, 'landing')
         self.display_phase_image(self.ui.keyphaseLabel3, phase_result.F_impact, 'impact')
 
         # [NEW] 在 Keyphase 計算完成後，載入 Rapsodo 數據
-        if hasattr(self, 'video_loader') and self.video_loader and hasattr(self.video_loader, 'video_path'):
-            folder_path = os.path.dirname(self.video_loader.video_path)
-            self._loadRapsodoData(folder_path)
+        # 純側面錄影沒有正面影片，用側面影片的資料夾
+        video_path = getattr(self.video_loader, "video_path", None) or getattr(self.video_loader, "video_path2", None)
+        if video_path:
+            self._loadRapsodoData(os.path.dirname(video_path))
         self.refreshSwingCharts()
 
     def _loadRapsodoData(self, folder_path: str):
@@ -1943,6 +1961,54 @@ class Analysis3DWidget(QWidget):
         ui.centerGravityLabel.setText(fmt(speed(f_lift), "m/s", 2))
         ui.centerGravityLabel2.setText(fmt(speed(f_land), "m/s", 2))
         ui.strideDisLabel.setText(fmt(self.stride_cm, "cm", 0))
+
+    def calculateSideOnlyMetrics(self, phase_result: PhaseResult):
+        """純側面 2D：揮棒速度、攻擊角度、重心速度、跨步距離、膝角用側面畫面計算，與 2D 頁同一套（utils/metrics2d.py）；
+        垂直棒角、肩髖分離角、骨盆／軀幹轉速需要 3D，顯示 —"""
+        ui = self.ui
+        labels = (ui.batSpeedLabel, ui.horizontalAngleEditLabel, ui.verticalAngleEditLabel,
+                  ui.centerGravityLabel, ui.centerGravityLabel2, ui.strideDisLabel,
+                  ui.hipShoulderEditLabel1, ui.hipShoulderEditLabel2, ui.hipShoulderEditLabel3,
+                  self.maxSepLabel, ui.forefootLabel, ui.backfootLabel, self.pelvisRotLabel, self.torsoRotLabel)
+        for label in labels:
+            label.setText(MISSING)
+            label.setToolTip("")
+        self.stride_cm = None
+        self.chart_separation, self.chart_sweet_speed = {}, {}
+        impact = phase_result.F_impact
+        if impact is None:
+            return
+        is_righty = ui.batterInput.currentText() == "右打"
+        calib = self.side_calib
+        fps = get_video_fps(self.video_loader)
+        frame_times = read_frame_times(self.folder) or read_frame_times(os.path.dirname(self.folder or ""))
+        detector = getattr(self, "phase_detector", None)
+        track = detector.bat_head_track() if getattr(self, "impact_from_masks", False) and detector is not None else None
+        bat = bat_for_clip(self.folder)
+
+        result = bat_metrics_2d(track, impact, fps, frame_times, calib, bat)
+        if result is not None:
+            ui.batSpeedLabel.setText(fmt(result.speed_kmh, "km/h"))
+            ui.batSpeedLabel.setToolTip(f"純側面 2D，以{bat.describe()}換算")
+            ui.horizontalAngleEditLabel.setText(fmt(result.attack_angle_deg, "°", signed=True))
+            print(f"[SideOnly 2D] 揮棒速度 {result.speed_kmh:.1f} km/h、攻擊角度 {result.attack_angle_deg:+.1f}°"
+                  f"（{bat.describe()}，{'已' if result.undistorted else '未'}去畸變）")
+        else:
+            print(f"[SideOnly 2D] 擊球點 {impact} 附近沒有足夠的棒頭資料")
+
+        scale = side_scale(self.folder, calib, track, impact, fps, bat)
+        if scale is not None:
+            body = body_metrics_2d(self.person_side_df, phase_result, scale, calib, fps, frame_times, is_righty)
+            self.stride_cm = body["stride_cm"]
+            ui.centerGravityLabel.setText(fmt(body["cog_liftoff"], "m/s", 2))
+            ui.centerGravityLabel2.setText(fmt(body["cog_landing"], "m/s", 2))
+            ui.strideDisLabel.setText(fmt(self.stride_cm, "cm", 0))
+            tip = f"純側面 2D，比例尺：{scale.source}，{scale.m_per_px * 1000:.2f} mm/px"
+            for label in (ui.centerGravityLabel, ui.centerGravityLabel2, ui.strideDisLabel):
+                label.setToolTip(tip)
+        front, back = knee_angles_2d(self.get_kpts_by_frame(impact), is_righty)
+        ui.forefootLabel.setText(fmt(front, "°"))
+        ui.backfootLabel.setText(fmt(back, "°"))
 
     def display_phase_image(self, label: QtWidgets.QLabel, frame_num: int, phase_type: str):
         """
@@ -2372,6 +2438,10 @@ class Analysis3DWidget(QWidget):
 
     def updateVideoInfo(self):
         # 更新與影片相關的資訊顯示在 UI 上
+        if getattr(self, "side_only", False):
+            self.updateVideoInfoSideOnly()
+            return
+        self.show3DView(True)
         self.reset()
         self.setFrameTimes(self.folder)
         self.initFrameSlider()
@@ -2390,6 +2460,59 @@ class Analysis3DWidget(QWidget):
         video_size = self.video_loader.video_size
         self.ui.ResolutionLabel.setText(clip_title(self.folder))
 
+
+    def updateVideoInfoSideOnly(self):
+        """純側面 2D：只用側面骨架與球棒偵測關鍵幀、算指標；不三角化，3D 畫面與正面畫面顯示說明文字"""
+        self.reset()
+        self.setFrameTimes(self.folder)
+        self.initFrameSlider()
+        self.show3DView(False)
+        self.person_3d_df = pd.DataFrame(columns=["frame_number", "keypoints_3d"])
+        self.hip_shoulder_plot = None
+        self.bat_speed_plot = None
+        self.detectPhases()
+        self.updateFrame(frame_num=0)
+        self.ui.ResolutionLabel.setText(f"{clip_title(self.folder)}（純側面 2D）")
+
+    def calibrationFor(self, folder):
+        """依錄影日期與打擊方向挑校正；純側面錄影只用錄影當天或之前的校正，
+        早於所有校正時不用（可能是別台相機拍的，例如 2024 年的 TSG），改用棒長換算"""
+        side_only = getattr(self, "side_only", False)
+        params = load_stereo_params(folder, self.currentBatterSide(), fallback=not side_only)
+        self.side_calib = params if side_only else None
+        return params
+
+    def show3DView(self, visible: bool):
+        """純側面錄影沒有 3D：3D 畫面換成說明文字"""
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return
+        native = canvas.native
+        if getattr(self, "no3d_label", None) is None:
+            parent = native.parentWidget()
+            self.no3d_label = QtWidgets.QLabel("沒有正面影片，無法顯示 3D\n（純側面 2D 分析）", parent)
+            self.no3d_label.setAlignment(Qt.AlignCenter)
+            self.no3d_label.setStyleSheet("color: gray; font-size: 14pt;")
+            if parent is not None and parent.layout() is not None:
+                parent.layout().addWidget(self.no3d_label)
+        native.setVisible(visible)
+        self.no3d_label.setVisible(not visible)
+
+    def showNoFrontView(self):
+        """純側面錄影：正面畫面顯示說明文字"""
+        self.view_scene.clear()
+        text = self.view_scene.addText("沒有正面影片（純側面 2D 分析）")
+        font = text.font()
+        font.setPointSize(16)
+        text.setFont(font)
+        text.setDefaultTextColor(QColor(128, 128, 128))
+        self.ui.FrameView.setScene(self.view_scene)
+        self.ui.FrameView.setAlignment(Qt.AlignCenter)
+
+    def isSideOnlyClip(self) -> bool:
+        """處理中的錄影只有側面影片（純側面 2D）"""
+        loader = self.video_loader_dual
+        return not loader.video_path and bool(loader.video_path2)
 
     def _calculate_3d_joint_angle(self, pts, idx1, idx2, idx3):
         """通用 3D 夾角計算工具"""
@@ -2434,6 +2557,9 @@ class Analysis3DWidget(QWidget):
             frame_num = self.ui.frameSlider.value()
         # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間）
         self.ui.frameNumLabel.setText(self.frameTimeText(frame_num, self.video_loader.total_frames))
+        if getattr(self, "side_only", False):
+            self.updateFrameSideOnly(frame_num)
+            return
         # 取畫面
         frame = self.video_loader.getVideoImage(frame_num)
         frame_2 = self.video_loader.getVideoImage2(frame_num)
@@ -2459,6 +2585,17 @@ class Analysis3DWidget(QWidget):
         # 2. 畫出隨時間生長的軌跡 (淺色)
         self.draw_swing_trajectory(frame_num)
         self.showImage(drawed_img, self.view_scene, self.ui.FrameView)
+        self.showImage(drawed_img2, self.view_scene2, self.ui.FrameView_2)
+
+    def updateFrameSideOnly(self, frame_num: int):
+        """純側面 2D：只畫側面畫面"""
+        frame_2 = self.video_loader.getVideoImage2(frame_num)
+        if frame_2 is None:
+            return
+        drawed_img2 = self.image_drawer_2.drawInfo(
+            frame_2, frame_num, self.getPersonDf(self.person_side_df, frame_num),
+            self.getBathtDf(self.batht_side_df, frame_num), self.getBallDf(self.ball_side_df, frame_num))
+        self.showNoFrontView()
         self.showImage(drawed_img2, self.view_scene2, self.ui.FrameView_2)
 
     def showImage(self, image: np.ndarray, scene: QGraphicsScene, GraphicsView: QGraphicsView):
