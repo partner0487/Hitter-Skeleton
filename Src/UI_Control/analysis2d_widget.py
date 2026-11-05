@@ -27,10 +27,10 @@ from ocr import ocr_capture_1time as ocr
 from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS, clip_title
 from ui_utils.analysis_bar import AnalysisBar
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
-from utils.bat_speed2d import blast_metrics_2d, read_frame_times
+from utils.bat_speed2d import read_frame_times
+from utils.metrics2d import bat_metrics_2d, body_metrics_2d, knee_angles_2d, side_scale
 from utils.stereo_calibration import load_stereo_params
-from utils.body_metrics import (SideScale, frame_interval, keypoints_by_frame, pelvis_speed, side_scale_from_stereo,
-                                stride_length, undistort_keypoints)
+from utils.body_metrics import SideScale
 from utils.bat_profile import bat_for_clip
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
@@ -991,22 +991,10 @@ class Analysis2dWidget(QWidget):
         return folder, (load_stereo_params(folder, side) if folder else None)
 
     def _side_scale(self, folder, calib, impact_frame) -> Optional[SideScale]:
-        """側面畫面的公尺換算：有正面骨架時用校正三角化的打者深度，否則用棒長（與揮棒速度相同）"""
-        scale = side_scale_from_stereo(folder, calib)
-        if scale is not None:
-            return scale
+        """側面畫面的公尺換算：有正面骨架時用校正三角化的打者深度，否則用棒長（utils/metrics2d.py）"""
         detector = getattr(self, "phase_detector", None)
-        bat = bat_for_clip(self.video_loader.video_path)
-        result = blast_metrics_2d(
-            detector.bat_head_track() if detector is not None else None, impact_frame,
-            fps=get_video_fps(self.video_loader),
-            K=calib.K_side if calib else None, dist=calib.dist_side if calib else None,
-            bat_length_m=bat.length_m,
-        )
-        if result is None:
-            return None
-        return SideScale(m_per_px=result.m_per_px, depth_m=None,
-                         source=f"{bat.describe()}估計（這支影片沒有正面骨架）")
+        return side_scale(folder, calib, detector.bat_head_track() if detector is not None else None, impact_frame,
+                          get_video_fps(self.video_loader), bat_for_clip(self.video_loader.video_path))
 
     def calculateKeyphaseMetrics(self, phase_result: PhaseResult):
         """重心速度（離地、著地）與跨步距離（著地）：側面 2D 關鍵點換算成公尺（utils/body_metrics.py）"""
@@ -1023,20 +1011,11 @@ class Analysis2dWidget(QWidget):
         if scale is None:
             print("[Keyphase2D] 沒有正面骨架也沒有可用的球棒長度，無法換算公尺")
             return
-        kpts = undistort_keypoints(keypoints_by_frame(self.person_side_df),
-                                   calib.K_side if calib else None, calib.dist_side if calib else None)
-        fps = get_video_fps(self.video_loader)
-        frame_times = read_frame_times(folder)
-        is_righty = self.ui.batterInput.currentText() == "右打"
-
-        def speed(frame):
-            return pelvis_speed(kpts, frame, frame_interval(fps, frame_times, frame), scale.m_per_px)
-
-        f_land = phase_result.F_landing
-        stride_m = stride_length(kpts.get(f_land), is_righty, scale.m_per_px) if f_land is not None else None
-        self.stride_cm = stride_m * 100 if stride_m is not None else None
-        self.ui.centerGravityLabel.setText(fmt(speed(phase_result.F_liftoff), "m/s", 2))
-        self.ui.centerGravityLabel2.setText(fmt(speed(f_land), "m/s", 2))
+        body = body_metrics_2d(self.person_side_df, phase_result, scale, calib, get_video_fps(self.video_loader),
+                               read_frame_times(folder), self.ui.batterInput.currentText() == "右打")
+        self.stride_cm = body["stride_cm"]
+        self.ui.centerGravityLabel.setText(fmt(body["cog_liftoff"], "m/s", 2))
+        self.ui.centerGravityLabel2.setText(fmt(body["cog_landing"], "m/s", 2))
         self.ui.strideDisLabel.setText(fmt(self.stride_cm, "cm", 0))
         tip = f"比例尺：{scale.source}，{scale.m_per_px * 1000:.2f} mm/px"
         for label in labels:
@@ -1200,8 +1179,6 @@ class Analysis2dWidget(QWidget):
                     # 畫關節點
                     for p in [p1, p2, p3]:
                         cv2.circle(draw_img, p, 8, YELLOW, -1)
-                    # 計算前導腿角度
-                    front_knee_angle = self.calculate_angle(p1, p2, p3)
 
                 for leg in back_legs:
                     p1 = tuple(kpts[leg[0]][:2].astype(int))
@@ -1214,8 +1191,7 @@ class Analysis2dWidget(QWidget):
                     # 畫關節點
                     for p in [p1, p2, p3]:
                         cv2.circle(draw_img, p, 8, YELLOW, -1)
-                    # 計算後腿角度
-                    back_knee_angle = self.calculate_angle(p1, p2, p3)
+                front_knee_angle, back_knee_angle = knee_angles_2d(kpts, is_righty)
                 self.ui.forefootLabel3.setText(fmt(front_knee_angle, "°"))
                 self.ui.backfootLabel3.setText(fmt(back_knee_angle, "°"))
 
@@ -1302,15 +1278,8 @@ class Analysis2dWidget(QWidget):
         detector = getattr(self, "phase_detector", None)
         folder, calib = self._calibration()
         bat = bat_for_clip(self.video_loader.video_path)   # 畫面上的球棒像素長度 = 棒長，換算成公尺
-        result = blast_metrics_2d(
-            detector.bat_head_track() if detector is not None else None,
-            impact_frame,
-            fps=get_video_fps(self.video_loader),
-            frame_times=read_frame_times(folder),
-            K=calib.K_side if calib else None,
-            dist=calib.dist_side if calib else None,
-            bat_length_m=bat.length_m,
-        )
+        result = bat_metrics_2d(detector.bat_head_track() if detector is not None else None, impact_frame,
+                                get_video_fps(self.video_loader), read_frame_times(folder), calib, bat)
         if result is None:
             print(f"[BatMetrics] 擊球點 {impact_frame} 附近沒有足夠的棒頭資料")
             self.ui.batSpeedLabel.setText(MISSING)
