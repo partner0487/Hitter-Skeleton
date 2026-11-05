@@ -119,11 +119,22 @@ def _load(path, require_published=False, batter_side=None):
         return None
 
 
-def load_stereo_params(folder=None, batter_side=None):
+def load_stereo_params(folder=None, batter_side=None, fallback=True):
     """挑校正：錄影日期當天或之前（沒有日期則不限）、打擊方向相符（batter_side 為 right／left，
-    None 表示不限）的最新已採用 session；都沒有才用打擊方向相符的 Db/Calibration/stereo.json。都沒有回傳 None。"""
+    None 表示不限）的最新已採用 session；都沒有才用打擊方向相符的 Db/Calibration/stereo.json。都沒有回傳 None。
+    fallback=False 時只用錄影當天或之前的校正，沒有就回傳 None：純側面錄影可能是別台相機拍的
+    （例如 2024 年的 TSG），套到我們相機的鏡頭參數反而會扭曲畫面"""
     date = recording_date(folder) if folder else None
     side = _SIDE_NAME.get(batter_side, "")
+    if not fallback:
+        if not date:
+            return None
+        for path in _published_sessions(date):
+            params = _load(path, require_published=True, batter_side=batter_side)
+            if params is not None:
+                return params
+        print(f"[stereo_calibration] {date} 以前沒有{side}校正，不使用校正")
+        return None
     # 錄影早於所有校正時，改用同一側最新的校正，避免用到另一側擺位的上層 stereo.json
     for limit in ((date, None) if date else (None,)):
         for path in _published_sessions(limit):

@@ -248,8 +248,8 @@ class VideoLoader:
         self.reset()
         options = QFileDialog.Options()
         initial_dir = str(RECORD_DIR)
-        # 如果沒有傳入路徑，則讓使用者選取資料夾
-        if video_path is None or video_path2 is None:
+        # 如果沒有傳入路徑，則讓使用者選取資料夾；只有側面影片（CS）時 video_path 為 None，做純側面 2D
+        if video_path is None and video_path2 is None:
             folder_selected = QFileDialog.getExistingDirectory(None, "選取包含影片的資料夾", initial_dir, options=options)
             
             if not folder_selected:
@@ -260,21 +260,22 @@ class VideoLoader:
             cf_files = glob.glob(os.path.join(folder_selected, "CF*.mp4")) + glob.glob(os.path.join(folder_selected, "CF*.avi"))
             cs_files = glob.glob(os.path.join(folder_selected, "CS*.mp4")) + glob.glob(os.path.join(folder_selected, "CS*.avi"))
 
-            if not cf_files or not cs_files:
-                print("找不到對應的 CF 或 CS 影片檔案！")
+            if not cs_files:
+                print("找不到側面 CS 影片檔案！")
                 return
             
             # 預設抓取找到的第一個檔案
-            video_path = cf_files[0]
+            video_path = cf_files[0] if cf_files else None
             video_path2 = cs_files[0]
 
         self.video_path = video_path
         self.video_path2 = video_path2
-        self.video_name = os.path.splitext(os.path.basename(self.video_path))[0]
-        self.video_name2 = os.path.splitext(os.path.basename(self.video_path2))[0]
+        name = lambda path: os.path.splitext(os.path.basename(path))[0] if path else None
+        self.video_name = name(self.video_path)
+        self.video_name2 = name(self.video_path2)
 
-        self.folder_path = os.path.dirname(video_path)
-        self.folder_path2 = os.path.dirname(video_path2)
+        self.folder_path = os.path.dirname(video_path or video_path2)
+        self.folder_path2 = os.path.dirname(video_path2 or video_path)
 
         self.is_loading = True
         self.v_t = VideoToImagesThread(self.video_path, self.video_path2)
@@ -300,11 +301,12 @@ class VideoLoader:
         self.total_frames = count
         self.video_frames1 = video_frames1
         self.video_fps = fps
-        self.video_size = (self.video_frames1[0].shape[1], self.video_frames1[0].shape[0])
-
         self.total_frames = count
         self.video_frames2 = video_frames2
-        self.video_size2 = (self.video_frames2[0].shape[1], self.video_frames2[0].shape[0])
+        # 純側面錄影沒有正面影格，大小都用側面的
+        size = lambda frames: (frames[0].shape[1], frames[0].shape[0]) if frames else None
+        self.video_size2 = size(self.video_frames2)
+        self.video_size = size(self.video_frames1) or self.video_size2
         self.close_thread(self.v_t)
 
     def close_thread(self, thread):
@@ -398,7 +400,8 @@ class VideoLoader:
         # 1. 建立輸出資料夾：Db/Record/<video_name>/
         
         # Create a subfolder using the video filename (without extension)
-        video_filename = os.path.splitext(os.path.basename(self.video_path))[0]
+        # 結果子資料夾以正面影片檔名命名（CF_…）；純側面錄影以側面影片檔名命名（CS_…）
+        video_filename = os.path.splitext(os.path.basename(self.video_path or self.video_path2))[0]
         output_folder = os.path.join(self.folder_path, video_filename)
         
         self.output_folder = output_folder
@@ -456,43 +459,20 @@ class VideoLoader:
             save_location1 = os.path.join(output_folder, "raw_front.mp4")
             save_location2 = os.path.join(output_folder, "raw_side.mp4")
 
-        video_writer1 = cv2.VideoWriter(
-            save_location1,
-            cv2.VideoWriter_fourcc(*'mp4v'),
-            self.video_fps,
-            self.video_size
-        )
-        video_writer2 = cv2.VideoWriter(
-            save_location2,
-            cv2.VideoWriter_fourcc(*'mp4v'),
-            self.video_fps,
-            self.video_size
-        )
-
-        if not video_writer1.isOpened():
-            print("Error while opening video writer1!")
-            return
-        if not video_writer2.isOpened():
-            print("Error while opening video writer2!")
-            return
-
-        if process:
-            # 畫上骨架再寫出
-            for frame_num, frame in enumerate(self.video_frames1):
-                image = self.image_drawer2.drawInfo(img=frame, frame_num=frame_num)
-                video_writer1.write(image)
-            for frame_num, frame in enumerate(self.video_frames2):
-                image = self.image_drawer.drawInfo(img=frame, frame_num=frame_num)
-                video_writer2.write(image)
-        else:
-            # 直接存原始畫面
-            for frame in self.video_frames1:
-                video_writer1.write(frame)
-            for frame in self.video_frames2:
-                video_writer2.write(frame)
-
-        video_writer1.release()
-        video_writer2.release()
+        # 正面（CF）用 image_drawer2、側面（CS）用 image_drawer 畫骨架；純側面錄影沒有正面影格，不寫正面影片
+        jobs = ((save_location1, self.video_frames1, self.image_drawer2),
+                (save_location2, self.video_frames2, self.image_drawer))
+        for location, frames, drawer in jobs:
+            if not frames:
+                continue
+            size = (frames[0].shape[1], frames[0].shape[0])
+            writer = cv2.VideoWriter(location, cv2.VideoWriter_fourcc(*'mp4v'), self.video_fps, size)
+            if not writer.isOpened():
+                print(f"Error while opening video writer: {location}")
+                continue
+            for frame_num, frame in enumerate(frames):
+                writer.write(drawer.drawInfo(img=frame, frame_num=frame_num) if process else frame)
+            writer.release()
         print("Store video success, folder =", output_folder)
 
     def reset(self):

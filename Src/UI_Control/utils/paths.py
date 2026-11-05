@@ -1,4 +1,5 @@
 """專案共用路徑，皆以本檔案位置為基準，不受執行時工作目錄影響"""
+import os
 from pathlib import Path
 
 # 本檔位於 <專案根目錄>/Src/UI_Control/utils/paths.py
@@ -12,17 +13,36 @@ CAMERA_CONFIG_DIR = UI_CONTROL_DIR / "camera_config"
 
 # Db 底下不是球員的資料夾，列出球員清單時要排除
 NON_HITTER_DIRS = {"icon", "pretrain", "Calibration", "full_clip"}  # full_clip：裁剪前的原始長片段（clip_trim）
+# 處理結果子資料夾：以正面影片檔名命名（CF_<片段>）；只有側面影片的錄影以側面影片檔名命名（CS_<片段>）
+RESULT_PREFIXES = ("CF_", "CS_")
+
+
+def is_result_dir(name) -> bool:
+    return os.path.basename(str(name)).startswith(RESULT_PREFIXES)
+
+
+def clip_videos(folder):
+    """錄影資料夾裡的 (正面 CF*.mp4, 側面 CS*.mp4)，沒有的為 None；只有側面影片的錄影做純側面 2D 分析"""
+    try:
+        names = sorted(os.listdir(folder))
+    except (OSError, TypeError):
+        return None, None
+
+    def pick(prefix):
+        return next((os.path.join(folder, n) for n in names if n.startswith(prefix) and n.lower().endswith(".mp4")
+                     and os.path.isfile(os.path.join(folder, n))), None)
+    return pick("CF"), pick("CS")
 
 
 def clip_parts(path):
-    """錄影資料夾（或其中的檔案、CF_ 結果子資料夾）相對 Db 的各層名稱，例如 (WeiShu, 2026-10-29, T座, WeiShu_H05)；
+    """錄影資料夾（或其中的檔案、CF_／CS_ 結果子資料夾）相對 Db 的各層名稱，例如 (WeiShu, 2026-10-29, T座, WeiShu_H05)；
     不在 Db 底下回傳 ()"""
     if not path:
         return ()
     p = Path(path).resolve()
     if p.is_file():
         p = p.parent
-    if p.name.startswith("CF_"):
+    if is_result_dir(p.name):
         p = p.parent
     try:
         return p.relative_to(DB_DIR.resolve()).parts

@@ -72,10 +72,12 @@ class VideoLoader:
         self.total_frames = count
         self.video_frames1 = video_frames1
         self.video_fps = fps
-        self.video_size = (self.video_frames1[0].shape[1], self.video_frames1[0].shape[0])
         self.total_frames = count
         self.video_frames2 = video_frames2
-        self.video_size2 = (self.video_frames2[0].shape[1], self.video_frames2[0].shape[0])
+        # 純側面錄影沒有正面影格，大小都用側面的
+        size = lambda frames: (frames[0].shape[1], frames[0].shape[0]) if frames else None
+        self.video_size2 = size(self.video_frames2)
+        self.video_size = size(self.video_frames1) or self.video_size2
         self.close_thread(self.v_t)
 
     def close_thread(self, thread):
