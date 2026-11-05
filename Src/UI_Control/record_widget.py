@@ -27,7 +27,7 @@ BLOCK_GAP_PX = 16
 class RecordWidget(Analysis2dWidget):
     def __init__(self, model, parent=None):
         super().__init__(model, parent)
-        # 背景 3D 程序：比較頁也共用這一個（main3d.py 傳給 Compare3DWidget）
+        # 背景 3D 程序：比較頁也共用這一個（main3d.py 傳給比較頁）
         self.worker3d = Worker3D(self)
         self.worker3d.done.connect(self.apply3D)
         self.worker3d.failed.connect(self.fail3D)

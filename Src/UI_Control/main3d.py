@@ -20,7 +20,7 @@ from ui.main_window import Ui_MainWindow
 from utils.model import Model
 from record_widget import RecordWidget
 from analysis3d_widget import Analysis3DWidget
-from compare3d_widget import Compare3DWidget
+from compare_widget import CompareWidget
 from ui_utils.radio_choice import batter_radio_buttons
 
 APP_FONT_FAMILY = "Microsoft JhengHei"
@@ -38,7 +38,7 @@ class Main3D(QMainWindow):
         self.analysisWidget = Analysis3DWidget(self.model)
         self.ui.Two_d_Tab.addTab(self.analysisWidget, "分析")
         batter_radio_buttons(self.analysisWidget.ui.batterInput)   # 右打／左打改成圓點（錄影頁在 RecordWidget 裡換）
-        self.compareWidget = Compare3DWidget(self.model, self.recordWidget.worker3d)   # 與錄影頁共用背景 3D 程序
+        self.compareWidget = CompareWidget(self.model, self.recordWidget.worker3d)   # 與錄影頁共用背景 3D 程序
         self.ui.Two_d_Tab.addTab(self.compareWidget, "比較")
 
     def closeEvent(self, event):
