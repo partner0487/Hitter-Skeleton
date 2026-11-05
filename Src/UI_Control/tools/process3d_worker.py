@@ -30,7 +30,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 METRICS_FILE = "metrics_3d.json"
 PROCESSED_FILES = ("person_side.json", "person_front.json", "bat_side.json", "bat_front.json")
-JOB_TIMEOUT_S = 180
+JOB_TIMEOUT_S = 400  # 長片段要先整段處理、裁剪後再處理一次
 
 
 def say(*parts):
@@ -46,6 +46,7 @@ def main():
 
     from utils.model import Model
     from analysis3d_widget import Analysis3DWidget
+    from utils.clip_trim import result_folder_of, trim_if_long
 
     widget = Analysis3DWidget(Model())
     widget.headless = True
@@ -92,9 +93,11 @@ def main():
         state["folder"] = folder
         say("START", folder)
         watchdog.start(JOB_TIMEOUT_S * 1000)
+        # 已處理過的長片段（事後自己剪的）：用先前結果找擊球點裁成 90 幀，結果搬走後下面會重新處理
+        cf, cs = pairs[0]
+        trim_if_long(cf, cs, widget.ui.batterInput.currentIndex())
         # 已處理過（CF_ 子資料夾有雙相機偵測結果）就只做分析，不重跑偵測
-        cf = pairs[0][0]
-        output = os.path.join(os.path.dirname(cf), os.path.splitext(os.path.basename(cf))[0])
+        output = result_folder_of(cf)
         if all(os.path.isfile(os.path.join(output, n)) for n in PROCESSED_FILES):
             state["analyzing"] = output
             widget.load_from_folder(output)

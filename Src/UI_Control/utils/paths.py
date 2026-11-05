@@ -11,7 +11,7 @@ ICON_DIR = DB_DIR / "icon"
 CAMERA_CONFIG_DIR = UI_CONTROL_DIR / "camera_config"
 
 # Db 底下不是球員的資料夾，列出球員清單時要排除
-NON_HITTER_DIRS = {"icon", "pretrain", "Calibration"}
+NON_HITTER_DIRS = {"icon", "pretrain", "Calibration", "full_clip"}  # full_clip：裁剪前的原始長片段（clip_trim）
 
 
 def clip_parts(path):

@@ -30,6 +30,7 @@ from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_part
 from PyQt5 import QtGui
 from ui_utils.analysis_bar import AnalysisBar
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
+from utils.clip_trim import CLIP_FRAMES, trim_if_long
 from utils.stereo_calibration import fundamental_side_to_front, load_stereo_params
 from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, keypoints_by_frame, peak_separation,
                                 pelvis_speed, rotation_speed_peaks, separation_series, stride_length)
@@ -1395,6 +1396,9 @@ class Analysis3DWidget(QWidget):
                 self.bat_analyzer.appendHeadTail(frame_num)
                 self.bat_analyzer_2.appendHeadTail(frame_num)
 
+        if frame_num == self.video_loader_dual.total_frames - 1 and self.trimLongClip():
+            self.is_dual = False
+            return
         if frame_num == self.video_loader_dual.total_frames - 1:
             self.video_loader_dual.saveDualVideo(False)
             self.video_loader_dual.saveDualVideo(True)
@@ -1407,6 +1411,19 @@ class Analysis3DWidget(QWidget):
         elif (getattr(self, "batch_queue", None) is None or frame_num % self.BATCH_DRAW_EVERY == 0
                 or frame_num == self.video_loader_dual.total_frames - 1):
             self.updateFrame4Process(frame_num=frame_num)
+
+    def trimLongClip(self) -> bool:
+        """超過標準長度（90 幀）的片段：用整段的側面偵測結果找擊球點，裁成擊球前 50、後 40 幀，
+        再重新處理裁好的片段（不存整段的結果）；有裁剪回傳 True"""
+        loader = self.video_loader_dual
+        if loader.total_frames <= CLIP_FRAMES:
+            return False
+        if not trim_if_long(loader.video_path, loader.video_path2, self.ui.batterInput.currentIndex(),
+                            self.pose_estimater_2.person_df, self.pose_estimater_2.bat_df):
+            return False
+        pair = (loader.video_path, loader.video_path2)
+        QTimer.singleShot(300, lambda: self.loadVideo4Process(*pair))
+        return True
 
     def checkVideoLoad4Process(self):
         """檢查影片是否讀取完成，並確保幀數資訊已更新。"""
