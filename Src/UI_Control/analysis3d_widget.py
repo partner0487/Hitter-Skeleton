@@ -10,7 +10,7 @@ from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import QWidget, QFileDialog, QGraphicsView, QGraphicsScene, QSizePolicy, QMessageBox
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QEvent, QRect
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QPen, QBrush, QStandardItemModel, QStandardItem
-from utils.selector import PersonSelector, KptSelector
+from utils.selector import PersonSelector
 from utils.analyze import PoseAnalyzer, BatAnalyzer
 from utils.vis_graph_3d import HipShoulderAngleGraph, BatKinematicsGraph
 from cv_utils.cv_control_3d import VideoLoader 
@@ -26,128 +26,22 @@ from utils.phase_detect3d import PhaseDetector, PhaseResult
 from utils.phase_detect2d import PhaseDetector as PhaseDetector2D
 from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
-from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS
+from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_parts, clip_title
 from PyQt5 import QtGui
-from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps
+from ui_utils.analysis_bar import AnalysisBar
+from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
 from utils.stereo_calibration import fundamental_side_to_front, load_stereo_params
 from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, keypoints_by_frame, peak_separation,
-                                pelvis_speed, separation_series, stride_length)
+                                pelvis_speed, rotation_speed_peaks, separation_series, stride_length)
 from utils.bat_speed2d import read_frame_times
-from utils.bat_speed3d import bat_track_3d, blast_metrics_3d
-from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts
+from utils.bat_speed3d import bat_track_3d, blast_metrics_3d, sweet_spot_speeds
+from utils.bat_profile import HIDDEN_GRIP_M, bat_for_clip
+from ui_utils.playback_clock import TICK_MS, PlaybackClock, rate_from_text
+from ui_utils.swing_charts import SwingChartsDialog
+from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
+BAT_SHORT_RATIO = 0.9   # 3D 實測棒長低於球棒設定的這個比例時提示
 
-class AnalysisBar(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        # 1. 增加高度：設為 80，確保交錯標籤 (a, b, c) 完整顯示
-        self.setAttribute(QtCore.Qt.WA_StyledBackground, True) # 支援樣式
-        # self.setFixedHeight(80)
-        # 確保滑鼠穿透(如果你不需要拖拽功能)
-        # self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
-        
-        self.segments = []
-
-    def set_segments(self, segments):
-        self.segments = segments
-        self.update()
-
-    def set_time_of_ratio(self, time_of_ratio):
-        """進度條比例 → 秒數（實際擷取時間），各段秒數用它相減"""
-        self.time_of_ratio = time_of_ratio
-        self.update()
-
-    def _x(self, ratio, w):
-        """比例 → x 像素，與 QSlider 把手中心相同：把手中心從 handle_px/2 走到 w - handle_px/2，
-        直接用 ratio * w 時越靠兩端越偏，把手停在擊球幀也壓不到 c 標記"""
-        handle = getattr(self, "handle_px", 0)
-        return int(round(handle / 2 + ratio * (w - handle)))
-
-    def set_markers(self, markers):
-        """設定在進度條上標註的點位: [(ratio, 'text'), ...]"""
-        self.markers = markers
-        self.update()
-
-    def paintEvent(self, event):
-        if not hasattr(self, 'segments') or not self.segments:
-            return
-
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.Antialiasing)
-            w = self.width()
-            h = self.height() 
-            
-            # --- 垂直佈局調整 ---
-            bar_h = 12
-            # 色塊位置：置中偏下一點點，騰出上方給大字體
-            bar_y = int(h * 0.52) - (bar_h // 2)  
-            total_duration = 1.5
-
-            # 1. 繪製色塊 (底層)
-            for start_ratio, end_ratio, color in self.segments:
-                x = self._x(start_ratio, w)
-                seg_w = self._x(end_ratio, w) - x
-                if seg_w <= 0: continue
-                painter.fillRect(QRect(x, bar_y, seg_w, bar_h), QColor(color))
-
-            # 2. 繪製標記 (1,2,3 與 a,b,c) - 緊貼邊緣
-            if hasattr(self, 'markers') and self.markers:
-                # 紀錄每個 mx 座標上已繪製的動力鏈標記數量
-                from collections import defaultdict
-                mx_counts = defaultdict(int)
-                
-                for ratio, marker_text in self.markers:
-                    mx = self._x(max(0.0, min(ratio, 1.0)), w)
-                    marker_str = str(marker_text)
-                    
-                    if marker_str in ['1', '2', '3', '4']:
-                        radius = 12
-                        count = mx_counts[mx]
-                        mx_counts[mx] += 1
-                        cy = bar_y - radius - count * 24 # 全部都放 bar 上面，但高度遞增錯開
-                        bg = {'1': QColor(220, 0, 0), '2': QColor(0, 170, 230), '3': QColor(0, 180, 0), '4': QColor(128, 0, 128)}.get(marker_str, Qt.gray)
-                        font_size = 12
-                    else:
-                        radius = 12
-                        cy = bar_y + bar_h + radius # 貼齊色塊下緣
-                        bg = {'a': QColor(255, 50, 50), 'b': QColor(255, 150, 0), 'c': QColor(0, 200, 255)}.get(marker_str, Qt.gray)
-                        font_size = 12
-
-                    rect = QRect(mx - radius, cy - radius, radius * 2, radius * 2)
-                    painter.setBrush(QBrush(bg))
-                    painter.setPen(QPen(Qt.black, 1))
-                    painter.drawEllipse(rect)
-                    
-                    painter.setFont(QFont("Arial", font_size, QFont.Bold))
-                    painter.setPen(QPen(Qt.white))
-                    painter.drawText(rect, Qt.AlignCenter, marker_str)
-
-            # 3. 畫秒數文字 (字體變大、向下靠近 Bar)
-            for start_ratio, end_ratio, color in self.segments:
-                x = self._x(start_ratio, w)
-                seg_w = self._x(end_ratio, w) - x
-                if seg_w < 15: continue
-                
-                time_of = getattr(self, "time_of_ratio", None) or (lambda r: r * total_duration)
-                seconds = time_of(end_ratio) - time_of(start_ratio)
-                t_color = QColor(color)
-                t_color.setAlpha(255)
-                painter.setPen(t_color)
-                
-                # --- 修改點：字體放大至 14 ---
-                painter.setFont(QFont("Arial", 14, QFont.Bold))
-                
-                # --- 修改點：位置向下沈，貼近 Bar ---
-                text_h = 24 # 增加文字框高度容納大字體
-                text_y = bar_y - text_h - 4 # 距離色塊頂部僅 4px，會與標記圓圈部分重疊
-                
-                painter.drawText(QRect(x, text_y, seg_w, text_h), Qt.AlignCenter, f"{seconds:.2f}s")
-                
-        finally:
-            painter.end()
 
 class Analysis3DWidget(QWidget):
     """
@@ -165,6 +59,8 @@ class Analysis3DWidget(QWidget):
         self.ui = Ui_hitter_ui_dual()
         self.ui.setupUi(self)
         self.arrangeMetricLabels()
+        # 背景程序處理時（tools/process3d_worker.py）不需要逐幀畫面，處理中完全不畫
+        self.headless = False
         self.folder = None
         self.frame = 0
         self.total_frames = 0
@@ -177,7 +73,6 @@ class Analysis3DWidget(QWidget):
         self.setupComponents()
         self.initVar()
         self.bindUI()
-        # self.bindCheckBox()
         self.initVispyCanvas()
 
     def shutdown(self):
@@ -229,16 +124,11 @@ class Analysis3DWidget(QWidget):
 
     def initParameters(self):
         # ---- 256083472 camera ---- front
-        # s_k1, s_k2, s_p1, s_p2, s_k3 = -0.1507604495950069, 0.0992797366428844, -0.00020610385938892725, -0.00036900923582035034, -0.02925990774478617
-        # fx1, fy1, cx1, cy1 = 1040.5555632535795, 1041.692258926554, 950.0364409793515, 530.3984673949892
         # # ---- 256083471 camera ---- side
         # # ---- side camera ---- 6 mm
-        # s_k1, s_k2, s_p1, s_p2, s_k3 = -0.1504238482962934, 0.10046068595508036, 0.0009543802109945303, -0.0019857762932287463, -0.03150633224872767
-        # fx1, fy1, cx1, cy1 = 1056.463741369799, 1055.9566674653763, 936.2691880195921, 552.3062783018795
         # self.side_intrinsic_matrix = np.array([[fx2, 0, cx2],
         #                                         [0, fy2, cy2],
         #                                         [0,   0,   1]])
-        # self.side_distortion_coeffs = np.array([s_k1, s_k2, s_p1, s_p2, s_k3])
         s_k1, s_k2, s_p1, s_p2, s_k3 = -0.1503812176808353, 0.09142073571976807, -0.00042003778401313523, 0.000616947412718863, -0.022943747055243328
         fx1, fy1, cx1, cy1 = 1057.8480015712446, 1058.615115032526, 963.1309477355599, 569.6218934625829
         self.side_intrinsic_matrix = np.array([[fx1, 0, cx1],
@@ -246,13 +136,10 @@ class Analysis3DWidget(QWidget):
                                             [0,   0,   1]])
         self.side_distortion_coeffs = np.array([s_k1, s_k2, s_p1, s_p2, s_k3])
         # ---- side camera ---- 8mm
-        # s_k1, s_k2, s_p1, s_p2, s_k3 = -0.17670068446109766, 0.14033116395467476, 0.0002611678101988233, -0.00042558869821785123, -0.059959390420739854
-        # fx1, fy1, cx1, cy1 = 1417.0645150420887, 1417.9407893921314, 955.4524361261298, 565.8145551025882
 
         # self.side_intrinsic_matrix = np.array([[fx1, 0, cx1],
         #                                     [0, fy1, cy1],
         #                                     [0,   0,   1]])
-        # self.side_distortion_coeffs = np.array([s_k1, s_k2, s_p1, s_p2, s_k3])
         # ---- front camera ----
         f_k1, f_k2, f_p1, f_p2, f_k3 = -0.3297916162340779, -2.73655197213946, -0.005002958001026669, -0.004773074931105136, 274.8547890952684
         fx2, fy2, cx2, cy2 = 5778.35636357731, 5773.276727595934, 912.7316802319106, 488.2090410693327
@@ -261,12 +148,9 @@ class Analysis3DWidget(QWidget):
                                             [0,   0,   1]])
         self.front_distortion_coeffs = np.array([f_k1, f_k2, f_p1, f_p2, f_k3])
         # ---- 256083471 camera ---- side
-        # s_k1, s_k2, s_p1, s_p2, s_k3 = -0.1503812176808353, 0.09142073571976807, -0.00042003778401313523, 0.000616947412718863, -0.022943747055243328
-        # fx2, fy2, cx2, cy2 = 1057.8480015712446, 1058.615115032526, 963.1309477355599, 569.6218934625829
         # self.side_intrinsic_matrix = np.array([[fx2, 0, cx2],
         #                                         [0, fy2, cy2],
         #                                         [0,   0,   1]])
-        # self.side_distortion_coeffs = np.array([s_k1, s_k2, s_p1, s_p2, s_k3])
         # self.R = np.array([[ 0.56247702, 0.01608364, 0.82665647],
         #                     [ 0.15069805, 0.98106936, -0.12162653],
         #                     [-0.81296353, 0.19298764, 0.54940519]])
@@ -307,7 +191,6 @@ class Analysis3DWidget(QWidget):
         # self.R = np.array([[ 0.23179385,  0.13894262, -0.96279102],
         #             [-0.13782324,  0.98445328,  0.10888753],
         #             [ 0.96295190,  0.10745552,  0.24733974]])
-        # self.t = np.array([[ 0.99450367], [-0.10454567], [-0.00571446]])
         # 以上寫死的數值只在沒有校正檔時使用（t 長度約 1，沒有真實尺度）
         self.applyStereoCalibration(load_stereo_params(batter_side=self.currentBatterSide()))
 
@@ -316,16 +199,31 @@ class Analysis3DWidget(QWidget):
         ui = self.ui
         ui.horizontalAngleLabel.setText("攻擊角度:")
         ui.verticalAngleLabel.setText("垂直棒角:")
+        # 跨步時間（離地 → 著地）、擊球時間（著地 → 擊球），放在離地區塊右欄
+        self.strideTimeCaption = new_label_like(ui.centerGravity, "跨步時間:")
+        self.strideTimeLabel = new_label_like(ui.centerGravityLabel)
+        self.swingTimeCaption = new_label_like(ui.centerGravity, "擊球時間:")
+        self.swingTimeLabel = new_label_like(ui.centerGravityLabel)
+        self.strideTimeLabel.setToolTip("前腳離地到前腳著地")
+        self.swingTimeLabel.setToolTip("前腳著地到擊球；Blast 的 Time to Contact 從開始下揮算起，這裡以著地為起點")
         self.maxSepCaption = new_label_like(ui.hipShoulderLabel2, "最大分離角:")
         self.maxSepLabel = new_label_like(ui.hipShoulderEditLabel2)
+        # 骨盆、軀幹最大轉速（取代動力鏈 1～4 號：60 fps 下各部位峰值只差 1～2 幀，順序判斷不可靠）
+        self.pelvisRotCaption = new_label_like(ui.hipShoulderLabel2, "骨盆轉速:")
+        self.pelvisRotLabel = new_label_like(ui.hipShoulderEditLabel2)
+        self.torsoRotCaption = new_label_like(ui.hipShoulderLabel2, "軀幹轉速:")
+        self.torsoRotLabel = new_label_like(ui.hipShoulderEditLabel2)
+        for label, part in ((self.pelvisRotLabel, "骨盆（兩髖連線）"), (self.torsoRotLabel, "軀幹（兩肩連線）")):
+            label.setToolTip(f"{part}在水平面上的最大轉速，取著地前 10 幀到擊球後 2 幀之間")
         sep_tip = "肩髖分離角：正值 = 肩落後髖（蓄力），負值 = 肩已轉過髖"
         for label in (ui.hipShoulderEditLabel1, ui.hipShoulderEditLabel2, ui.hipShoulderEditLabel3, self.maxSepLabel):
             label.setToolTip(sep_tip)
         arrange_metrics([
-            (ui.gridLayout_6, [[(ui.centerGravity, ui.centerGravityLabel)],
-                               [(ui.hipShoulderLabel, ui.hipShoulderEditLabel1)]]),
+            (ui.gridLayout_6, [[(ui.centerGravity, ui.centerGravityLabel), (self.strideTimeCaption, self.strideTimeLabel)],
+                               [(ui.hipShoulderLabel, ui.hipShoulderEditLabel1), (self.swingTimeCaption, self.swingTimeLabel)]]),
             (ui.gridLayout, [[(ui.centerGravity2, ui.centerGravityLabel2), (ui.strideDis, ui.strideDisLabel)],
-                             [(ui.hipShoulderLabel2, ui.hipShoulderEditLabel2), (self.maxSepCaption, self.maxSepLabel)]]),
+                             [(ui.hipShoulderLabel2, ui.hipShoulderEditLabel2), (self.maxSepCaption, self.maxSepLabel)],
+                             [(self.pelvisRotCaption, self.pelvisRotLabel), (self.torsoRotCaption, self.torsoRotLabel)]]),
             (ui.gridLayout_5, [[(ui.batSpeed, ui.batSpeedLabel), (ui.horizontalAngleLabel, ui.horizontalAngleEditLabel)],
                                [(ui.forefoot, ui.forefootLabel), (ui.backfoot, ui.backfootLabel)],
                                [(ui.hipShoulderLabel3, ui.hipShoulderEditLabel3), (ui.verticalAngleLabel, ui.verticalAngleEditLabel)]]),
@@ -333,6 +231,58 @@ class Analysis3DWidget(QWidget):
                                 [(ui.attackDis, ui.attackDisLabel)]]),
         ])
         align_columns([ui.verticalLayout_5, ui.verticalLayout_7, ui.verticalLayout_9, ui.verticalLayout_10])
+        self.addSwingChartsButton()
+
+    def metricTexts(self) -> dict:
+        """目前畫面上各指標的顯示文字（與提示），給錄影頁顯示 3D 結果用（tools/process3d_worker.py 存成 metrics_3d.json）。
+        鍵名與錄影頁共用：膝角、垂直棒角在 2D 介面的物件名稱不同，這裡用統一的鍵"""
+        ui = self.ui
+        labels = {
+            "centerGravityLabel": ui.centerGravityLabel, "centerGravityLabel2": ui.centerGravityLabel2,
+            "strideDisLabel": ui.strideDisLabel, "batSpeedLabel": ui.batSpeedLabel,
+            "horizontalAngleEditLabel": ui.horizontalAngleEditLabel, "verticalAngle": ui.verticalAngleEditLabel,
+            "frontKnee": ui.forefootLabel, "backKnee": ui.backfootLabel,
+            "hipShoulderEditLabel1": ui.hipShoulderEditLabel1, "hipShoulderEditLabel2": ui.hipShoulderEditLabel2,
+            "hipShoulderEditLabel3": ui.hipShoulderEditLabel3, "maxSep": self.maxSepLabel,
+            "pelvisRot": self.pelvisRotLabel, "torsoRot": self.torsoRotLabel,
+            "strideTime": self.strideTimeLabel, "swingTime": self.swingTimeLabel,
+        }
+        pr = getattr(self, "phase_result", None)
+        return {
+            "texts": {k: v.text() for k, v in labels.items()},
+            "tooltips": {k: v.toolTip() for k, v in labels.items() if v.toolTip()},
+            "phases": {k: getattr(pr, k, None) for k in ("F_liftoff", "F_landing", "F_impact")},
+            "stride_cm": getattr(self, "stride_cm", None),
+        }
+
+    def addSwingChartsButton(self):
+        """「分析」分頁加一組曲線圖按鈕（肩髖分離角、甜蜜點速度，見 ui_utils/swing_charts.py）"""
+        self.swing_charts = None
+        self.chart_separation, self.chart_sweet_speed = {}, {}
+        box = QtWidgets.QGroupBox("曲線圖", self.ui.tab_2)
+        box.setFont(self.ui.phaseAnalysis_2.font())
+        layout = QtWidgets.QVBoxLayout(box)
+        button = QtWidgets.QPushButton("肩髖分離角／甜蜜點速度", box)
+        button.setFont(self.ui.liftoffBtn.font())
+        button.clicked.connect(self.showSwingCharts)
+        layout.addWidget(button)
+        self.ui.gridLayout_16.addWidget(box, 3, 0, 1, 1)
+
+    def showSwingCharts(self):
+        if self.swing_charts is None:
+            self.swing_charts = SwingChartsDialog(self)
+        self.refreshSwingCharts(force=True)
+        self.swing_charts.show()
+        self.swing_charts.raise_()
+
+    def refreshSwingCharts(self, force=False):
+        """曲線圖視窗開著時，換影片或關鍵幀重算後跟著更新"""
+        if self.swing_charts is None or not (force or self.swing_charts.isVisible()):
+            return
+        total = int(getattr(self.video_loader, "total_frames", 0) or 0)
+        self.swing_charts.set_data(self.chart_separation, self.chart_sweet_speed,
+                                   getattr(self, "phase_result", None), total)
+        self.swing_charts.set_frame(self.ui.frameSlider.value())
 
     def currentBatterSide(self):
         """畫面上選的打擊方向，對應校正的 batter_side（right／left）"""
@@ -374,7 +324,6 @@ class Analysis3DWidget(QWidget):
         self.ground_initialized = False
         self.P1 = None
         self.P2 = None
-        print("Loading Parameters Success!")
         self.computeEssenMatrix()
         # 校正沒換時保留使用者調整過的視角（例如載入同一天的下一個資料夾）
         source = params.source if params else None
@@ -434,8 +383,6 @@ class Analysis3DWidget(QWidget):
         """Use normalized projection matrices for triangulation."""
         self.P1 = np.hstack([np.eye(3), np.zeros((3,1))])   # normalized domain # side camera
         self.P2 = np.hstack([self.R, self.t])               # normalized domain # front camera
-        print("Compute Essential Matrix Successs!")
-        print("Projection matrices (normalized) ready.")
 
 
     # ======================================================
@@ -672,11 +619,6 @@ class Analysis3DWidget(QWidget):
         points_3d = (points_4d / points_4d[3])[:3].T  # (N, 3)，側面相機座標系
 
         # ---------- Step 4: 以雙腳趾中點做平移 ----------
-        # left_toe  = points_3d[LEFT_TOE_IDX]
-        # right_toe = points_3d[RIGHT_TOE_IDX]
-        # self.origin = (left_toe + right_toe) / 2.0
-        # points_3d_centered = points_3d - self.origin
-        # return points_3d_centered
         if not hasattr(self, 'origin') or self.origin is None:
             left_toe  = points_3d[LEFT_TOE_IDX]
             right_toe = points_3d[RIGHT_TOE_IDX]
@@ -685,200 +627,6 @@ class Analysis3DWidget(QWidget):
         
         points_3d_centered = points_3d - self.origin
         return points_3d_centered
-
-    def _get_velocity_peaks_3d(self, impact_frame=None):
-        """
-        計算 3D 動力鏈 (頸部、骨盆、膝蓋、手腕) 的速度峰值幀號。
-        回傳: dict, 例如 {"neck": 120, "hip": 125, "knee": 130, "wrist": 140}
-        """
-        if not hasattr(self, 'person_3d_df') or self.person_3d_df is None or self.person_3d_df.empty:
-            self.person_3d_df = self.triangularPersonPointsAllFrames()
-            
-        if self.person_3d_df is None or self.person_3d_df.empty:
-            return {}
-            
-        import numpy as np
-        try:
-            from scipy.signal import savgol_filter
-        except ImportError:
-            return {}
-
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        fps = get_video_fps(self.video_loader)
-        
-        # 定義關節索引 (與 2D 保持一致)
-        neck_idx = 18 
-        if is_righty:
-            hip_idx, knee_idx, wrist_idx = 19, 13, 9
-        else:
-            hip_idx, knee_idx, wrist_idx = 19, 14, 10
-            
-        all_rows = []
-        for _, row in self.person_3d_df.iterrows():
-            kpts = row.get("keypoints_3d")
-            if kpts is not None and len(kpts) > max(neck_idx, hip_idx, knee_idx, wrist_idx):
-                all_rows.append((row.get("frame_number", 0), np.array(kpts)))
-                
-        if len(all_rows) < 4:
-            return {}
-
-        frames = []
-        v_neck, v_hip, v_knee, v_wrist = [], [], [], []
-        
-        dt = 1.0 / fps
-        for i in range(2, len(all_rows) - 1):
-            frame_num = all_rows[i][0]
-            prev_kpts = all_rows[i-2][1]
-            next_kpts = all_rows[i+1][1]
-            
-            frames.append(frame_num)
-            # 3D 歐氏距離 / (3 * dt)
-            denom = 3.0 * dt
-            v_neck.append(np.linalg.norm(next_kpts[neck_idx] - prev_kpts[neck_idx]) / denom)
-            v_hip.append(np.linalg.norm(next_kpts[hip_idx] - prev_kpts[hip_idx]) / denom)
-            v_knee.append(np.linalg.norm(next_kpts[knee_idx] - prev_kpts[knee_idx]) / denom)
-            v_wrist.append(np.linalg.norm(next_kpts[wrist_idx] - prev_kpts[wrist_idx]) / denom)
-            
-        # 平滑
-        window_size = 11
-        if len(frames) < window_size:
-            window_size = len(frames) if len(frames) % 2 != 0 else len(frames) - 1
-        
-        if window_size > 3:
-            v_neck = np.maximum(savgol_filter(v_neck, window_size, 3), 0)
-            v_hip = np.maximum(savgol_filter(v_hip, window_size, 3), 0)
-            v_knee = np.maximum(savgol_filter(v_knee, window_size, 3), 0)
-            v_wrist = np.maximum(savgol_filter(v_wrist, window_size, 3), 0)
-            
-        # 找峰值 (排除頭尾 5 幀)
-        peaks = {}
-        for name, v_arr in [("neck", v_neck), ("hip", v_hip), ("knee", v_knee), ("wrist", v_wrist)]:
-            if len(v_arr) > 10:
-                if impact_frame is not None:
-                    # 限制在 <= impact_frame + 2 幀以內
-                    valid_indices = [idx for idx, fn in enumerate(frames) if fn <= impact_frame + 2]
-                    if len(valid_indices) > 5:
-                        search_indices = [idx for idx in valid_indices if idx >= 5 and idx < len(v_arr) - 5]
-                        if len(search_indices) > 0:
-                            v_slice = [v_arr[idx] for idx in search_indices]
-                            max_local_idx = np.argmax(v_slice)
-                            max_idx = search_indices[max_local_idx]
-                        else:
-                            max_idx = np.argmax(v_arr[5:-5]) + 5
-                    else:
-                        max_idx = np.argmax(v_arr[5:-5]) + 5
-                else:
-                    v_slice = v_arr[5:-5]
-                    max_idx = np.argmax(v_slice) + 5
-                peaks[name] = int(frames[max_idx])
-            else:
-                peaks[name] = None
-        return peaks
-
-    def showJointVelocityChart3D(self):
-        """顯示指定打擊者的 3D 關節速度變化圖表 (公尺/秒)"""
-        # 取得 3D 數據
-        if not hasattr(self, 'person_3d_df') or self.person_3d_df is None or self.person_3d_df.empty:
-            self.person_3d_df = self.triangularPersonPointsAllFrames()
-            
-        if self.person_3d_df is None or self.person_3d_df.empty:
-            print("無 3D 骨架資料，無法繪製 3D 關節速度圖")
-            return
-            
-        import pyqtgraph as pg
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout
-        import numpy as np
-        
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        fps = get_video_fps(self.video_loader)
-        
-        # 定義關節索引 (與 2D 保持一致)
-        neck_idx = 18 
-        if is_righty:
-            hip_idx, knee_idx, wrist_idx = 19, 13, 9
-            title_prefix = "右打者 (3D)"
-            side_name = "左"
-        else:
-            hip_idx, knee_idx, wrist_idx = 19, 14, 10
-            title_prefix = "左打者 (3D)"
-            side_name = "右"
-            
-        all_rows = []
-        for _, row in self.person_3d_df.iterrows():
-            kpts = row.get("keypoints_3d")
-            if kpts is not None and len(kpts) > max(neck_idx, hip_idx, knee_idx, wrist_idx):
-                all_rows.append((row.get("frame_number", 0), np.array(kpts)))
-                
-        if len(all_rows) < 4:
-            print("3D 速度計算失敗：有效幀不足")
-            return
-
-        frames = []
-        v_neck, v_hip, v_knee, v_wrist = [], [], [], []
-        
-        dt = 1.0 / fps
-        for i in range(2, len(all_rows) - 1):
-            frame_num = all_rows[i][0]
-            prev_kpts = all_rows[i-2][1]
-            next_kpts = all_rows[i+1][1]
-            
-            frames.append(frame_num)
-            # 3D 歐氏距離 / (3 * dt) -> m/s (假設單位是米)
-            denom = 3.0 * dt
-            v_neck.append(np.linalg.norm(next_kpts[neck_idx] - prev_kpts[neck_idx]) / denom)
-            v_hip.append(np.linalg.norm(next_kpts[hip_idx] - prev_kpts[hip_idx]) / denom)
-            v_knee.append(np.linalg.norm(next_kpts[knee_idx] - prev_kpts[knee_idx]) / denom)
-            v_wrist.append(np.linalg.norm(next_kpts[wrist_idx] - prev_kpts[wrist_idx]) / denom)
-            
-        # 套用 Savitzky-Golay 平滑濾波
-        try:
-            from scipy.signal import savgol_filter
-            window_size = 11
-            if len(frames) < window_size:
-                window_size = len(frames) if len(frames) % 2 != 0 else len(frames) - 1
-            if window_size > 3:
-                v_neck = np.maximum(savgol_filter(v_neck, window_size, 3), 0)
-                v_hip = np.maximum(savgol_filter(v_hip, window_size, 3), 0)
-                v_knee = np.maximum(savgol_filter(v_knee, window_size, 3), 0)
-                v_wrist = np.maximum(savgol_filter(v_wrist, window_size, 3), 0)
-        except Exception as e:
-            print(f"3D 速度平滑濾波失敗: {e}")
-            
-        # 建立彈出視窗
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"{title_prefix} 3D 關節速度圖表 (m/s)")
-        dialog.resize(800, 500)
-        
-        layout = QVBoxLayout(dialog)
-        plot_widget = pg.PlotWidget(title=f"{title_prefix} 各關節 3D 瞬間速度")
-        layout.addWidget(plot_widget)
-        
-        plot_widget.addLegend()
-        plot_widget.setLabel('bottom', 'Frame Number')
-        plot_widget.setLabel('left', 'Velocity (m/s)')
-        plot_widget.showGrid(x=True, y=True)
-        
-        plot_widget.plot(frames, v_neck, pen=pg.mkPen('m', width=2), name="頸部 (Neck)")
-        plot_widget.plot(frames, v_hip, pen=pg.mkPen('g', width=2), name="臀部 (Pelvis)")
-        plot_widget.plot(frames, v_knee, pen=pg.mkPen('c', width=2), name=f"{side_name}膝 (Knee)")
-        plot_widget.plot(frames, v_wrist, pen=pg.mkPen('y', width=2), name=f"{side_name}腕 (Wrist)")
-        
-        # 標示最大值
-        impact_frame = getattr(self, 'phase_result', None) and self.phase_result.F_impact
-        peaks = self._get_velocity_peaks_3d(impact_frame)
-        for name, color, v_arr in [("neck", 'm', v_neck), ("hip", 'g', v_hip), ("knee", 'c', v_knee), ("wrist", 'y', v_wrist)]:
-            f_num = peaks.get(name)
-            if f_num is not None and f_num in frames:
-                idx = frames.index(f_num)
-                val = v_arr[idx]
-                scatter = pg.ScatterPlotItem([f_num], [val], size=12, pen=pg.mkPen(None), brush=pg.mkBrush(color))
-                plot_widget.addItem(scatter)
-                text = pg.TextItem(f"{val:.2f}", color=color, anchor=(0.5, 1.5))
-                text.setPos(f_num, val)
-                plot_widget.addItem(text)
-        
-        self._velocity_chart_dialog_3d = dialog
-        dialog.show()
 
     def triangularPersonPointsAllFrames(self) -> pd.DataFrame:
         """
@@ -941,6 +689,39 @@ class Analysis3DWidget(QWidget):
         else:
             # 更新位置的同時也更新顏色 (確保顏色同步)
             self.bat_line.set_data(pos=bat_pts, color=bat_color)
+
+        # 握把與棒尾被雙手遮住、遮罩量不到：從握把端沿球棒方向補到完整棒長，半透明表示是推算的
+        handle_m = getattr(self, "bat_handle_m", 0.0)
+        direction = np.asarray(tail_3d, dtype=np.float32) - np.asarray(head_3d, dtype=np.float32)
+        norm = float(np.linalg.norm(direction))
+        handle_pts = None
+        if handle_m > 0 and norm > 1e-6:
+            handle_pts = np.vstack([tail_3d, tail_3d + direction / norm * handle_m]).astype(np.float32)
+        if handle_pts is None:
+            if getattr(self, "bat_handle_line", None) is not None:
+                self.bat_handle_line.visible = False
+            return
+        handle_color = (0.0, 0.4, 1.0, 0.35)
+        if getattr(self, "bat_handle_line", None) is None:
+            self.bat_handle_line = scene.visuals.Line(pos=handle_pts, color=handle_color, width=4,
+                                                      parent=self.view.scene, method='gl')
+        else:
+            self.bat_handle_line.set_data(pos=handle_pts, color=handle_color)
+        self.bat_handle_line.visible = True
+
+    def updateBatHandleLength(self):
+        """3D 畫面補畫的握把長度 = 打者設定棒長（沒設定用預設）− 這支錄影遮罩露出段的中位數"""
+        lengths = []
+        for f in range(int(getattr(self.video_loader, "total_frames", 0) or 0)):
+            tail, head = self.triangulate_bat(f)
+            if tail is not None and head is not None:
+                lengths.append(float(np.linalg.norm(np.asarray(tail) - np.asarray(head))))
+        if not lengths or not self.has_metric_scale:
+            self.bat_handle_m = 0.0
+            return
+        visible = float(np.median(lengths))
+        self.bat_handle_m = max(bat_for_clip(self.folder).length_m - visible, 0.0)
+        print(f"[Bat 3D] 遮罩露出段中位數 {visible:.2f} m，補畫握把 {self.bat_handle_m:.2f} m")
 
     def draw_3d_pose(self, points3d):
         """
@@ -1023,7 +804,6 @@ class Analysis3DWidget(QWidget):
         coord_max = float(pts.max())
         coord_range = coord_max - coord_min if coord_max > coord_min else 1.0
 
-        print(f"[GROUND] coord_range = {coord_range:.4f}")
 
         l_toe = pts[l_big_toe_idx]
         r_toe = pts[r_big_toe_idx]
@@ -1034,11 +814,9 @@ class Analysis3DWidget(QWidget):
         # 地板高度 = 腳趾平均高度 + 一點點向下偏移
         ground_y = float(toe_y + offset_scale * coord_range)
 
-        print(f"[GROUND] toe_y = {toe_y:.4f}, ground_y = {ground_y:.4f}")
 
         # 地板邊長大小，也用座標範圍決定
         size = coord_range * size_scale
-        print(f"[GROUND] size = {size:.4f}")
 
         ground_pts = np.array(
             [
@@ -1135,8 +913,6 @@ class Analysis3DWidget(QWidget):
         angle_deg = np.degrees(angle_rad)
         angle_deg = (angle_deg + 180) % 360 - 180
 
-        # text = f"Hip–Shoulder Separation: {angle_deg:.1f}°"
-        # self.ui.hipShoulderEditLabel.setText(f"{angle_deg:.1f}")
 
     def draw_swing_trajectory(self, current_f: int):
         """
@@ -1242,8 +1018,8 @@ class Analysis3DWidget(QWidget):
     # 🔹 Tab 初始化與 UI 連動
     # ======================================================
     def bindUI(self):
-        self.ui.loadProcessFolderBtn.setText("📁 載入資料夾分析")
-        self.ui.loadProcessFolderBtn.clicked.connect(self.loadFolder)
+        # 選清單裡的錄影就會載入分析，不另外提供手動選資料夾
+        self.ui.loadProcessFolderBtn.hide()
 
         # 安裝 EventFilter 給 keyphaseLabel1~3 以偵測 Resize
         if hasattr(self.ui, 'keyphaseLabel1'):
@@ -1279,6 +1055,10 @@ class Analysis3DWidget(QWidget):
 
         self.ui.showSkeletonCheckBox.stateChanged.connect(self.toggleShowSkeleton)
         self.ui.selectCheckBox.stateChanged.connect(self.toggleSelect)
+        # 骨架／選擇人只在處理影片時用，由 toggleDetect 自動勾選；看已處理的錄影時沒有作用
+        # （影片已燒進骨架、資料只留打者），所以不顯示在畫面上
+        self.ui.showSkeletonCheckBox.hide()
+        self.ui.selectCheckBox.hide()
 
         if hasattr(self.ui, 'listView'):
             self.ui.listView.clicked.connect(self.onRecentVideoSelected)
@@ -1297,6 +1077,22 @@ class Analysis3DWidget(QWidget):
             
         if hasattr(self.ui, 'hitterNameAddInputBtn'):
             self.ui.hitterNameAddInputBtn.clicked.connect(self.addNewHitter)
+
+    def syncSelectionToFolder(self, folder):
+        """打者選單、模式改成資料夾所屬的打者與模式（Db/<打者>/<日期>/<模式>/...），右側清單跟著更新"""
+        parts = clip_parts(folder)
+        if not parts or not hasattr(self.ui, 'hitterNameInput'):
+            return
+        index = self.ui.hitterNameInput.findText(parts[0])
+        if index >= 0 and index != self.ui.hitterNameInput.currentIndex():
+            self.ui.hitterNameInput.blockSignals(True)
+            self.ui.hitterNameInput.setCurrentIndex(index)
+            self.ui.hitterNameInput.blockSignals(False)
+        mode = next((k for k, v in self.mode_dict.items() if len(parts) > 2 and v == parts[2]), None)
+        if mode is not None:
+            self.setMode(mode)  # 會一併更新右側清單
+        else:
+            self.populateRecentVideosList()
 
     def setMode(self, mode):
         self.current_mode = mode
@@ -1427,10 +1223,8 @@ class Analysis3DWidget(QWidget):
             QMessageBox.warning(self, "無法處理", "請先讀取影片!")
             return
 
-        # print("skeleton state: "+ str(state))
         # 重置所有分析器狀態以允許重新處理
         self.ui.showSkeletonCheckBox.setChecked(True)
-        # self.ui.selectCheckBox.setChecked(True)
         frame = self.video_loader_dual.getVideoImage(0)
         frame_2 = self.video_loader_dual.getVideoImage2(0)
         self.detectDualKpt(frame, frame_2, 0)
@@ -1439,11 +1233,6 @@ class Analysis3DWidget(QWidget):
     
     def toggleShowSkeleton(self, state:int):
         """Toggle skeleton detection and FPS control."""
-        print("skeleton state: "+ str(state))
-        # if state == 2:
-        #     self.ui.showSkeletonCheckBox.setCheckState(0)
-        #     QMessageBox.warning(self, "無法選擇人", "請選擇顯示人體骨架!")
-        #     return
         is_checked = state == 2
         if not is_checked:
             self.ui.selectCheckBox.setCheckState(0)
@@ -1488,7 +1277,6 @@ class Analysis3DWidget(QWidget):
         self.ui.showSkeletonCheckBox.setChecked(False)
         self.ui.selectCheckBox.setChecked(False)
         if self.is_play:
-            # self.ui.playBtn.click()
             self.playBtnClicked4Process()
         self.video_loader_dual.loadVideo(video_path, video_path2)
         self.checkVideoLoad4Process()
@@ -1572,6 +1360,8 @@ class Analysis3DWidget(QWidget):
         if getattr(self, "batch_queue", None) is not None:
             QTimer.singleShot(300, self._startNextBatchClip)
 
+    BATCH_DRAW_EVERY = 5
+
     def detectDualKpt(self, frame, frame_2, frame_num):
         """先偵測側面（pose_estimater_2）、再偵測正面（pose_estimater）：側面鎖定的打者人框經對極幾何導引正面選人，
         正投時才不會選到站在正面相機前的投手"""
@@ -1594,7 +1384,6 @@ class Analysis3DWidget(QWidget):
         current_seconds = (float(frame_num) / float(self.video_loader_dual.total_frames - 1)) * total_duration
         # 顯示格式： 0.45s / 1.50s
         self.ui.frameNumLabel.setText(f'{current_seconds:.2f}/{total_duration:.1f}s')
-        # self.ui.frameNumLabel.setText(f'{frame_num}/{self.video_loader_dual.total_frames - 1}')
         frame = self.video_loader_dual.getVideoImage(frame_num)
         frame_2 = self.video_loader_dual.getVideoImage2(frame_num)
         fps = 0
@@ -1607,14 +1396,17 @@ class Analysis3DWidget(QWidget):
                 self.bat_analyzer_2.appendHeadTail(frame_num)
 
         if frame_num == self.video_loader_dual.total_frames - 1:
-            print("DEBUG: Emission condition met, emitting processFinished")
             self.video_loader_dual.saveDualVideo(False)
             self.video_loader_dual.saveDualVideo(True)
-            print(f"DEBUG: Emitting signal with folder: {self.video_loader_dual.output_folder}")
             self.processFinished.emit(self.video_loader_dual.output_folder)
             self.is_dual = False
 
-        self.updateFrame4Process(frame_num=frame_num)
+        # 批量處理時每 BATCH_DRAW_EVERY 幀才畫一次（只供看進度；存檔的骨架影片另外繪製）
+        if self.headless:
+            pass
+        elif (getattr(self, "batch_queue", None) is None or frame_num % self.BATCH_DRAW_EVERY == 0
+                or frame_num == self.video_loader_dual.total_frames - 1):
+            self.updateFrame4Process(frame_num=frame_num)
 
     def checkVideoLoad4Process(self):
         """檢查影片是否讀取完成，並確保幀數資訊已更新。"""
@@ -1635,7 +1427,6 @@ class Analysis3DWidget(QWidget):
         """Change the pitcher based on input value. 9: "左腕", 10: "右腕","""
         kpt_id = 10 if self.ui.batterInput.currentIndex() == 0 else 9
         self.pose_estimater.setKptId(kpt_id)
-        # self.pose_estimater.setPitchHandId(kpt_id)
 
     def updateVideoInfo4Process(self):
         """更新與影片相關的資訊顯示在 UI 上。"""
@@ -1647,9 +1438,8 @@ class Analysis3DWidget(QWidget):
         self.initFrameSlider(self.video_loader_dual.total_frames)
         self.updateFrame4Process(frame_num = 0)
         self.model.setImageSize(self.video_loader_dual.video_size)
-        # self.ui.videoNameLabel.setText(self.video_loader_dual.video_name)
         video_size = self.video_loader_dual.video_size
-        self.ui.ResolutionLabel.setText(f"(0,0) - {video_size[0]} x {video_size[1]}")
+        self.ui.ResolutionLabel.setText(clip_title(self.video_loader_dual.folder_path))
         
         if getattr(self, '_auto_process_pending', False):
             self._auto_process_pending = False
@@ -1677,10 +1467,12 @@ class Analysis3DWidget(QWidget):
             if i == self.video_loader_dual.total_frames - 1 and self.is_play:
                 self.playBtnClicked4Process()
             
-            # 還原原本系統 1 倍速為最低延遲 1ms 的體驗
+            # 還原原本系統 1 倍速為最低延遲 1ms 的體驗；偵測處理中不套用慢動作
+            # （原本沿用播放速度 0.25x，每幀多等約 100 ms，佔一支影片處理時間的 35%）。
+            # waitKey 在 Windows 上會順便處理視窗訊息，畫面才會更新，所以仍保留 1 ms
             delay = 1
             try:
-                if hasattr(self.ui, 'slowMotionInput'):
+                if hasattr(self.ui, 'slowMotionInput') and not self.ui.showSkeletonCheckBox.isChecked():
                     val_str = self.ui.slowMotionInput.currentText().replace('x', '').replace('X', '').strip()
                     current_rate = float(val_str)
                     if current_rate >= 1.0:
@@ -1688,7 +1480,7 @@ class Analysis3DWidget(QWidget):
                     elif current_rate > 0:
                         # 當速度小於 1，成比例加上額外的延遲 (0.5倍加約33ms，0.25倍加約99ms)
                         delay = int((1.0 / current_rate - 1.0) * 33) + 1
-            except:
+            except Exception:
                 pass
                 
             cv2.waitKey(max(1, delay))
@@ -1718,6 +1510,8 @@ class Analysis3DWidget(QWidget):
 
         if hasattr(self, 'hip_shoulder_plot') and self.hip_shoulder_plot is not None:
             self.hip_shoulder_plot.update(self.ui.frameSlider.value())
+        if getattr(self, "swing_charts", None) is not None and self.swing_charts.isVisible():
+            self.swing_charts.set_frame(self.ui.frameSlider.value())
 
         if hasattr(self, 'bat_speed_plot') and self.bat_speed_plot is not None:
             self.bat_speed_plot.update(self.ui.frameSlider.value())
@@ -1747,6 +1541,7 @@ class Analysis3DWidget(QWidget):
         print(f"📁 Loading Folder: {folder}")
         # 依錄影路徑中的日期與畫面上選的右打／左打，使用當天或之前最新的對應校正
         self.applyStereoCalibration(load_stereo_params(folder, self.currentBatterSide()))
+        self.syncSelectionToFolder(folder)
 
         # 定義輔助函式，支援根目錄或 CF_ 子目錄 (讀取內部那包)
         def get_json_df(fname, sub_prefix="CF_"):
@@ -1759,7 +1554,7 @@ class Analysis3DWidget(QWidget):
             
             if os.path.exists(p):
                 try: return pd.read_json(p, orient='records')
-                except: pass
+                except Exception: pass
             return pd.DataFrame()
 
         # 1. 讀取所有資料
@@ -1845,9 +1640,6 @@ class Analysis3DWidget(QWidget):
             # Convert numpy arrays to lists for JSON serialization if necessary, 
             # but pandas read_json/to_json might handle list-of-lists. 
             # However, for safety with direct to_json, ensure it's standard lists.
-            # safe_df = self.person_3d_df.copy()
-            # safe_df["keypoints_3d"] = safe_df["keypoints_3d"].apply(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
-            # safe_df.to_json(save_path, orient='records')
             
             # Simplified approach if we trust the structure or just want to dump it:
             try:
@@ -1873,7 +1665,6 @@ class Analysis3DWidget(QWidget):
             
             # 獨立視窗暫時關閉（圖表仍建立，用於與滑桿同步）
             self.hip_shoulder_plot.graph.resize(800, 400)
-            # self.hip_shoulder_plot.graph.show()
 
         # 棒頭速度與加速度圖表
         bat_frames = []
@@ -1908,10 +1699,8 @@ class Analysis3DWidget(QWidget):
             if hasattr(self, 'phase_result') and self.phase_result is not None:
                 self.bat_speed_plot.set_phase_result(self.phase_result)
             self.bat_speed_plot.graph.resize(800, 400)
-            # self.bat_speed_plot.graph.show()  # 獨立視窗暫時關閉（仍用最高速覆寫 Impact）
             
         # [NEW] 顯示 3D 關節速度圖表（獨立視窗暫時關閉）
-        # self.showJointVelocityChart3D()
 
     def detectPhases(self):
         # 這裡直接做階段偵測
@@ -1951,12 +1740,8 @@ class Analysis3DWidget(QWidget):
         if self.phase_result is None:
             self.phase_result = PhaseResult()
             
-        print(f"[DEBUG] Original PhaseResult: F_liftoff={self.phase_result.F_liftoff}, F_landing={self.phase_result.F_landing}, F_impact={self.phase_result.F_impact}")
 
         if self.phase_result.F_liftoff is None and self.phase_result.F_landing is None and self.phase_result.F_impact is None:
-            # self.phase_result.F_liftoff = min(15, max(0, total_frames - 3))
-            # self.phase_result.F_landing = min(25, max(0, total_frames - 2))
-            # self.phase_result.F_impact = min(30, max(0, total_frames - 1))
             print("[Analysis3D] All keyphases missing. Skipping fallback as per user request.")
         else:
             if self.phase_result.F_landing is None:
@@ -1965,16 +1750,24 @@ class Analysis3DWidget(QWidget):
                     if self.phase_result.F_impact is not None and fallback_landing >= self.phase_result.F_impact:
                         fallback_landing = self.phase_result.F_impact - 1
                     self.phase_result.F_landing = min(fallback_landing, max(0, total_frames - 1))
-                    print(f"[DEBUG] Landing missing. Fallback to Liftoff + 10: {self.phase_result.F_landing}")
+                    print(f"[Analysis3D] Landing missing. Fallback to Liftoff + 10: {self.phase_result.F_landing}")
                 elif self.phase_result.F_impact is not None:
                     self.phase_result.F_landing = max(0, self.phase_result.F_impact - 5)
-                    print(f"[DEBUG] Landing & Liftoff missing. Fallback Landing to Impact - 5: {self.phase_result.F_landing}")
+                    print(f"[Analysis3D] Landing & Liftoff missing. Fallback Landing to Impact - 5: {self.phase_result.F_landing}")
         
-        print(f"[DEBUG] Final PhaseResult: {self.phase_result}")
         # ---------------------------------
         
         self.setPhaseResult(self.phase_result)
         print("PhaseResult =", self.phase_result)
+
+    def updatePhaseTimes(self, phase_result):
+        """跨步時間、擊球時間，與進度條上各段秒數一致"""
+        total = int(getattr(self.video_loader, "total_frames", 0) or 0)
+        times = getattr(self, "frame_times", None)
+        stride = phase_seconds(phase_result.F_liftoff, phase_result.F_landing, total, times)
+        swing = phase_seconds(phase_result.F_landing, phase_result.F_impact, total, times)
+        self.strideTimeLabel.setText(fmt(stride, "s", 2))
+        self.swingTimeLabel.setText(fmt(swing, "s", 2))
 
     def setPhaseResult(self, phase_result: PhaseResult):
         total = self.video_loader.total_frames
@@ -1984,15 +1777,9 @@ class Analysis3DWidget(QWidget):
             f3 = phase_result.F_impact
             
             # 深藍 (Dark Blue)
-            # color_prepare = QColor(0, 191, 255)   # 亮天藍 (Deep Sky Blue)
-            # color_stride  = QColor(255, 69, 0)    # 亮橘紅 (Orange Red)
-            # color_swing   = QColor(255, 215, 0)   # 亮金黃 (Gold)
-            # color_follow  = QColor(50, 205, 50)   # 亮綠 (Lime Green)
             color_prepare = QColor(150, 150, 150)   # 亮天藍 (Deep Sky Blue)
             color_stride  = QColor(255, 69, 0)    # 亮橘紅 (Orange Red)
-            # color_swing   = QColor(255, 215, 0)   # 亮金黃 (Gold)
             color_swing = QColor(180, 165, 32)
-            # color_follow  = QColor(50, 205, 50)   # 亮綠 (Lime Green)
             color_follow = QColor(150, 150, 150)
 
             segs = []
@@ -2019,27 +1806,13 @@ class Analysis3DWidget(QWidget):
             if f2 is not None: markers.append((f2/total, 'b'))
             if f3 is not None: markers.append((f3/total, 'c'))
 
-            # 動力啟動順序 (1,2,3,4)
-            try:
-                peaks = self._get_velocity_peaks_3d(f3)
-                valid_peaks = {k: v for k, v in peaks.items() if v is not None}
-                sorted_peaks = sorted(valid_peaks.items(), key=lambda item: item[1])
-                rank_dict = {name: rank + 1 for rank, (name, frame) in enumerate(sorted_peaks)}
-                
-                for name, f_num in valid_peaks.items():
-                    if total > 1:
-                        ratio = f_num / total
-                        rank_text = str(rank_dict[name])
-                        markers.append((ratio, rank_text))
-            except Exception as e:
-                print("Slider peak marker set error (3D):", e)
-
             if hasattr(self.analysis_bar, 'set_markers'):
                 self.analysis_bar.set_markers(markers)
 
         self.ui.liftofflabel.setText(str(phase_result.F_liftoff)+"幀")
         self.ui.landinglabel.setText(str(phase_result.F_landing)+"幀")
         self.ui.impactlabel.setText(str(phase_result.F_impact)+"幀")
+        self.updatePhaseTimes(phase_result)
         if phase_result.F_impact is not None:
             self.calculateBatAnglesAtImpact(phase_result.F_impact, phase_result.F_landing)
         # 先算指標：著地圖上的跨步距離標註用它的結果
@@ -2052,6 +1825,7 @@ class Analysis3DWidget(QWidget):
         if hasattr(self, 'video_loader') and self.video_loader and hasattr(self.video_loader, 'video_path'):
             folder_path = os.path.dirname(self.video_loader.video_path)
             self._loadRapsodoData(folder_path)
+        self.refreshSwingCharts()
 
     def _loadRapsodoData(self, folder_path: str):
         """讀取 Rapsodo 資料 (data.json 與 sprayChart.jpg) 並更新 UI"""
@@ -2079,36 +1853,9 @@ class Analysis3DWidget(QWidget):
             except Exception as e:
                 print(f"Error loading {data_json_path}: {e}")
 
-        spray_chart_path = os.path.abspath(os.path.join(folder_path, 'sprayChart.jpg')).replace('\\', '/')
-        if not os.path.exists(spray_chart_path):
-            spray_chart_path = os.path.abspath(os.path.join(os.path.dirname(folder_path), 'sprayChart.jpg')).replace('\\', '/')
+        if hasattr(self.ui, 'rapsodoLabel'):
+            show_spray_chart(self.ui.rapsodoLabel, folder_path)
 
-        if os.path.exists(spray_chart_path) and hasattr(self.ui, 'rapsodoLabel'):
-            try:
-                # 像 keyphase 一樣，用 cv2 讀取圖片，避開 QPixmap 直接讀檔的 Thread 限制
-                # cv2.imdecode 可以支援中文路徑
-                img_bgr = cv2.imdecode(np.fromfile(spray_chart_path, dtype=np.uint8), cv2.IMREAD_COLOR)
-                if img_bgr is not None:
-                    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                    h, w, ch = img_rgb.shape
-                    q_img = QtGui.QImage(img_rgb.data, w, h, ch * w, QtGui.QImage.Format_RGB888).copy()
-                    pixmap = QtGui.QPixmap.fromImage(q_img)
-                    
-                    self.ui.rapsodoLabel.setScaledContents(True) 
-                    w_label = max(self.ui.rapsodoLabel.width(), 500)
-                    h_label = max(self.ui.rapsodoLabel.height(), 500)
-                    scaled_pixmap = pixmap.scaled(w_label, h_label, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    self.ui.rapsodoLabel.setMinimumSize(150, 150)
-                    self.ui.rapsodoLabel.setPixmap(scaled_pixmap)
-                    self.ui.rapsodoLabel.setAlignment(Qt.AlignCenter)
-                    self.ui.rapsodoLabel.show()
-                else:
-                    self.ui.rapsodoLabel.clear()
-            except Exception as e:
-                print(f"Error drawing sprayChart.jpg: {e}")
-                self.ui.rapsodoLabel.clear()
-        else:
-            if hasattr(self.ui, 'rapsodoLabel'): self.ui.rapsodoLabel.clear()
 
     def get_kpts_by_frame(self, frame_num):
         """從 Dataframe 獲取指定幀的關鍵點陣列"""
@@ -2125,7 +1872,7 @@ class Analysis3DWidget(QWidget):
         ui = self.ui
         value_labels = (ui.centerGravityLabel, ui.centerGravityLabel2, ui.strideDisLabel,
                         ui.hipShoulderEditLabel1, ui.hipShoulderEditLabel2, ui.hipShoulderEditLabel3,
-                        self.maxSepLabel, ui.forefootLabel, ui.backfootLabel)
+                        self.maxSepLabel, ui.forefootLabel, ui.backfootLabel, self.pelvisRotLabel, self.torsoRotLabel)
         for label in value_labels:
             label.setText(MISSING)
         self.stride_cm = None
@@ -2138,6 +1885,7 @@ class Analysis3DWidget(QWidget):
         # 肩髖分離角：正 = 肩落後髖；遮擋而不可信的幀顯示 —
         up = ground_up(kpts)  # 地面法向量：側面相機不一定水平
         series = separation_series(kpts, f_land, f_impact, is_righty, up)
+        self.chart_separation = series
         for label, frame in ((ui.hipShoulderEditLabel1, f_lift), (ui.hipShoulderEditLabel2, f_land),
                              (ui.hipShoulderEditLabel3, f_impact)):
             label.setText(fmt(series.get(frame), "°", signed=True))
@@ -2146,6 +1894,16 @@ class Analysis3DWidget(QWidget):
             self.maxSepLabel.setText(fmt(peak[0], "°", signed=True))
             self.maxSepLabel.setToolTip(f"離地到擊球之間最大的肩髖分離角，出現在第 {peak[1]} 幀")
             print(f"[Keyphase3D] 最大肩髖分離角 {peak[0]:+.1f}°（第 {peak[1]} 幀）")
+
+        # 骨盆、軀幹最大轉速
+        fps = get_video_fps(self.video_loader)
+        frame_times = read_frame_times(self.folder) or read_frame_times(os.path.dirname(self.folder or ""))
+        rotation = rotation_speed_peaks(kpts, f_land, f_impact, up, frame_interval(fps, frame_times, f_impact))
+        for label, key in ((self.pelvisRotLabel, "pelvis"), (self.torsoRotLabel, "torso")):
+            if key in rotation:
+                label.setText(fmt(rotation[key][0], "°/s", 0))
+        if rotation:
+            print("[Keyphase3D] 最大轉速 " + "、".join(f"{k} {v:.0f}°/s（第 {f} 幀）" for k, (v, f) in rotation.items()))
 
         # 擊球時前、後膝角度：髖-膝-腳跟夾角
         k = kpts.get(f_impact)
@@ -2267,7 +2025,7 @@ class Analysis3DWidget(QWidget):
                                 font_val = ImageFont.truetype(path, 65) # 數值大字體
                                 font_lbl = ImageFont.truetype(path, 45) # 標籤中字體
                                 break
-                            except:
+                            except Exception:
                                 continue
                         
                         if font_val is None:
@@ -2310,23 +2068,6 @@ class Analysis3DWidget(QWidget):
                         cv2.putText(draw_img, text_val, (f_x + 30, f_y - 30), cv2.FONT_HERSHEY_SIMPLEX, 1.2, WHITE, 3)
 
             # --- C. Impact：繪製腿部骨架 (髖-膝-踝) ---
-            # if phase_type == 'impact':
-            #     # 定義要畫的線段：[髖, 膝, 踝]
-            #     if not is_righty:
-            #         legs = [[L_HIP, L_KNEE, L_ANKLE]]
-            #     else:
-            #         legs = [[R_HIP, R_KNEE, R_ANKLE]]
-            #     for leg in legs:
-            #         p1 = tuple(kpts[leg[0]][:2].astype(int))
-            #         p2 = tuple(kpts[leg[1]][:2].astype(int))
-            #         p3 = tuple(kpts[leg[2]][:2].astype(int))
-            #         # 髖到膝
-            #         cv2.line(draw_img, p1, p2, CYAN, 7)
-            #         # 膝到踝
-            #         cv2.line(draw_img, p2, p3, CYAN, 7)
-            #         # 畫關節點
-            #         for p in [p1, p2, p3]:
-            #             cv2.circle(draw_img, p, 8, YELLOW, -1)
             if phase_type == 'impact':
                 # 定義要畫的線段：[髖, 膝, 踝]
                 if not is_righty:
@@ -2363,126 +2104,9 @@ class Analysis3DWidget(QWidget):
                     # 計算後腿角度
                     back_knee_angle = self.calculate_angle(p1, p2, p3)
 
-                # ---- 新增繪製動力啟動順序標籤 (1, 2, 3, 4) ----
-                try:
-                    # 擷取 1,2,3,4 的發生順序 (3D 速度峰值)
-                    impact_frame = getattr(self, 'phase_result', None) and self.phase_result.F_impact
-                    peaks = self._get_velocity_peaks_3d(impact_frame)
-                    valid_peaks = {k: v for k, v in peaks.items() if v is not None}
-                    # 依照出現的 frame_number 升冪排序
-                    sorted_peaks = sorted(valid_peaks.items(), key=lambda item: item[1])
-                    
-                    # rank_dict: 例如 {"knee": 1, "hip": 2, "neck": 3, "wrist": 4}
-                    rank_dict = {name: rank + 1 for rank, (name, frame) in enumerate(sorted_peaks)}
-                    
-                    # 準備關節的坐標
-                    joint_coords = {}
-                    neck_idx = 18
-                    if is_righty:
-                        hip_idx, knee_idx, wrist_idx = 19, 13, 9
-                        offset_x_val = -180 # 向後拉 (左方)
-                    else:
-                        hip_idx, knee_idx, wrist_idx = 19, 14, 10
-                        offset_x_val = 180 # 向後拉 (右方)
-                        
-                    if len(kpts) > max(neck_idx, hip_idx, knee_idx, wrist_idx):
-                        joint_coords["neck"] = kpts[neck_idx][:2]
-                        joint_coords["hip"] = kpts[hip_idx][:2]
-                        joint_coords["knee"] = kpts[knee_idx][:2]
-                        joint_coords["wrist"] = kpts[wrist_idx][:2]
-                    else:
-                        # fallback
-                        joint_coords["neck"] = kpts[6][:2] if is_righty else kpts[5][:2]
-                        joint_coords["hip"] = kpts[12][:2] if is_righty else kpts[11][:2]
-                        joint_coords["knee"] = kpts[14][:2] if is_righty else kpts[13][:2]
-                        joint_coords["wrist"] = kpts[10][:2] if is_righty else kpts[9][:2]
-                            
-                    # 圖標目錄
-                    icon_dir = str(ICON_DIR)
-                    icon_size = 90 # 設定 icon 統一大小
-                    
-                    def overlay_transparent(background, overlay, x, y):
-                        bg_h, bg_w, bg_c = background.shape
-                        ov_h, ov_w, ov_c = overlay.shape
-                        if x >= bg_w or y >= bg_h or x + ov_w <= 0 or y + ov_h <= 0: return
-                        x_start, y_start = max(x, 0), max(y, 0)
-                        x_end, y_end = min(x + ov_w, bg_w), min(y + ov_h, bg_h)
-                        ov_y_start, ov_x_start = max(0, -y), max(0, -x)
-                        ov_y_end = ov_y_start + (y_end - y_start)
-                        ov_x_end = ov_x_start + (x_end - x_start)
-                        alpha = overlay[ov_y_start:ov_y_end, ov_x_start:ov_x_end, 3] / 255.0
-                        alpha_inv = 1.0 - alpha
-                        for c in range(3):
-                            background[y_start:y_end, x_start:x_end, c] = (
-                                alpha * overlay[ov_y_start:ov_y_end, ov_x_start:ov_x_end, c] +
-                                alpha_inv * background[y_start:y_end, x_start:x_end, c]
-                            )
-
-                    for part, rank in rank_dict.items():
-                        icon_path = os.path.join(icon_dir, f"number{rank}.png")
-                        if os.path.exists(icon_path):
-                            icon_img = cv2.imread(icon_path, cv2.IMREAD_UNCHANGED)
-                            if icon_img is not None:
-                                icon_img = cv2.resize(icon_img, (icon_size, icon_size))
-                                cx, cy = int(joint_coords[part][0]), int(joint_coords[part][1])
-                                
-                                # 動態位移，避免完全疊在一起或擋住身體
-                                # 使用者要求 1, 4 畫在右邊
-                                if rank in [1, 4]:
-                                    offset_x = 180
-                                else:
-                                    offset_x = offset_x_val
-                                    
-                                offset_y = -20
-                                    
-                                cv2.line(draw_img, (cx, cy), (cx + offset_x, cy + offset_y), (255, 255, 255), 4)
-                                px = int(cx + offset_x - icon_size // 2)
-                                py = int(cy + offset_y - icon_size // 2)
-                                overlay_transparent(draw_img, icon_img, px, py)
-                except Exception as e:
-                    print("Sequence marker draw error:", e)
         self._set_label_pixmap_with_crop(label, draw_img)
-        # # 3. 轉為 QPixmap 並顯示
-        # img_rgb = cv2.cvtColor(draw_img, cv2.COLOR_BGR2RGB)
-        # h, w, ch = img_rgb.shape
-        # q_img = QImage(img_rgb.data, w, h, ch * w, QImage.Format_RGB888).copy()
-        # pixmap = QPixmap.fromImage(q_img)
 
-        # # --- 填滿 Label 並對齊「底部中間」裁切 ---
-        # label_size = label.size()
-        
-        # if not label_size.isEmpty():
-        #     # 1. 以「填滿」為原則縮放 (會有一邊超出 Label)
-        #     pixmap = pixmap.scaled(
-        #         label_size, 
-        #         QtCore.Qt.KeepAspectRatioByExpanding, 
-        #         QtCore.Qt.SmoothTransformation
-        #     )
-            
-        #     # 2. 計算裁切區域 (Rect)
-        #     # x 軸：置中裁切 (左右各切一半)
-        #     # y 軸：對齊底部 (保留最下面，裁掉上面)
-        #     crop_x = (pixmap.width() - label_size.width()) // 2
-        #     crop_y = pixmap.height() - label_size.height() # 關鍵：直接減去高度，保留底部
-            
-        #     # 防呆：確保裁切起點不為負數
-        #     crop_x = max(0, crop_x)
-        #     crop_y = max(0, crop_y)
 
-        #     rect = QtCore.QRect(
-        #         crop_x,
-        #         crop_y,
-        #         label_size.width(),
-        #         label_size.height()
-        #     )
-            
-        #     # 3. 執行裁切
-        #     pixmap = pixmap.copy(rect)
-
-        # # 4. 顯示與快取
-        # label.setAlignment(QtCore.Qt.AlignCenter)
-        # self.cached_keyphase_pixmaps[label] = pixmap
-        # self.update_keyphase_label_image(label)
     def calculate_angle(self,p1, p2, p3):
         """
         計算 p1-p2-p3 之間夾角 (以 p2 為頂點)
@@ -2554,51 +2178,6 @@ class Analysis3DWidget(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)  
 
-    def eventFilter1(self, source, event):
-        # 監聽 Slider 的 Resize 事件
-        if source == self.ui.frameSlider and event.type() == QEvent.Resize:
-            slider_w = source.width()
-            slider_h = source.height()
-            
-            # 建立樣式選項來獲取 Slider 的內部佈局細節 (Groove)
-            opt = QtWidgets.QStyleOptionSlider()
-            source.initStyleOption(opt)
-            groove_rect = source.style().subControlRect(
-                QtWidgets.QStyle.CC_Slider, opt, QtWidgets.QStyle.SC_SliderGroove, source
-            )
-            
-            # 調整 AnalysisBar 的位置與大小
-            # 讓其高度足夠大 (80) 並居中對齊滑軌
-            bar_h = self.analysis_bar.height() # 已經在 __init__ 設為 80
-            
-            # 定位在 Slider 的中心，並與滑軌 (Groove) 的寬度對齊
-            self.analysis_bar.setGeometry(
-                groove_rect.left(), 
-                groove_rect.center().y() - bar_h // 2, 
-                groove_rect.width(), 
-                bar_h
-            )
-        
-            # 重要：強制提到最上層，防止被 UI 樣式覆蓋
-            self.analysis_bar.raise_()
-        # if source == self.ui.frameSlider and event.type() == QEvent.Resize:
-        #     # 獲取 Slider 的寬度
-        #     slider_w = source.width()
-        #     slider_h = source.height()
-            
-        #     # 通常 QSlider 的軌道位在中間，我們將 AnalysisBar 定位在稍微偏下的地方
-        #     # 這裡的座標 (0, 18) 需要根據你的 Slider 樣式微調
-        #     self.analysis_bar.setGeometry(0, int(slider_h/2) + 2, slider_w, 8)
-            
-        if event.type() == QEvent.Resize:
-            if hasattr(self.ui, 'keyphaseLabel1') and source == self.ui.keyphaseLabel1:
-                self.update_keyphase_label_image(self.ui.keyphaseLabel1)
-            elif hasattr(self.ui, 'keyphaseLabel2') and source == self.ui.keyphaseLabel2:
-                self.update_keyphase_label_image(self.ui.keyphaseLabel2)
-            elif hasattr(self.ui, 'keyphaseLabel3') and source == self.ui.keyphaseLabel3:
-                self.update_keyphase_label_image(self.ui.keyphaseLabel3)
-        return super().eventFilter(source, event)
-
 
     def eventFilter(self, source, event):
         if source == self.ui.frameSlider and event.type() == QEvent.Resize:
@@ -2649,6 +2228,7 @@ class Analysis3DWidget(QWidget):
         labels = (self.ui.batSpeedLabel, self.ui.horizontalAngleEditLabel, self.ui.verticalAngleEditLabel)
         for label in labels:
             label.setText(MISSING)
+        self.chart_sweet_speed = {}
         if impact_frame is None or not self.has_metric_scale:
             if not self.has_metric_scale:
                 print("[BatMetrics 3D] 沒有校正檔，3D 座標沒有真實尺度，不顯示揮棒速度")
@@ -2659,6 +2239,8 @@ class Analysis3DWidget(QWidget):
         front_track = self._bat_head_track(self.person_front_df, getattr(self, "bat_front_df", None))
         track3d, bat_m = bat_track_3d(side_track, front_track, self.triangulate_points)
         frame_times = read_frame_times(self.folder) or read_frame_times(os.path.dirname(self.folder or ""))
+        self.chart_sweet_speed = sweet_spot_speeds(
+            track3d, frame_interval(get_video_fps(self.video_loader), frame_times, impact_frame))
         up = ground_up(keypoints_by_frame(self.person_3d_df, "keypoints_3d"))
         if up is None:
             print("[BatMetrics 3D] 腳點擬合不出地面，垂直方向改用側面相機的 Y 軸")
@@ -2668,11 +2250,27 @@ class Analysis3DWidget(QWidget):
             print(f"[BatMetrics 3D] 擊球點 {impact_frame} 附近側面、正面沒有同時偵測到球棒")
             return
         self.ui.batSpeedLabel.setText(fmt(result.speed_kmh, "km/h"))
+        self.ui.batSpeedLabel.setToolTip(self._batLengthCheck(result.bat_m))
         self.ui.horizontalAngleEditLabel.setText(fmt(result.attack_angle_deg, "°", signed=True))
         self.ui.verticalAngleEditLabel.setText(fmt(result.vertical_bat_angle_deg, "°", signed=True))
         print(f"[BatMetrics 3D] 揮棒速度 {result.speed_kmh:.1f} km/h、攻擊角度 {result.attack_angle_deg:+.1f}°、"
               f"垂直棒角 {result.vertical_bat_angle_deg:+.1f}°：甜蜜點 幀 {result.from_frame}→{result.to_frame}，"
               f"{result.duration_s * 1000:.1f} ms，兩台相機都有效 {result.frames_used} 幀，棒長中位數 {result.bat_m:.2f} m")
+
+    def _batLengthCheck(self, measured_m: float) -> str:
+        """揮棒速度的提示：3D 量到的棒長（手腕前露出的那段），與打者球棒設定扣掉手握住的長度比對。
+        握把與棒尾被雙手遮住，遮罩只有手腕前那段（WeiShu 21 支都約 0.66 m）；甜蜜點從棒頭往回算，不受影響，
+        但露出段明顯短於預期時代表遮罩少抓棒尖，甜蜜點內縮、揮棒速度偏低"""
+        bat = bat_for_clip(self.folder)
+        text = f"3D 實測露出棒長 {measured_m:.2f} m（握把被手遮住的部分量不到）"
+        if bat.is_default:
+            return text + "\n未設定球棒，無法比對"
+        expected = bat.length_m - HIDDEN_GRIP_M
+        ratio = measured_m / expected
+        text += f"\n設定棒長 {bat.length_m:.2f} m − 手握 {HIDDEN_GRIP_M:.2f} m = 預期 {expected:.2f} m（實測 {ratio:.0%}）"
+        if ratio < BAT_SHORT_RATIO:
+            text += "\n實測偏短：遮罩可能少抓棒尖，甜蜜點內縮，揮棒速度可能偏低"
+        return text
 
     def loadVideo(self):
         self.video_loader.loadVideo(self.video_side_path, self.video_front_path)
@@ -2687,7 +2285,6 @@ class Analysis3DWidget(QWidget):
             
         # 2. 若「任一」影片正在讀取中 (processed 或 raw)，定時檢查
         if self.video_loader.is_loading or self.video_loader_raw.is_loading:
-            # self.ui.videoNameLabel.setText("讀取影片中")
             QTimer.singleShot(100, self.checkVideoLoad)
             return
 
@@ -2715,23 +2312,6 @@ class Analysis3DWidget(QWidget):
         
         return data
 
-    def getBatDf(self, DataFrame: pd.DataFrame, frame_num=None):
-        """
-        離線版，對應側面相機的 bat 資料。
-        介面盡量模仿 PoseEstimater.getPersonDf：
-        - frame_num: 指定幀，如果為 None 則回傳整個 DataFrame
-        """
-        if DataFrame is None or DataFrame.empty:
-            return pd.DataFrame()
-        condition = pd.Series([True] * len(DataFrame))  # 初始條件設為全為 True
-        if frame_num is not None:
-            condition &= (DataFrame['frame_number'] == frame_num)
-        data = DataFrame.loc[condition].copy()
-
-        if data.empty:
-            return None
-        
-        return data
 
     def getBathtDf(self, DataFrame: pd.DataFrame, frame_num=None):
         """
@@ -2781,40 +2361,18 @@ class Analysis3DWidget(QWidget):
         self.initGraph()
         pts3d = self.triangularPersonPoints(0)
         ball_3d = self.triangulateBallPoint(0)
+        self.updateBatHandleLength()
         tail_3d, head_3d = self.triangulate_bat(0)
         self.draw_ground_once(pts3d)
         self.draw_3d_pose(pts3d)
         self.draw_hip_shoulder_angle(pts3d)
-        # self.calBackKneeAngleEditLabel(pts3d)   # 計算並更新後膝角度
-        # self.calFrontKneeAngleEditLabel(pts3d)  # 計算並更新前膝角度 (建議新增)
-        # self.calKPHipShoulderEditLabel(pts3d)   # 更新關鍵幀區域的肩髖分離角
-        # self.draw_ball_3d(ball_3d)
         self.draw_bat_3d(tail_3d, head_3d)
         # 2. 畫出隨時間生長的軌跡 (淺色)
         self.draw_swing_trajectory(0)
         self.updateFrame(frame_num = 0)
         video_size = self.video_loader.video_size
-        self.ui.ResolutionLabel.setText(f"(0,0) - {video_size[0]} x {video_size[1]}")
+        self.ui.ResolutionLabel.setText(clip_title(self.folder))
 
-    def calBackKneeAngleEditLabel(self, points_3d_centered):
-        """計算並更新 UI 上的後膝角度"""
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        # 索引分配：右打後腳為右(12, 14, 25)；左打後腳為左(11, 13, 24)
-        b_hip, b_knee, b_ankle = (12, 14, 25) if is_righty else (11, 13, 24)
-        
-        angle = self._calculate_3d_joint_angle(points_3d_centered, b_hip, b_knee, b_ankle)
-        if angle is not None:
-            self.ui.kpbackKneeAngleLabel.setText(f"{angle:.1f}")
-
-    def calFrontKneeAngleEditLabel(self, points_3d_centered):
-        """計算並更新 UI 上的前膝角度"""
-        is_righty = (self.ui.batterInput.currentText() == "右打")
-        # 索引分配：右打前腳為左(11, 13, 24)；左打前腳為右(12, 14, 25)
-        f_hip, f_knee, f_ankle = (11, 13, 24) if is_righty else (12, 14, 25)
-        
-        angle = self._calculate_3d_joint_angle(points_3d_centered, f_hip, f_knee, f_ankle)
-        if angle is not None:
-            self.ui.kpfrontKneeAngleLabel.setText(f"{angle:.1f}")
 
     def _calculate_3d_joint_angle(self, pts, idx1, idx2, idx3):
         """通用 3D 夾角計算工具"""
@@ -2823,7 +2381,7 @@ class Analysis3DWidget(QWidget):
             v2 = pts[idx3] - pts[idx2]
             cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
             return np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
-        except:
+        except Exception:
             return None
 
     def setFrameTimes(self, folder):
@@ -2848,7 +2406,6 @@ class Analysis3DWidget(QWidget):
         self.ui.frameSlider.setMinimum(0)
         self.ui.frameSlider.setMaximum(total_frames - 1)
         self.ui.frameSlider.setValue(0)
-        # self.ui.frameNumLabel.setText(f'0/{total_frames - 1}')
         total_seconds = 1.5
         # 初始化標籤顯示： 0.00s / 1.50s
         self.ui.frameNumLabel.setText(self.frameTimeText(0, int(total_frames)))
@@ -2860,7 +2417,6 @@ class Analysis3DWidget(QWidget):
             frame_num = self.ui.frameSlider.value()
         # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間）
         self.ui.frameNumLabel.setText(self.frameTimeText(frame_num, self.video_loader.total_frames))
-        # self.ui.frameNumLabel.setText(f'{frame_num}/{self.video_loader.total_frames - 1}')
         # 取畫面
         frame = self.video_loader.getVideoImage(frame_num)
         frame_2 = self.video_loader.getVideoImage2(frame_num)
@@ -2887,7 +2443,6 @@ class Analysis3DWidget(QWidget):
         self.draw_swing_trajectory(frame_num)
         self.showImage(drawed_img, self.view_scene, self.ui.FrameView)
         self.showImage(drawed_img2, self.view_scene2, self.ui.FrameView_2)
-        # self.updateGraph(frame_num)
 
     def showImage(self, image: np.ndarray, scene: QGraphicsScene, GraphicsView: QGraphicsView):
         """Display an image in the QGraphicsView."""
@@ -2908,19 +2463,13 @@ class Analysis3DWidget(QWidget):
         frame_num = self.ui.frameSlider.value()
         # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間）
         self.ui.frameNumLabel.setText(self.frameTimeText(frame_num, self.video_loader.total_frames))
-        # self.ui.frameNumLabel.setText(f'{frame_num}/{self.video_loader.total_frames - 1}')
         frame = self.video_loader.getVideoImage(frame_num)
         frame_2 = self.video_loader.getVideoImage2(frame_num)
         fps = 0
-        # if self.ui.showSkeletonCheckBox.isChecked():
         curr_side_person_data = self.getPersonDf(self.person_df, frame_num)
         curr_front_person_data = self.getPersonDf(self.front_person_df, frame_num)
 
         self.updateFrame(frame_num=frame_num)
-        # pts3d = self.triangularPoints(frame_num= frame_num)
-        # self.draw_ground_once(pts3d)
-        # self.draw_3d_pose(pts3d)
-        # self.draw_hip_shoulder_angle(pts3d)
 
     # ======================================================
     # Frame 控制
@@ -2951,29 +2500,36 @@ class Analysis3DWidget(QWidget):
         return current
             
     def playFrame(self, start_num: int = 0):
-        """Play video frames starting from start_num."""
-        for i in range(start_num, self.video_loader.total_frames):
-            if not self.is_play:
-                break
-            self.ui.frameSlider.setValue(i)
-            if i == self.video_loader.total_frames - 1 and self.is_play:
-                self.playBtnClicked()
-            
-            # 還原原本系統 1 倍速為最低延遲 1ms 的體驗
-            delay = 1
-            try:
-                if hasattr(self.ui, 'slowMotionInput'):
-                    val_str = self.ui.slowMotionInput.currentText().replace('x', '').replace('X', '').strip()
-                    current_rate = float(val_str)
-                    if current_rate >= 1.0:
-                        delay = 1
-                    elif current_rate > 0:
-                        # 當速度小於 1，成比例加上額外的延遲 (0.5倍加約33ms，0.25倍加約99ms)
-                        delay = int((1.0 / current_rate - 1.0) * 33) + 1
-            except:
-                pass
-                
-            cv2.waitKey(max(1, delay))
+        """從 start_num 開始播放：依經過時間換幀（ui_utils/playback_clock.py），速度與設定的倍率一致"""
+        if not hasattr(self, "play_timer"):
+            self.play_clock = PlaybackClock()
+            self.play_timer = QTimer(self)
+            self.play_timer.timeout.connect(self.playTick)
+            self.ui.slowMotionInput.currentIndexChanged.connect(self.restartPlayClock)
+        self.ui.frameSlider.setValue(start_num)
+        self.restartPlayClock()
+        self.play_timer.start(TICK_MS)
+
+    def restartPlayClock(self):
+        """開始播放、播放中換倍率或拖了拉條：以目前幀重新計時"""
+        if self.is_play:
+            self.play_clock.start(self.ui.frameSlider.value(), get_video_fps(self.video_loader),
+                                  rate_from_text(self.ui.slowMotionInput.currentText()))
+            self.played_frame = self.ui.frameSlider.value()
+
+    def playTick(self):
+        if not self.is_play:
+            self.play_timer.stop()
+            return
+        if self.ui.frameSlider.value() != self.played_frame:
+            self.restartPlayClock()
+        last = self.video_loader.total_frames - 1
+        target = min(self.play_clock.target(), last)
+        if target > self.ui.frameSlider.value():
+            self.ui.frameSlider.setValue(target)
+        self.played_frame = self.ui.frameSlider.value()
+        if self.played_frame >= last:
+            self.playBtnClicked()   # 播完：切回暫停
 
     def nextFrame(self):
         self.frame += 1
@@ -2981,9 +2537,6 @@ class Analysis3DWidget(QWidget):
             self.frame = 0
         self.updateFrame(self.frame)
 
-    def setFrame(self, f):
-        self.frame = f
-        self.updateFrame(f)
 
     # ======================================================
     # reset

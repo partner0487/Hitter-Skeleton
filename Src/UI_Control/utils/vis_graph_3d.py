@@ -157,7 +157,6 @@ class HeelCurvePlotter:
             region.setBrush(brush)
             region.setMovable(False)
             # 邊框也畫出來，避免只靠透明色看不清楚
-            # region.setPen(pg.mkPen('k', width=2))
             # 放在曲線下方或上方都可以，先放上方保證看得到
             region.setZValue(-10)
 
@@ -736,7 +735,6 @@ class HipShoulderAngleGraph:
         self._phase_regions = []
 
 
-
 class BallCurvePlotter:
     def __init__(self, ball_df, frame_total):
 
@@ -801,7 +799,6 @@ class BallCurvePlotter:
             region.setBrush(brush)
             region.setMovable(False)
             # 邊框也畫出來，避免只靠透明色看不清楚
-            # region.setPen(pg.mkPen('k', width=2))
             # 放在曲線下方或上方都可以，先放上方保證看得到
             region.setZValue(-10)
 

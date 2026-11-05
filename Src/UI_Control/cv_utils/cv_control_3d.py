@@ -66,7 +66,6 @@ class VideoLoader:
         self.v_t = VideoToImagesThread(self.video_path, self.video_path2)
         self.v_t.emit_signal.connect(self.video_to_frame)
         self.v_t.start()
-        print("Load Video Sucess!")
 
 
     def video_to_frame(self, video_frames1, video_frames2, fps, count):

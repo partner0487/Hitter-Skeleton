@@ -10,14 +10,17 @@ if conda_prefix:
         os.path.join(conda_prefix, "Library", "plugins", "platforms"),
     )
 
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
-# from dual_video_onlyProcess_widget import PoseHitVideoTabControlDualInit
 from ui.main_window import Ui_MainWindow
 # Import the Mode Select UI
 from utils.model import Model
 from analysis3d_widget import Analysis3DWidget 
 from analysis2d_widget import Analysis2dWidget
 from compare_widget import CompareWidget
+
+APP_FONT_FAMILY = "Microsoft JhengHei"
+
 
 class Main(QMainWindow):
     def __init__(self, initial_tab_index=0):
@@ -29,8 +32,6 @@ class Main(QMainWindow):
         self.init_tabs()
 
     def init_tabs(self):
-        # self.hitterRecordWidget = HitterRecordWidget(self.model)
-        # self.ui.Two_d_Tab.addTab(self.hitterRecordWidget, "Record")
         self.analysis2dWidget = Analysis2dWidget(self.model)
         self.ui.Two_d_Tab.addTab(self.analysis2dWidget, "2D")
         self.analysis3dWidget = Analysis3DWidget(self.model)
@@ -50,6 +51,8 @@ class Main(QMainWindow):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    # 統一用微軟正黑體：.ui 沒指定字型，Windows 繁中預設是新細明體，與 Arial 等混用不一致
+    app.setFont(QFont(APP_FONT_FAMILY, app.font().pointSize()))
     main_window = Main()
     main_window.show()
     sys.exit(app.exec_())

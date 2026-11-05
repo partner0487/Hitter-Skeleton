@@ -295,7 +295,6 @@ class PoseEstimater:
         return ball_bboxes
 
 
-
     def detectKpt(self, image:np.ndarray, frame_num:int = None, is_video:bool = False, is_processed:bool=False):
         if not self.is_detect:
             return image, pd.DataFrame(), 0, pd.DataFrame(), pd.DataFrame()
@@ -368,7 +367,7 @@ class PoseEstimater:
                         hands_pt = wr
                     elif len(kpts) > 18 and kpts[18][0] > 0:
                         hands_pt = kpts[18][:2] # 真的都沒抓到手再配脖子
-            except:
+            except Exception:
                 pass
 
         if hands_pt is not None:
@@ -667,11 +666,9 @@ class PoseEstimater:
         ball_bboxes = []
         ball_scores = []
 
-        # print(f"DEBUG: YOLO detections count: {len(detections)}")
         for det in detections:
             cls_id = int(det.boxes.cls[0])
             conf = float(det.boxes.conf[0])
-            # print(f"DEBUG: Detection cls={cls_id}, conf={conf:.2f}")
             if (cls_id == 0) :  # human
                 human_bboxes.append(np.array(det.boxes.xyxy[0].cpu().numpy().flatten()))
                 humane_scores.append(det.boxes.conf)
@@ -684,7 +681,6 @@ class PoseEstimater:
                 bat_scores.append(det.boxes.conf)
         # human tracker
         # online_targets = model.tracker.update(
-        #     np.hstack((np.vstack(human_bboxes), np.full((np.vstack(human_bboxes).shape[0], 2), [0.9, 0]))), img.copy()
         # )
 
         online_targets = []
@@ -738,11 +734,9 @@ class PoseEstimater:
         
     def setPersonId(self, person_id):
         self.person_id = person_id
-        print(self.person_id)
 
     def setKptId(self, kpt_id):
         self.kpt_id = kpt_id
-        print(self.kpt_id)
 
     def setDetect(self, status:bool):
         self.is_detect = status
