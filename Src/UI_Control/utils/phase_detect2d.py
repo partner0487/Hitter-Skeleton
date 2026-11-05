@@ -61,7 +61,8 @@ class PhaseDetector:
         self.toe_frames, self.toe_vals = self._extract_toe_data(person_df, batter_index)
         # 雙手腕中點，用來分辨球棒遮罩哪一端是握把
         self.wrists = self._extract_wrist_centers(person_df)
-        self.is_lefty = batter_index == 1
+        # 投手在畫面上的方向（+1：x 增加的一側）：擊球時棒頭往投手方向移動，收棒往回繞（見 _detect_impact）
+        self.pitcher_dir = self._pitcher_direction(person_df, batter_index)
         # 雙手的上臂、前臂骨架線段，用來排除把手臂誤判成球棒的遮罩
         self.arm_segments = self._extract_arm_segments(person_df)
 
@@ -158,6 +159,20 @@ class PhaseDetector:
         ys_arr = np.array(ys, dtype=np.float32)
         ground_y = np.percentile(ys_arr, 95) if len(ys_arr) > 10 else np.max(ys_arr)
         return np.array(frames, dtype=np.int32), ground_y - ys_arr
+
+    @staticmethod
+    def _pitcher_direction(df: pd.DataFrame, batter_index: int, min_conf: float = 0.3) -> int:
+        """投手在側面畫面的哪一側：前腳跟在後腳跟的投手側（右打前腳是左腳 24，左打是右腳 25），
+        取各幀前腳跟 x − 後腳跟 x 的中位數符號；判斷不出來回傳 0（不限制棒頭方向）"""
+        if df is None or df.empty:
+            return 0
+        front, back = (24, 25) if batter_index == 0 else (25, 24)
+        diffs = []
+        for kpts in df["keypoints"]:
+            k = np.asarray(kpts, dtype=float)
+            if len(k) > max(front, back) and (k.shape[1] < 3 or min(k[front, 2], k[back, 2]) >= min_conf):
+                diffs.append(k[front, 0] - k[back, 0])
+        return int(np.sign(np.median(diffs))) if diffs else 0
 
     @staticmethod
     def _extract_wrist_centers(df: pd.DataFrame, min_conf: float = 0.3) -> dict:
@@ -340,12 +355,6 @@ class PhaseDetector:
     LAND_TOL_RATIO = 0.05
     # 擊球點：棒頭最高速的前後幀都低於它的此比例時視為孤立尖峰（遮罩誤判）
     SPIKE_RATIO = 0.35
-    # 左打的擊球點：取最高速之前「第一個達到最高速 FIRST_PEAK_RATIO 倍」的段落，往後最多 FIRST_PEAK_CLIMB 幀爬到峰值。
-    # 左打者面向側面相機，收棒時球棒在身前繞過、畫面上移動很快，收棒最高速常是擊球的 1～2.3 倍
-    # （Orangetallboy 2026-10-29 16 支；右打 WeiShu 19 支收棒只有擊球的 0.30～0.64 倍，揮棒前不到 0.35 倍）。
-    # 剪成 90 幀時 0.5 倍 15/16 在 ±2 幀內（原本只取最高速 9/16，錯的都是抓到收棒）；右打不套用
-    FIRST_PEAK_RATIO = 0.5
-    FIRST_PEAK_CLIMB = 4
     # 離地：腳尖高度在抬腿前最低點 + LIFT_TOL_PX 以內視為還踩在地上（腳跟翹起時腳尖會被帶高 3～4 px）
     LIFT_TOL_PX = 4.0
     # 腳跟資料少於此幀數時不判斷各階段
@@ -378,7 +387,8 @@ class PhaseDetector:
         head_rule（wrist：離雙手腕中點較遠的一端是棒頭；higher：該幀附近沒有手腕，退回用 y 較小的一端）、
         repeated（遮罩與上一幀完全相同，是沒偵測到時沿用的舊資料）、
         jump_px（離前後 JUMP_WINDOW 幀棒頭中位數的距離）、rejected（jump_px > JUMP_MAX_PX，視為錯誤偵測）、
-        speed_px_per_frame（與前一個有效幀相比；repeated、rejected 或間隔超過 3 幀為 NaN，不參與比較）
+        speed_px_per_frame（與前一個有效幀相比；repeated、rejected 或間隔超過 3 幀為 NaN，不參與比較）、
+        toward_pitcher_px（同一段位移往投手方向的分量，正 = 往投手；投手方向判斷不出來時為 0）
         """
         rows = []
         if self.bat_df is not None and not self.bat_df.empty:
@@ -447,6 +457,7 @@ class PhaseDetector:
         track["rejected"] = (track["jump_px"] > self.JUMP_MAX_PX) | track["on_arm"]
 
         speeds = [np.nan] * len(track)
+        toward = [np.nan] * len(track)
         prev = None
         for i in range(len(track)):
             if track.at[i, "rejected"] or track.at[i, "repeated"]:
@@ -454,19 +465,23 @@ class PhaseDetector:
             if prev is not None:
                 gap = track.at[i, "frame"] - track.at[prev, "frame"]
                 if gap <= 3:  # 避免因為斷片掉幀太久造成的計算誤差
-                    speeds[i] = float(np.linalg.norm(track.at[i, "_head"] - track.at[prev, "_head"]) / gap)
+                    step = track.at[i, "_head"] - track.at[prev, "_head"]
+                    speeds[i] = float(np.linalg.norm(step) / gap)
+                    toward[i] = float(step[0] * self.pitcher_dir / gap)
             prev = i
         track["speed_px_per_frame"] = speeds
+        track["toward_pitcher_px"] = toward
         return track.drop(columns=[c for c in ("_head", "_mask") if c in track])
 
-    def _fastest_non_spike(self, speeds: pd.Series):
+    def _fastest_non_spike(self, speeds: pd.Series, candidates: Optional[pd.Series] = None):
         """
         棒頭最高速的那一列；跳過孤立尖峰：前後兩幀都有速度（非 0、非缺）且都低於它的 SPIKE_RATIO。
         真正的揮棒前後幀也很快（H06：161／201／130）；收棒時遮罩換位置只會單幀暴衝
         （H05 第 72 幀 176、前後 6 和 27，真正擊球在第 42 幀 168）。
         速度 0 多半是影片重複幀（Layia 的片段速度 0／有值交錯），視為沒有資料、不拿來判斷。
+        candidates：只在這些列裡挑（孤立尖峰仍以全部速度判斷）
         """
-        valid = speeds.dropna()
+        valid = (speeds if candidates is None else candidates).dropna()
         for i in valid.sort_values(ascending=False).index:
             if self._is_spike(speeds, i):
                 print(f"略過孤立尖峰：第 {i} 列 {speeds[i]:.1f} px/幀（前後 {speeds.get(i - 1):.1f}、{speeds.get(i + 1):.1f}）")
@@ -477,22 +492,6 @@ class PhaseDetector:
     def _is_spike(self, speeds: pd.Series, i) -> bool:
         nb = [speeds.get(j) for j in (i - 1, i + 1)]
         return all(v is not None and not np.isnan(v) and v > 0 for v in nb) and max(nb) < self.SPIKE_RATIO * speeds[i]
-
-    def _first_strong_peak(self, speeds: pd.Series, best: int) -> int:
-        """左打：最高速之前第一個達到 FIRST_PEAK_RATIO 倍最高速的段落（非孤立尖峰），往後爬到該段峰值（見 FIRST_PEAK_RATIO）"""
-        valid = speeds.dropna()
-        for i in valid.index:
-            if i >= best:
-                break
-            if valid[i] < self.FIRST_PEAK_RATIO * speeds[best] or self._is_spike(speeds, i):
-                continue
-            j = i
-            while (j + 1 - i <= self.FIRST_PEAK_CLIMB and j + 1 in speeds.index
-                   and not np.isnan(speeds[j + 1]) and speeds[j + 1] >= speeds[j]):
-                j += 1
-            print(f"左打：最高速在第 {best} 列（收棒），改用較早的峰值第 {j} 列 {speeds[j]:.1f} px/幀")
-            return int(j)
-        return best
 
     def _detect_impact(self, side: str = "right") -> Optional[int]:
         """
@@ -509,9 +508,13 @@ class PhaseDetector:
             return None
 
         speeds = track["speed_px_per_frame"]
-        best = self._fastest_non_spike(speeds)
-        if best is not None and self.is_lefty:
-            best = self._first_strong_peak(speeds, best)
+        # 只看棒頭往投手方向移動的幀：收棒時棒頭往回繞。左打者面向側面相機，收棒在身前繞過、畫面上很快，
+        # 收棒最高速常是擊球的 1～2.3 倍（Orangetallboy 2026-10-29），只取最高速會抓到收棒；
+        # 右打收棒繞到身後，只有擊球的 0.30～0.64 倍。兩者擊球時都往投手方向、收棒高峰都往回（WeiShu、Orangetallboy 實測）
+        toward = speeds.where(track["toward_pitcher_px"] > 0) if self.pitcher_dir else None
+        best = self._fastest_non_spike(speeds, toward)
+        if best is None and toward is not None:
+            best = self._fastest_non_spike(speeds)
         if best is not None:
             best_frame = int(track.at[best, "frame"])
             print(f"✅ 成功找到擊球點！影格: {best_frame}, 棒頭最高速: {speeds[best]:.2f}")
