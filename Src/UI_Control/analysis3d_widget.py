@@ -36,6 +36,7 @@ from utils.body_metrics import (frame_interval, ground_up, horizontal_basis, key
 from utils.bat_speed2d import read_frame_times
 from utils.bat_speed3d import bat_track_3d, blast_metrics_3d, sweet_spot_speeds
 from utils.bat_profile import HIDDEN_GRIP_M, bat_for_clip
+from ui_utils.playback_clock import TICK_MS, PlaybackClock, rate_from_text
 from ui_utils.swing_charts import SwingChartsDialog
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, fmt, new_label_like, rapsodo_texts, show_spray_chart
 
@@ -2495,29 +2496,36 @@ class Analysis3DWidget(QWidget):
         return current
             
     def playFrame(self, start_num: int = 0):
-        """Play video frames starting from start_num."""
-        for i in range(start_num, self.video_loader.total_frames):
-            if not self.is_play:
-                break
-            self.ui.frameSlider.setValue(i)
-            if i == self.video_loader.total_frames - 1 and self.is_play:
-                self.playBtnClicked()
-            
-            # 還原原本系統 1 倍速為最低延遲 1ms 的體驗
-            delay = 1
-            try:
-                if hasattr(self.ui, 'slowMotionInput'):
-                    val_str = self.ui.slowMotionInput.currentText().replace('x', '').replace('X', '').strip()
-                    current_rate = float(val_str)
-                    if current_rate >= 1.0:
-                        delay = 1
-                    elif current_rate > 0:
-                        # 當速度小於 1，成比例加上額外的延遲 (0.5倍加約33ms，0.25倍加約99ms)
-                        delay = int((1.0 / current_rate - 1.0) * 33) + 1
-            except Exception:
-                pass
-                
-            cv2.waitKey(max(1, delay))
+        """從 start_num 開始播放：依經過時間換幀（ui_utils/playback_clock.py），速度與設定的倍率一致"""
+        if not hasattr(self, "play_timer"):
+            self.play_clock = PlaybackClock()
+            self.play_timer = QTimer(self)
+            self.play_timer.timeout.connect(self.playTick)
+            self.ui.slowMotionInput.currentIndexChanged.connect(self.restartPlayClock)
+        self.ui.frameSlider.setValue(start_num)
+        self.restartPlayClock()
+        self.play_timer.start(TICK_MS)
+
+    def restartPlayClock(self):
+        """開始播放、播放中換倍率或拖了拉條：以目前幀重新計時"""
+        if self.is_play:
+            self.play_clock.start(self.ui.frameSlider.value(), get_video_fps(self.video_loader),
+                                  rate_from_text(self.ui.slowMotionInput.currentText()))
+            self.played_frame = self.ui.frameSlider.value()
+
+    def playTick(self):
+        if not self.is_play:
+            self.play_timer.stop()
+            return
+        if self.ui.frameSlider.value() != self.played_frame:
+            self.restartPlayClock()
+        last = self.video_loader.total_frames - 1
+        target = min(self.play_clock.target(), last)
+        if target > self.ui.frameSlider.value():
+            self.ui.frameSlider.setValue(target)
+        self.played_frame = self.ui.frameSlider.value()
+        if self.played_frame >= last:
+            self.playBtnClicked()   # 播完：切回暫停
 
     def nextFrame(self):
         self.frame += 1
