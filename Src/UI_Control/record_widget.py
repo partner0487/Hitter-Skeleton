@@ -11,8 +11,10 @@ import json
 import os
 import sys
 
-from PyQt5.QtCore import QProcess, QProcessEnvironment
-from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QWidget
+import math
+
+from PyQt5.QtCore import QProcess, QProcessEnvironment, Qt
+from PyQt5.QtWidgets import QDoubleSpinBox, QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from analysis2d_widget import Analysis2dWidget
 from ui_utils.metric_grid import MISSING, align_columns, arrange_metrics, new_label_like
@@ -63,6 +65,80 @@ class RecordWidget(Analysis2dWidget):
         ui.horizontalLayout_2.removeWidget(ui.tabWidget)
         ui.tabWidget.hide()
         ui.horizontalLayout_2.insertWidget(index, panel, 2)
+        self.addExposureControls()
+
+    # ---------- 相機：只調曝光時間與增益（紅藍白平衡拿掉；原本標「曝光」的滑桿其實是增益） ----------
+    def addExposureControls(self):
+        ui = self.ui
+        for widget in (ui.gain, ui.red_ratio, ui.blue_ratio, ui.gainSlider, ui.redRatioSlider, ui.blueRatioSlider,
+                       ui.gainValue, ui.redRatioValue, ui.blueRatioValue):
+            widget.hide()
+        self.exposureSpin = QDoubleSpinBox()
+        self.exposureSpin.setDecimals(0)
+        self.exposureSpin.setRange(1, 1000000)
+        self.exposureSpin.setSingleStep(100)
+        self.exposureSpin.setSuffix(" μs")
+        self.gainSpin = QDoubleSpinBox()
+        self.gainSpin.setDecimals(1)
+        self.gainSpin.setRange(0, 48)
+        self.gainSpin.setSingleStep(1)
+        self.gainSpin.setSuffix(" dB")
+        row = QHBoxLayout()
+        for caption, spin in (("曝光時間", self.exposureSpin), ("增益", self.gainSpin)):
+            # 打字時不要每按一鍵就送到相機，按 Enter 或離開欄位才套用；方向鍵／滾輪仍即時套用
+            spin.setKeyboardTracking(False)
+            spin.setAlignment(Qt.AlignRight)
+            spin.valueChanged.connect(self.onExposureChanged)
+            row.addWidget(QLabel(caption))
+            row.addWidget(spin, 1)
+        ui.verticalLayout_12.addLayout(row)
+        self.disableExposureControls()
+
+    def disableExposureControls(self):
+        """相機沒開：欄位顯示「—」且不能調"""
+        for spin in (self.exposureSpin, self.gainSpin):
+            spin.blockSignals(True)
+            spin.setSpecialValueText("—")
+            spin.setValue(spin.minimum())
+            spin.setEnabled(False)
+            spin.blockSignals(False)
+
+    def updateCameraSliders(self):
+        """開相機、切換正面／側面時，顯示該相機目前的曝光時間與增益"""
+        try:
+            cam = self.get_selected_camera()
+            settings = cam.get_exposure_settings()
+        except Exception as e:  # 相機還沒開
+            print(f"讀取相機曝光設定失敗: {e}")
+            return
+        for spin, value, (low, high) in ((self.exposureSpin, settings["exposure_time"], settings["exposure_range"]),
+                                         (self.gainSpin, settings["gain"], settings["gain_range"])):
+            spin.blockSignals(True)
+            step = 10 ** -spin.decimals()  # 直接 setRange 會把上限四捨五入而超過相機上限
+            spin.setSpecialValueText("")
+            spin.setRange(math.ceil(low / step) * step, math.floor(high / step) * step)
+            spin.setValue(value)
+            spin.setEnabled(True)
+            spin.blockSignals(False)
+        self.exposureSpin.setToolTip("相機允許 {:.0f} ~ {:.0f} μs（上限受幀率限制）".format(*settings["exposure_range"]))
+        self.gainSpin.setToolTip("相機允許 {:.1f} ~ {:.1f} dB".format(*settings["gain_range"]))
+
+    def onExposureChanged(self, *_):
+        try:
+            cam = self.get_selected_camera()
+            exposure, gain = cam.update_exposure(self.exposureSpin.value(), self.gainSpin.value())
+        except Exception as e:
+            print(f"設定相機曝光失敗: {e}")
+            return
+        for spin, value in ((self.exposureSpin, exposure), (self.gainSpin, gain)):
+            spin.blockSignals(True)
+            spin.setValue(value)   # 顯示實際套用的值（超出範圍會被夾住）
+            spin.blockSignals(False)
+
+    def toggleCamera(self, state: int):
+        super().toggleCamera(state)
+        if state != 2:
+            self.disableExposureControls()
 
     def populateRecentVideosList(self):
         pass  # 錄影頁不列過往錄影
