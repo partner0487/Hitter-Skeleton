@@ -50,14 +50,16 @@
     ``` 
 
 ### Data Preparation
-ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing 下載，放到 `Db/pretrain/`。`Db/` 不進 git，整體結構如下：
+ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing 下載，放到 `Db/pretrain/`。
+YOLO26（`yolo26m-seg.pt`）從 https://github.com/ultralytics/assets/releases 下載，需要 ultralytics 8.4 以上；舊環境或沒有這個檔案時自動改用 `yolo11m-seg.pt`。`Db/` 不進 git，整體結構如下：
 
     Hitter-Skeleton
     |-- Db
     |   |-- pretrain
     |   |   |-- epoch_210.pth
     |   |   |-- vitpose_Sk26.pth
-    |   |   |-- yolo11m-seg.pt
+    |   |   |-- yolo26m-seg.pt
+    |   |   |-- yolo11m-seg.pt                # 舊環境（ultralytics < 8.4）使用
     |   |   `-- yolov7_x_syncbn_fast_8x16b-300e_coco_20221124_215331-ef949a68.pth
     |   |-- Calibration                       # 雙相機校正（見下方「相機校正」）
     |   |   |-- stereo.json                   # 日期最新的內外參
