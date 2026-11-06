@@ -34,6 +34,20 @@ def clip_videos(folder):
     return pick("CF"), pick("CS")
 
 
+def source_videos(folder):
+    """分析結果資料夾對應的原始 (正面, 側面) 影片，沒有的為 None；骨架由介面依 JSON 即時畫在原始影片上。
+    結果子資料夾（CF_／CS_）的影片在上一層錄影資料夾；舊資料沒有原始影片時退回 raw_／skel_ 影片"""
+    folder = os.path.normpath(str(folder))
+    cf, cs = clip_videos(folder)
+    if cf is None and cs is None and is_result_dir(folder):
+        cf, cs = clip_videos(os.path.dirname(folder))
+
+    def old(view):
+        return next((p for p in (os.path.join(folder, f"raw_{view}.mp4"), os.path.join(folder, f"skel_{view}.mp4"))
+                     if os.path.isfile(p)), None)
+    return cf or old("front"), cs or old("side")
+
+
 def clip_parts(path):
     """錄影資料夾（或其中的檔案、CF_／CS_ 結果子資料夾）相對 Db 的各層名稱，例如 (WeiShu, 2026-10-29, T座, WeiShu_H05)；
     不在 Db 底下回傳 ()"""

@@ -26,7 +26,7 @@ from utils.phase_detect3d import PhaseDetector, PhaseResult
 from utils.phase_detect2d import PhaseDetector as PhaseDetector2D
 from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
-from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_parts, clip_title, clip_videos, is_result_dir
+from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_parts, clip_title, clip_videos, is_result_dir, source_videos
 from PyQt5 import QtGui
 from ui_utils.analysis_bar import AnalysisBar
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
@@ -1455,8 +1455,7 @@ class Analysis3DWidget(QWidget):
             self.is_dual = False
             return
         if frame_num == self.video_loader_dual.total_frames - 1:
-            self.video_loader_dual.saveDualVideo(False)
-            self.video_loader_dual.saveDualVideo(True)
+            self.video_loader_dual.saveResults()
             self.processFinished.emit(self.video_loader_dual.output_folder)
             self.is_dual = False
 
@@ -1617,9 +1616,8 @@ class Analysis3DWidget(QWidget):
         self.folder = folder
         self.is_dual = False
         # 只有側面影片的錄影（結果在 CS_ 子資料夾、沒有正面影片）：純側面 2D，不三角化、不畫 3D
-        self.side_only = os.path.basename(folder).startswith("CS_") or not (
-            glob.glob(os.path.join(folder, "CF*.mp4"))
-            or any(os.path.isfile(os.path.join(folder, n)) for n in ("skel_front.mp4", "raw_front.mp4")))
+        front_video, side_video = source_videos(folder)
+        self.side_only = os.path.basename(folder).startswith("CS_") or front_video is None
         print(f"📁 Loading Folder: {folder}" + ("（純側面 2D）" if self.side_only else ""))
         # 依錄影路徑中的日期與畫面上選的右打／左打，使用當天或之前最新的對應校正
         self.applyStereoCalibration(self.calibrationFor(folder))
@@ -1667,20 +1665,9 @@ class Analysis3DWidget(QWidget):
         self.pose_estimater.ball_df = self.ball_front_df
         self.pose_estimater_2.ball_df = self.ball_side_df
 
-        # 3. 影片路徑解析 (優先找 skel_，再找 CS/CF 前綴)
-        def find_mp4(prefix, fallback_suffix):
-            skel = os.path.join(folder, f"skel_{fallback_suffix}.mp4")
-            if os.path.exists(skel): return skel
-            vids = glob.glob(os.path.join(folder, f"{prefix}*.mp4"))
-            return vids[0] if vids else None
-
-        self.video_side_path = None if self.side_only else find_mp4("CF_", "front")
-        self.video_front_path = find_mp4("CS_", "side")
-
-        # Raw 影片路徑
-        self.video_side_raw = None if self.side_only else \
-            (glob.glob(os.path.join(folder, "CF*.mp4")) + [os.path.join(folder, "raw_front.mp4")])[0]
-        self.video_front_raw = (glob.glob(os.path.join(folder, "CS*.mp4")) + [os.path.join(folder, "raw_side.mp4")])[0]
+        # 3. 影片路徑：原始 CF／CS 影片，骨架由 updateFrame 依 JSON 即時畫上（注意 video_side_* 是正面、video_front_* 是側面）
+        self.video_side_path = self.video_side_raw = None if self.side_only else front_video
+        self.video_front_path = self.video_front_raw = side_video
 
         # 4. 執行載入
         self.loadVideo()

@@ -30,7 +30,7 @@ from ui_utils.radio_choice import batter_radio_buttons
 from ui_utils.worker3d import METRICS_FILE, Worker3D
 from utils.analyze import BatAnalyzer, PoseAnalyzer
 from utils.fps_utils import get_video_fps
-from utils.paths import DB_DIR, NON_HITTER_DIRS, clip_parts, clip_title
+from utils.paths import DB_DIR, NON_HITTER_DIRS, clip_parts, clip_title, source_videos
 from utils.phase_detect2d import PhaseResult
 from utils.vis_image_dual import ImageDrawer as ImageDrawerDual
 
@@ -534,30 +534,12 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         self._loadRapsodoData(player_idx, folder_path)
         self.run_analysis(player_idx)
 
-        # 找出影片檔案 (優先識別 CF/CS 命名規則)
-        skel_side = os.path.join(folder_path, "skel_side.mp4")
-        skel_front = os.path.join(folder_path, "skel_front.mp4")
-        raw_side = os.path.join(folder_path, "raw_side.mp4")
-        raw_front = os.path.join(folder_path, "raw_front.mp4")
-
-        mp4_files = glob.glob(os.path.join(folder_path, '*.mp4'))
-
-        # 側面影片 (優先找 skel/raw_side, 其次找 CS 開頭)
-        cs_files = [f for f in mp4_files if "CS" in os.path.basename(f)]
-        v_s = None
-        if os.path.exists(skel_side): v_s = skel_side
-        elif os.path.exists(raw_side): v_s = raw_side
-        elif cs_files: v_s = cs_files[0]
-        elif mp4_files: v_s = sorted(mp4_files)[0]
-
-        # 正面影片 (優先找 skel/raw_front, 其次找 CF 開頭)
-        cf_files = [f for f in mp4_files if "CF" in os.path.basename(f)]
-        v_f = None
-        if os.path.exists(skel_front): v_f = skel_front
-        elif os.path.exists(raw_front): v_f = raw_front
-        elif cf_files: v_f = cf_files[0]
-        elif len(mp4_files) > 1: v_f = sorted(mp4_files)[1]
-        else: v_f = v_s # 2D 單邊保底
+        # 原始 CF／CS 影片，骨架由 display_frame 依 JSON 即時畫上
+        v_f, v_s = source_videos(folder_path)
+        if v_s is None:
+            mp4_files = sorted(glob.glob(os.path.join(folder_path, '*.mp4')))
+            v_s = mp4_files[0] if mp4_files else None
+        v_f = v_f or v_s  # 2D 單邊保底
 
         if v_s and v_f:
             p.is_processed = True
