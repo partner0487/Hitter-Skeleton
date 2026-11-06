@@ -45,7 +45,7 @@ class Model(object):
 
     def setDetectParserYolo(self) -> ArgumentParser:
         parser = argparse.ArgumentParser(description="YOLO Model Argument Parsing")
-        default_model_path = os.path.join(project_root, "Db", "pretrain", "yolo11m-seg.pt")
+        default_model_path = os.path.join(project_root, "Db", "pretrain", "yolo26m-seg.pt")
         parser.add_argument('--model', type=str, default=default_model_path, help='Path to YOLO model file (.pt)')
         parser.add_argument('--conf-thres', type=float, default=0.3, help='Confidence threshold')
         parser.add_argument('--iou-thres', type=float, default=0.3, help='IOU threshold for NMS')

@@ -8,8 +8,8 @@
 2. Setup conda environment:
     ```
     # 建立並啟用環境
-    conda create -n Pitcher python=3.8 -y
-    conda activate Pitcher
+    conda create -n hitter python=3.8 -y
+    conda activate hitter
 
     # 安裝 FLIR 工業相機驅動 (Spinnaker Python SDK)
     # 請替換為你本機的 wheel 檔實際路徑：
@@ -50,14 +50,15 @@
     ``` 
 
 ### Data Preparation
-ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing 下載，放到 `Db/pretrain/`。`Db/` 不進 git，整體結構如下：
+ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing 下載，放到 `Db/pretrain/`。
+YOLO26（`yolo26m-seg.pt`，需要 ultralytics 8.4 以上）從 https://github.com/ultralytics/assets/releases 下載。`Db/` 不進 git，整體結構如下：
 
     Hitter-Skeleton
     |-- Db
     |   |-- pretrain
     |   |   |-- epoch_210.pth
     |   |   |-- vitpose_Sk26.pth
-    |   |   |-- yolo11m-seg.pt
+    |   |   |-- yolo26m-seg.pt
     |   |   `-- yolov7_x_syncbn_fast_8x16b-300e_coco_20221124_215331-ef949a68.pth
     |   |-- Calibration                       # 雙相機校正（見下方「相機校正」）
     |   |   |-- stereo.json                   # 日期最新的內外參
@@ -79,14 +80,14 @@ ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders
 
 ### Demo
 ```
-conda activate Pitcher
+conda activate hitter
 python Src\UI_Control\main.py
 ```
 或直接執行 `start.bat`。
 
-- **2D 相機**：兩台 FLIR 相機即時偵測骨架並錄影。相機 180 fps 擷取、每 3 幀取 1 存成 60 fps，觸發前後各保留一段（共 90 幀）。
-- **2D 影片**：讀取錄好的雙視角影片做骨架、球棒與動作階段分析。
-- **3D**：用校正結果把正面、側面的 2D 關節點三角化成 3D，計算關節速度、揮棒速度等（單位為公尺、m/s）。
+- **錄影**：兩台 FLIR 相機即時偵測骨架並錄影（也可以只接側面相機）。相機 180 fps 擷取、每 3 幀取 1 存成 60 fps，觸發前後各保留一段（共 90 幀）。錄完先顯示 2D 結果，3D 在背景算完後換上。
+- **分析**：讀取錄好的影片，用校正結果把正面、側面的 2D 關節點三角化成 3D，計算動作階段、關節速度、揮棒速度等（單位為公尺、m/s）；只有側面影片時做純側面 2D 分析。
+- **比較**：兩支錄影並排比較，指標與分析頁相同。
 
 ### 相機校正
 3D 分析需要兩台相機的內參與外參，校正工具在 [calibration/](calibration/)，可以獨立使用：

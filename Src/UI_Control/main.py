@@ -1,3 +1,4 @@
+"""主程式：錄影（現場錄影 → 先顯示 2D → 背景算完換成 3D）、分析（過往錄影的 3D 分析）、比較（指標與分析頁相同）。"""
 import os
 import sys
 
@@ -11,37 +12,39 @@ if conda_prefix:
     )
 
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout
+from PyQt5.QtWidgets import QApplication, QMainWindow
 from ui.main_window import Ui_MainWindow
-# Import the Mode Select UI
 from utils.model import Model
-from analysis3d_widget import Analysis3DWidget 
-from analysis2d_widget import Analysis2dWidget
+from record_widget import RecordWidget
+from analysis3d_widget import Analysis3DWidget
 from compare_widget import CompareWidget
+from ui_utils.radio_choice import batter_radio_buttons
 
 APP_FONT_FAMILY = "Microsoft JhengHei"
 
 
 class Main(QMainWindow):
-    def __init__(self, initial_tab_index=0):
-        super(Main, self).__init__()
-        self.model = Model()  
-        self.setWindowTitle("棒球分析系統")
+    def __init__(self):
+        super().__init__()
+        self.model = Model()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-        self.init_tabs()
-
-    def init_tabs(self):
-        self.analysis2dWidget = Analysis2dWidget(self.model)
-        self.ui.Two_d_Tab.addTab(self.analysis2dWidget, "2D")
-        self.analysis3dWidget = Analysis3DWidget(self.model)
-        self.ui.Two_d_Tab.addTab(self.analysis3dWidget, "3D")
-        self.compareWidget = CompareWidget(self.model)
-        self.ui.Two_d_Tab.addTab(self.compareWidget, "回放")
+        self.setWindowTitle("棒球分析系統")   # setupUi 會設成 .ui 的標題，要在之後設
+        self.recordWidget = RecordWidget(self.model)
+        self.ui.Two_d_Tab.addTab(self.recordWidget, "錄影")
+        self.analysisWidget = Analysis3DWidget(self.model)
+        self.ui.Two_d_Tab.addTab(self.analysisWidget, "分析")
+        batter_radio_buttons(self.analysisWidget.ui.batterInput)   # 右打／左打改成圓點（錄影頁在 RecordWidget 裡換）
+        self.compareWidget = CompareWidget(self.model, self.recordWidget.worker3d)   # 與錄影頁共用背景 3D 程序
+        self.ui.Two_d_Tab.addTab(self.compareWidget, "比較")
 
     def closeEvent(self, event):
-        # 關閉視窗前停止所有相機、計時器與背景執行緒，避免 QThread 未結束就被銷毀
-        for widget in (self.analysis2dWidget, self.analysis3dWidget, self.compareWidget):
+        # 分析頁處理影片中先確認（關閉後目前這支不存檔）
+        if not self.analysisWidget.confirmClose():
+            event.ignore()
+            return
+        # 關閉視窗前停止相機、計時器、背景執行緒與背景 3D 程序
+        for widget in (self.recordWidget, self.analysisWidget, self.compareWidget):
             try:
                 widget.shutdown()
             except Exception as e:
