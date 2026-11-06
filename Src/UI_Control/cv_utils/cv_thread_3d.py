@@ -20,24 +20,26 @@ class VideoToImagesThread(QThread):
     def video_to_frame(self, input_video_path, input_video_path2):
         video_images = []
         video_images2 = []
-        vidcap = cv2.VideoCapture(input_video_path)
-        fps = vidcap.get(cv2.CAP_PROP_FPS)
-        success, image = vidcap.read()
-
-        vidcap2 = cv2.VideoCapture(input_video_path2)
-        success2, image2 = vidcap2.read()
+        # 只有側面影片的錄影（純側面 2D）沒有正面影片：該路徑為 None，回傳空的影格列表
+        caps = [cv2.VideoCapture(p) if p else None for p in (input_video_path, input_video_path2)]
+        fps = next((c.get(cv2.CAP_PROP_FPS) for c in caps if c is not None), 0)
 
         count = 0
         # 兩支影片同步讀取，以較短者為準
-        while self._run_flag and success and success2:
-            video_images.append(image)
-            video_images2.append(image2)
+        while self._run_flag:
+            reads = [c.read() if c is not None else (True, None) for c in caps]
+            if not all(ok for ok, _ in reads):
+                break
+            for images, (_, image) in zip((video_images, video_images2), reads):
+                if image is not None:
+                    images.append(image)
             count += 1
-            success, image = vidcap.read()
-            success2, image2 = vidcap2.read()
+            if all(c is None for c in caps):
+                break
 
-        vidcap.release()
-        vidcap2.release()
+        for c in caps:
+            if c is not None:
+                c.release()
         # 回傳影片標記的 fps（原本右移一位減半，3D 頁所有速度都少一半）
         fps = int(round(fps))
         return video_images, video_images2, fps, count

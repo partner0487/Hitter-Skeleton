@@ -42,6 +42,10 @@ class Main3D(QMainWindow):
         self.ui.Two_d_Tab.addTab(self.compareWidget, "比較")
 
     def closeEvent(self, event):
+        # 分析頁處理影片中先確認（關閉後目前這支不存檔）
+        if not self.analysisWidget.confirmClose():
+            event.ignore()
+            return
         # 關閉視窗前停止相機、計時器、背景執行緒與背景 3D 程序
         for widget in (self.recordWidget, self.analysisWidget, self.compareWidget):
             try:

@@ -6,6 +6,7 @@
 - 左上角標題後面標示目前數值的來源：2D 結果（3D 分析中…）→ 3D
 - 已做過 3D 的錄影（CF_ 子資料夾裡有 metrics_3d.json）直接顯示，不重算
 - 3D 做不了（沒有校正、缺正面影片等）時保留 2D 數值，3D 才有的指標顯示 —
+- 相機設定可選只用側面（或正面沒接上）：只錄 CS_ 影片，不送 3D，標題標示「純側面 2D」
 """
 import json
 import os
@@ -78,7 +79,7 @@ class RecordWidget(Analysis2dWidget):
             widget.hide()
         self.cameraSettingsDialog = CameraSettingsDialog(self.openedCameras, self)
         button = QPushButton("相機設定")
-        button.setToolTip("調整正面、側面相機的曝光時間與增益（自動儲存）")
+        button.setToolTip("選擇正面、側面相機（可只用側面），調整曝光時間與增益（自動儲存）")
         button.clicked.connect(self.showCameraSettings)
         ui.verticalLayout_12.insertWidget(0, button)
 
@@ -169,7 +170,7 @@ class RecordWidget(Analysis2dWidget):
 
     # ---------- 2D 結果出來後要 3D ----------
     def currentFolder(self):
-        path = getattr(self.video_loader, "video_path", None)
+        path = self.clipPath()
         return os.path.dirname(path) if path else None
 
     def outputFolder(self, folder):
@@ -184,6 +185,12 @@ class RecordWidget(Analysis2dWidget):
         folder = self.currentFolder()
         if not folder:
             return
+        if not getattr(self.video_loader, "video_path", None):
+            # 只錄側面（沒接正面或相機設定選了不使用）：不做 3D，3D 才有的指標顯示 —
+            for label in self.only3dLabels():
+                label.setText(MISSING)
+            self.setSource("純側面 2D")
+            return
         for label in self.only3dLabels():
             label.setText(PENDING)
         saved = os.path.join(self.outputFolder(folder) or "", METRICS_FILE)
@@ -195,7 +202,7 @@ class RecordWidget(Analysis2dWidget):
 
     def setSource(self, text):
         self.result_source = text
-        title = clip_title(self.video_loader.video_path) if getattr(self.video_loader, "video_path", None) else ""
+        title = clip_title(self.clipPath()) if self.clipPath() else ""
         self.ui.ResolutionLabel.setText(f"{title}　［{text}］" if title else f"［{text}］")
 
     def apply3D(self, folder, metrics_path):

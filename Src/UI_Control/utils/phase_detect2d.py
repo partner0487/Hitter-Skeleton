@@ -61,6 +61,9 @@ class PhaseDetector:
         self.toe_frames, self.toe_vals = self._extract_toe_data(person_df, batter_index)
         # 雙手腕中點，用來分辨球棒遮罩哪一端是握把
         self.wrists = self._extract_wrist_centers(person_df)
+        # 投手在畫面上的方向（+1：x 增加的一側）：擊球時棒頭往投手方向移動，收棒往回繞（見 _detect_impact）
+        self.pitcher_dir = self._pitcher_direction(person_df, batter_index)
+        self.peak_lag = self.IMPACT_PEAK_LAG if batter_index == 0 else self.IMPACT_PEAK_LAG_LEFT
         # 雙手的上臂、前臂骨架線段，用來排除把手臂誤判成球棒的遮罩
         self.arm_segments = self._extract_arm_segments(person_df)
 
@@ -157,6 +160,20 @@ class PhaseDetector:
         ys_arr = np.array(ys, dtype=np.float32)
         ground_y = np.percentile(ys_arr, 95) if len(ys_arr) > 10 else np.max(ys_arr)
         return np.array(frames, dtype=np.int32), ground_y - ys_arr
+
+    @staticmethod
+    def _pitcher_direction(df: pd.DataFrame, batter_index: int, min_conf: float = 0.3) -> int:
+        """投手在側面畫面的哪一側：前腳跟在後腳跟的投手側（右打前腳是左腳 24，左打是右腳 25），
+        取各幀前腳跟 x − 後腳跟 x 的中位數符號；判斷不出來回傳 0（不限制棒頭方向）"""
+        if df is None or df.empty:
+            return 0
+        front, back = (24, 25) if batter_index == 0 else (25, 24)
+        diffs = []
+        for kpts in df["keypoints"]:
+            k = np.asarray(kpts, dtype=float)
+            if len(k) > max(front, back) and (k.shape[1] < 3 or min(k[front, 2], k[back, 2]) >= min_conf):
+                diffs.append(k[front, 0] - k[back, 0])
+        return int(np.sign(np.median(diffs))) if diffs else 0
 
     @staticmethod
     def _extract_wrist_centers(df: pd.DataFrame, min_conf: float = 0.3) -> dict:
@@ -318,6 +335,11 @@ class PhaseDetector:
     # 依 WeiShu 2026-10-29 T座 H01、H02：揮棒時最多偏 36 px，誤抓手臂的幀 144 px 以上
     JUMP_WINDOW = 2
     JUMP_MAX_PX = 100.0
+    # 棒頭與另外 STATIC_MIN_OTHERS 幀以上相距 STATIC_PX 以內視為靜止（不參與速度）：揮棒中的棒頭不會回到同一點。
+    # ChengXuan 正投 H01／H02／H09 收棒後遮罩跳到背景的柱子（固定在約 (860, 357)），
+    # 跳過去那一下被算成最高速（H01 第 84 幀 200 px/幀，實際擊球在第 33 幀）
+    STATIC_PX = 8.0
+    STATIC_MIN_OTHERS = 2
     # 擊球點細修（_refine_impact）：在最高速幀前後 IMPACT_REFINE_SPAN 幀內，把有效棒頭位置內插到每一幀，
     # 用中央差分算速度（前後兩幀的位移 ÷ 2，本身有平滑效果），在最高速幀 ± IMPACT_REFINE_SEARCH 幀內
     # 找峰值並用拋物線估出一幀以下的位置，擊球點 = round(峰值 + IMPACT_PEAK_LAG)。
@@ -327,6 +349,9 @@ class PhaseDetector:
     IMPACT_REFINE_SPAN = 6
     IMPACT_REFINE_SEARCH = 3
     IMPACT_PEAK_LAG = 1.7
+    # 左打（ChengXuan 2026-10-29 正投 9 支，使用者肉眼標記）：接觸幀比峰值晚 0.03～1.63 幀，中位數約 0.75；
+    # 用 1.7 時 9 支有 7 支晚 1～2 幀，0.55～0.9 都是 6/9 正確、8/9 在 ±1 幀內
+    IMPACT_PEAK_LAG_LEFT = 0.75
     # 無法細修時（有效棒頭太少）：擊球點 = 棒頭最高速幀 + IMPACT_OFFSET（H01、H02 最高速幀比畫面上的擊球早約 1 幀）
     IMPACT_OFFSET = 1
     # 無法細修時，最高速幀之後若接著幾幀遮罩無效（揮棒最快時動態模糊，沒偵測到或被判為跳動），
@@ -371,7 +396,8 @@ class PhaseDetector:
         head_rule（wrist：離雙手腕中點較遠的一端是棒頭；higher：該幀附近沒有手腕，退回用 y 較小的一端）、
         repeated（遮罩與上一幀完全相同，是沒偵測到時沿用的舊資料）、
         jump_px（離前後 JUMP_WINDOW 幀棒頭中位數的距離）、rejected（jump_px > JUMP_MAX_PX，視為錯誤偵測）、
-        speed_px_per_frame（與前一個有效幀相比；repeated、rejected 或間隔超過 3 幀為 NaN，不參與比較）
+        speed_px_per_frame（與前一個有效幀相比；repeated、rejected 或間隔超過 3 幀為 NaN，不參與比較）、
+        toward_pitcher_px（同一段位移往投手方向的分量，正 = 往投手；投手方向判斷不出來時為 0）
         """
         rows = []
         if self.bat_df is not None and not self.bat_df.empty:
@@ -437,9 +463,17 @@ class PhaseDetector:
             if window.sum() >= 3:  # 前後資料太少時無法判斷，不排除
                 jumps[i] = float(np.linalg.norm(heads_xy[i] - np.median(heads_xy[window], axis=0)))
         track["jump_px"] = jumps
-        track["rejected"] = (track["jump_px"] > self.JUMP_MAX_PX) | track["on_arm"]
+
+        # 靜止位置：棒頭與另外 STATIC_MIN_OTHERS 幀以上幾乎重合（見 STATIC_PX）
+        static = np.zeros(len(track), dtype=bool)
+        for i in np.where(detected)[0]:
+            near = np.hypot(*(heads_xy[detected] - heads_xy[i]).T) <= self.STATIC_PX
+            static[i] = near.sum() - 1 >= self.STATIC_MIN_OTHERS
+        track["static"] = static
+        track["rejected"] = (track["jump_px"] > self.JUMP_MAX_PX) | track["on_arm"] | track["static"]
 
         speeds = [np.nan] * len(track)
+        toward = [np.nan] * len(track)
         prev = None
         for i in range(len(track)):
             if track.at[i, "rejected"] or track.at[i, "repeated"]:
@@ -447,26 +481,35 @@ class PhaseDetector:
             if prev is not None:
                 gap = track.at[i, "frame"] - track.at[prev, "frame"]
                 if gap <= 3:  # 避免因為斷片掉幀太久造成的計算誤差
-                    speeds[i] = float(np.linalg.norm(track.at[i, "_head"] - track.at[prev, "_head"]) / gap)
+                    step = track.at[i, "_head"] - track.at[prev, "_head"]
+                    speeds[i] = float(np.linalg.norm(step) / gap)
+                    toward[i] = float(step[0] * self.pitcher_dir / gap)
             prev = i
         track["speed_px_per_frame"] = speeds
+        track["toward_pitcher_px"] = toward
         return track.drop(columns=[c for c in ("_head", "_mask") if c in track])
 
-    def _fastest_non_spike(self, speeds: pd.Series):
+    def _fastest_non_spike(self, speeds: pd.Series, candidates: Optional[pd.Series] = None):
         """
-        棒頭最高速的那一列；跳過孤立尖峰：前後兩幀都有速度（非 0、非缺）且都低於它的 SPIKE_RATIO。
+        棒頭最高速的那一列；跳過孤立尖峰：前後幀中有速度的（非 0、非缺，至少一幀）都低於它的 SPIKE_RATIO。
         真正的揮棒前後幀也很快（H06：161／201／130）；收棒時遮罩換位置只會單幀暴衝
         （H05 第 72 幀 176、前後 6 和 27，真正擊球在第 42 幀 168）。
         速度 0 多半是影片重複幀（Layia 的片段速度 0／有值交錯），視為沒有資料、不拿來判斷。
+        candidates：只在這些列裡挑（孤立尖峰仍以全部速度判斷）
         """
-        valid = speeds.dropna()
+        valid = (speeds if candidates is None else candidates).dropna()
         for i in valid.sort_values(ascending=False).index:
-            nb = [speeds.get(j) for j in (i - 1, i + 1)]
-            if all(v is not None and not np.isnan(v) and v > 0 for v in nb) and max(nb) < self.SPIKE_RATIO * speeds[i]:
-                print(f"略過孤立尖峰：第 {i} 列 {speeds[i]:.1f} px/幀（前後 {nb[0]:.1f}、{nb[1]:.1f}）")
+            if self._is_spike(speeds, i):
+                print(f"略過孤立尖峰：第 {i} 列 {speeds[i]:.1f} px/幀（前後 {speeds.get(i - 1):.1f}、{speeds.get(i + 1):.1f}）")
                 continue
             return int(i)
         return int(valid.idxmax()) if not valid.empty else None
+
+    def _is_spike(self, speeds: pd.Series, i) -> bool:
+        # 只有一邊有速度也判斷：ChengXuan 側拋 H04 片段最後第 87 幀遮罩半蓋到背景柱子，286 px/幀，
+        # 前一幀 21、後一幀是柱子（靜止、已排除），兩邊都要有速度時擋不掉
+        nb = [v for v in (speeds.get(j) for j in (i - 1, i + 1)) if v is not None and not np.isnan(v) and v > 0]
+        return bool(nb) and max(nb) < self.SPIKE_RATIO * speeds[i]
 
     def _detect_impact(self, side: str = "right") -> Optional[int]:
         """
@@ -483,7 +526,13 @@ class PhaseDetector:
             return None
 
         speeds = track["speed_px_per_frame"]
-        best = self._fastest_non_spike(speeds)
+        # 只看棒頭往投手方向移動的幀：收棒時棒頭往回繞。左打者面向側面相機，收棒在身前繞過、畫面上很快，
+        # 收棒最高速常是擊球的 1～2.3 倍（ChengXuan 2026-10-29），只取最高速會抓到收棒；
+        # 右打收棒繞到身後，只有擊球的 0.30～0.64 倍。兩者擊球時都往投手方向、收棒高峰都往回（WeiShu、ChengXuan 實測）
+        toward = speeds.where(track["toward_pitcher_px"] > 0) if self.pitcher_dir else None
+        best = self._fastest_non_spike(speeds, toward)
+        if best is None and toward is not None:
+            best = self._fastest_non_spike(speeds)
         if best is not None:
             best_frame = int(track.at[best, "frame"])
             print(f"✅ 成功找到擊球點！影格: {best_frame}, 棒頭最高速: {speeds[best]:.2f}")
@@ -515,7 +564,7 @@ class PhaseDetector:
             if curve < 0:
                 shift = float(np.clip(0.5 * (speed[i - 1] - speed[i + 1]) / curve, -0.5, 0.5))
         self.impact_peak = float(frames[i]) + shift
-        impact = int(np.floor(self.impact_peak + self.IMPACT_PEAK_LAG + 0.5))
+        impact = int(np.floor(self.impact_peak + self.peak_lag + 0.5))
         print(f"擊球點細修：速度峰值 {self.impact_peak:.2f} 幀 → 擊球點 {impact}（最高速幀 {raw_impact}）")
         return impact
 
