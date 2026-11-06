@@ -491,7 +491,7 @@ class PhaseDetector:
 
     def _fastest_non_spike(self, speeds: pd.Series, candidates: Optional[pd.Series] = None):
         """
-        棒頭最高速的那一列；跳過孤立尖峰：前後兩幀都有速度（非 0、非缺）且都低於它的 SPIKE_RATIO。
+        棒頭最高速的那一列；跳過孤立尖峰：前後幀中有速度的（非 0、非缺，至少一幀）都低於它的 SPIKE_RATIO。
         真正的揮棒前後幀也很快（H06：161／201／130）；收棒時遮罩換位置只會單幀暴衝
         （H05 第 72 幀 176、前後 6 和 27，真正擊球在第 42 幀 168）。
         速度 0 多半是影片重複幀（Layia 的片段速度 0／有值交錯），視為沒有資料、不拿來判斷。
@@ -506,8 +506,10 @@ class PhaseDetector:
         return int(valid.idxmax()) if not valid.empty else None
 
     def _is_spike(self, speeds: pd.Series, i) -> bool:
-        nb = [speeds.get(j) for j in (i - 1, i + 1)]
-        return all(v is not None and not np.isnan(v) and v > 0 for v in nb) and max(nb) < self.SPIKE_RATIO * speeds[i]
+        # 只有一邊有速度也判斷：ChengXuan 側拋 H04 片段最後第 87 幀遮罩半蓋到背景柱子，286 px/幀，
+        # 前一幀 21、後一幀是柱子（靜止、已排除），兩邊都要有速度時擋不掉
+        nb = [v for v in (speeds.get(j) for j in (i - 1, i + 1)) if v is not None and not np.isnan(v) and v > 0]
+        return bool(nb) and max(nb) < self.SPIKE_RATIO * speeds[i]
 
     def _detect_impact(self, side: str = "right") -> Optional[int]:
         """
