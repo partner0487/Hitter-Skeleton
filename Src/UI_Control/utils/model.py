@@ -4,7 +4,6 @@ from mmengine.logging import print_log
 import sys
 import os
 import argparse
-import ultralytics
 from ultralytics import YOLO
 
 # ==================== 動態計算專案關鍵目錄 ====================
@@ -44,19 +43,9 @@ class Model(object):
         self.tracker = BoTSORT(self.tracker_args, frame_rate=30.0)
         self.image_size = (0, 0, 0)
 
-    @staticmethod
-    def defaultYoloPath() -> str:
-        """ultralytics >= 8.4 且有 yolo26 權重時用 YOLO26，否則用 yolo11（舊環境讀不了 YOLO26 權重）"""
-        pretrain = os.path.join(project_root, "Db", "pretrain")
-        yolo26 = os.path.join(pretrain, "yolo26m-seg.pt")
-        version = tuple(int(v) for v in ultralytics.__version__.split(".")[:2])
-        if version >= (8, 4) and os.path.exists(yolo26):
-            return yolo26
-        return os.path.join(pretrain, "yolo11m-seg.pt")
-
     def setDetectParserYolo(self) -> ArgumentParser:
         parser = argparse.ArgumentParser(description="YOLO Model Argument Parsing")
-        default_model_path = self.defaultYoloPath()
+        default_model_path = os.path.join(project_root, "Db", "pretrain", "yolo26m-seg.pt")
         parser.add_argument('--model', type=str, default=default_model_path, help='Path to YOLO model file (.pt)')
         parser.add_argument('--conf-thres', type=float, default=0.3, help='Confidence threshold')
         parser.add_argument('--iou-thres', type=float, default=0.3, help='IOU threshold for NMS')
