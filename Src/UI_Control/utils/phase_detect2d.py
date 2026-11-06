@@ -63,6 +63,7 @@ class PhaseDetector:
         self.wrists = self._extract_wrist_centers(person_df)
         # 投手在畫面上的方向（+1：x 增加的一側）：擊球時棒頭往投手方向移動，收棒往回繞（見 _detect_impact）
         self.pitcher_dir = self._pitcher_direction(person_df, batter_index)
+        self.peak_lag = self.IMPACT_PEAK_LAG if batter_index == 0 else self.IMPACT_PEAK_LAG_LEFT
         # 雙手的上臂、前臂骨架線段，用來排除把手臂誤判成球棒的遮罩
         self.arm_segments = self._extract_arm_segments(person_df)
 
@@ -334,6 +335,11 @@ class PhaseDetector:
     # 依 WeiShu 2026-10-29 T座 H01、H02：揮棒時最多偏 36 px，誤抓手臂的幀 144 px 以上
     JUMP_WINDOW = 2
     JUMP_MAX_PX = 100.0
+    # 棒頭與另外 STATIC_MIN_OTHERS 幀以上相距 STATIC_PX 以內視為靜止（不參與速度）：揮棒中的棒頭不會回到同一點。
+    # ChengXuan 正投 H01／H02／H09 收棒後遮罩跳到背景的柱子（固定在約 (860, 357)），
+    # 跳過去那一下被算成最高速（H01 第 84 幀 200 px/幀，實際擊球在第 33 幀）
+    STATIC_PX = 8.0
+    STATIC_MIN_OTHERS = 2
     # 擊球點細修（_refine_impact）：在最高速幀前後 IMPACT_REFINE_SPAN 幀內，把有效棒頭位置內插到每一幀，
     # 用中央差分算速度（前後兩幀的位移 ÷ 2，本身有平滑效果），在最高速幀 ± IMPACT_REFINE_SEARCH 幀內
     # 找峰值並用拋物線估出一幀以下的位置，擊球點 = round(峰值 + IMPACT_PEAK_LAG)。
@@ -343,6 +349,9 @@ class PhaseDetector:
     IMPACT_REFINE_SPAN = 6
     IMPACT_REFINE_SEARCH = 3
     IMPACT_PEAK_LAG = 1.7
+    # 左打（ChengXuan 2026-10-29 正投 9 支，使用者肉眼標記）：接觸幀比峰值晚 0.03～1.63 幀，中位數約 0.75；
+    # 用 1.7 時 9 支有 7 支晚 1～2 幀，0.55～0.9 都是 6/9 正確、8/9 在 ±1 幀內
+    IMPACT_PEAK_LAG_LEFT = 0.75
     # 無法細修時（有效棒頭太少）：擊球點 = 棒頭最高速幀 + IMPACT_OFFSET（H01、H02 最高速幀比畫面上的擊球早約 1 幀）
     IMPACT_OFFSET = 1
     # 無法細修時，最高速幀之後若接著幾幀遮罩無效（揮棒最快時動態模糊，沒偵測到或被判為跳動），
@@ -454,7 +463,14 @@ class PhaseDetector:
             if window.sum() >= 3:  # 前後資料太少時無法判斷，不排除
                 jumps[i] = float(np.linalg.norm(heads_xy[i] - np.median(heads_xy[window], axis=0)))
         track["jump_px"] = jumps
-        track["rejected"] = (track["jump_px"] > self.JUMP_MAX_PX) | track["on_arm"]
+
+        # 靜止位置：棒頭與另外 STATIC_MIN_OTHERS 幀以上幾乎重合（見 STATIC_PX）
+        static = np.zeros(len(track), dtype=bool)
+        for i in np.where(detected)[0]:
+            near = np.hypot(*(heads_xy[detected] - heads_xy[i]).T) <= self.STATIC_PX
+            static[i] = near.sum() - 1 >= self.STATIC_MIN_OTHERS
+        track["static"] = static
+        track["rejected"] = (track["jump_px"] > self.JUMP_MAX_PX) | track["on_arm"] | track["static"]
 
         speeds = [np.nan] * len(track)
         toward = [np.nan] * len(track)
@@ -546,7 +562,7 @@ class PhaseDetector:
             if curve < 0:
                 shift = float(np.clip(0.5 * (speed[i - 1] - speed[i + 1]) / curve, -0.5, 0.5))
         self.impact_peak = float(frames[i]) + shift
-        impact = int(np.floor(self.impact_peak + self.IMPACT_PEAK_LAG + 0.5))
+        impact = int(np.floor(self.impact_peak + self.peak_lag + 0.5))
         print(f"擊球點細修：速度峰值 {self.impact_peak:.2f} 幀 → 擊球點 {impact}（最高速幀 {raw_impact}）")
         return impact
 
