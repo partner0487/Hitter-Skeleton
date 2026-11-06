@@ -119,7 +119,7 @@ def trim_clip(cf_path, cs_path, lo, hi, result_folder=None, note=""):
 
 
 def result_folder_of(cf_path, cs_path=None):
-    """處理結果子資料夾：影片同一層、以正面影片檔名命名；純側面錄影以側面影片檔名命名（VideoLoaderDual.saveDualVideo）"""
+    """處理結果子資料夾：影片同一層、以正面影片檔名命名；純側面錄影以側面影片檔名命名（VideoLoaderDual.saveResults）"""
     path = cf_path or cs_path
     return os.path.join(os.path.dirname(path), os.path.splitext(os.path.basename(path))[0])
 
