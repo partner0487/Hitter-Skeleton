@@ -1,7 +1,7 @@
 """用驗證集評估 2D 階段偵測：讀 phase_truth.csv 的人工標註（擊球點、著地），
 對每個資料夾的 bat_side.json／person_side.json 跑與 2D 分析相同的 PhaseDetector，列出誤差與準確率。
 
-phase_truth.csv 欄位：folder（相對 Db/）、impact、landing（未標註留空）、source（標註來源）
+phase_truth.csv 欄位：folder（相對 Db/）、impact、landing（未標註留空）、source（標註來源）、batter（left＝左打，留空＝右打）
 幀號與 UI 進度條相同（從 0 起算）；擊球點以「球碰到球棒的那一幀」為準。
 
 用法（在任何目錄）：
@@ -30,9 +30,9 @@ def read_records(folder, name):
     return pd.read_json(path, orient="records") if path.exists() else pd.DataFrame()
 
 
-def detect(folder):
+def detect(folder, batter_index=0):
     with contextlib.redirect_stdout(io.StringIO()):  # 偵測器會印很多除錯訊息
-        detector = PhaseDetector(person_df=read_records(folder, "person_side.json"), batter_index=0,
+        detector = PhaseDetector(person_df=read_records(folder, "person_side.json"), batter_index=batter_index,
                                  ball_df=read_records(folder, "ball_side.json"),
                                  bat_df=read_records(folder, "bat_side.json"), **DETECTOR_KWARGS)
         return detector.detect_phases()
@@ -55,7 +55,7 @@ def main():
         if not (folder / "bat_side.json").exists():
             print(f"{row.folder}：找不到 bat_side.json，略過")
             continue
-        phases = detect(folder)
+        phases = detect(folder, 1 if getattr(row, "batter", None) == "left" else 0)
         cells = []
         for key, predicted in (("impact", phases.F_impact), ("landing", phases.F_landing)):
             expected = getattr(row, key)

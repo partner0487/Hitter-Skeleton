@@ -31,6 +31,7 @@ def batter_radio_buttons(combo) -> QButtonGroup:
     if parent_layout is not None:
         parent_layout.replaceWidget(combo, container)
     combo.hide()
+    combo.radio_container = container   # 停用選項時連圓點一起停用（分析頁處理影片時鎖住打擊方向）
     return group
 
 

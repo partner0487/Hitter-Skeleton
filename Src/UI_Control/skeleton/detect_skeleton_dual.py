@@ -12,7 +12,7 @@ from mmpose.apis import init_model as init_pose_estimator
 from mmpose.evaluation.functional import nms
 from mmpose.structures import merge_data_samples
 from utils.timer import FPSTimer
-from utils.bat_roi import detect_bat_near_hands, hands_and_height
+from utils.bat_roi import detect_bat_near_hands, grip_distance, hands_and_height
 from ultralytics import YOLO
 import torch
 import torch.autograd.profiler as profiler
@@ -41,6 +41,7 @@ class PoseEstimater:
         self.bat_df = pd.DataFrame()
         self.has_pre_bat_df = False
         self.pre_bat_df = pd.DataFrame()
+        self.last_hands = None
         self.bat_data = []
         self.ball_df = pd.DataFrame()
         self.ball_data = []
@@ -166,10 +167,22 @@ class PoseEstimater:
 
         return pd.DataFrame(self.person_data)
 
+    def _stillHeld(self) -> bool:
+        """沿用上一幀的球棒前，確認它仍在這一幀打者的手上（utils/bat_roi.grip_distance）；
+        沒確認時不沿用：TSG 曾一路沿用 50 幀，手早就離開，甚至沿用到後方其他球員的球棒"""
+        hands = getattr(self, "last_hands", None)
+        if hands is None or self.pre_bat_df.empty:
+            return False
+        try:
+            poly = np.asarray(self.pre_bat_df.iloc[0]["mask"][1][0], dtype=np.float32).reshape(-1, 2)
+        except (IndexError, KeyError, TypeError, ValueError):
+            return False
+        return grip_distance(poly, *hands) is not None
+
     def mergeBatData(self, bbox, mask, frame_num: int = None):
         if mask is None:
-            # 當下沒偵測到，但 pre_bat_df 裡有舊資料
-            if not self.pre_bat_df.empty:
+            # 當下沒偵測到，但 pre_bat_df 裡有舊資料、而且仍在打者手上
+            if self._stillHeld():
                 self.has_pre_bat_df = True
                 bat_info = self.pre_bat_df.iloc[0].to_dict()
                 if frame_num is not None:
@@ -232,8 +245,8 @@ class PoseEstimater:
             # 更新「最後一次成功」的參考
             self.pre_bat_df = pd.DataFrame([bat_info])
         else:
-            # 當下沒偵測到，但 pre_bat_df 裡有舊資料
-            if not self.pre_bat_df.empty:
+            # 當下沒偵測到，但 pre_bat_df 裡有舊資料、而且仍在打者手上
+            if self._stillHeld():
                 self.has_pre_bat_df = True
                 # 取得舊資料但將 frame_num 更新為當前 (模擬持續存在)
                 bat_info = self.pre_bat_df.iloc[0].to_dict()
@@ -719,6 +732,7 @@ class PoseEstimater:
                                          pred_instances.bboxes[0])
             except (AttributeError, IndexError, KeyError):
                 hands = None
+        self.last_hands = hands   # 沒偵測到球棒時，判斷能否沿用上一幀（_stillHeld）
         if hands is not None:
             found = detect_bat_near_hands(yolo_model, img, *hands)
             if found is not None:
@@ -840,6 +854,7 @@ class PoseEstimater:
         self.bat_df = pd.DataFrame()
         self.has_pre_bat_df = False
         self.pre_bat_df = pd.DataFrame()
+        self.last_hands = None
         self.bat_data = []
         self.ball_df = pd.DataFrame()
         self.ball_data = []
