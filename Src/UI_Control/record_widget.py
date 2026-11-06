@@ -86,7 +86,7 @@ class RecordWidget(Analysis2dWidget):
     def addBatSettings(self):
         """打擊者區加「球棒設定…」：目前選的打者的棒長、棒重（沒設定用預設棒長）"""
         self.batSettingsDialog = BatSettingsDialog(self.ui.hitterNameInput.currentText, self)
-        button = QPushButton("球棒設定…")
+        button = QPushButton("球棒設定")
         button.setToolTip("目前打者的棒長與棒重（自動儲存）；棒長用於 2D 揮棒速度換算")
         button.clicked.connect(lambda: (self.batSettingsDialog.show(), self.batSettingsDialog.raise_()))
         self.ui.hitterNameInput.currentIndexChanged.connect(
