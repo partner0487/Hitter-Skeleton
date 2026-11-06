@@ -51,9 +51,23 @@ def roi_box(center, height, shape):
 
 def detect_bat_near_hands(yolo_model, image, wrists, height):
     """在雙手腕中點附近偵測，回傳 (bbox [x1, y1, x2, y2], 輪廓 (n, 2), 信心)，座標為整張畫面；沒找到回傳 None"""
-    x0, y0, x1, y1 = roi_box(np.asarray(wrists, dtype=np.float32).reshape(-1, 2).mean(axis=0), height, image.shape)
-    result = yolo_model.predict(image[y0:y1, x0:x1], classes=[BAT_CLASS], conf=CONF, imgsz=IMGSZ,
-                                retina_masks=True, verbose=False)[0]
+    return detect_bats_near_hands(yolo_model, [(image, wrists, height)])[0]
+
+
+def detect_bats_near_hands(yolo_model, jobs):
+    """多張畫面一起送 YOLO（雙相機同一幀），jobs 為 [(image, wrists, height), ...]，回傳各自的 detect_bat_near_hands 結果"""
+    boxes = [roi_box(np.asarray(wrists, dtype=np.float32).reshape(-1, 2).mean(axis=0), height, image.shape)
+             for image, wrists, height in jobs]
+    crops = [image[y0:y1, x0:x1] for (image, _, _), (x0, y0, x1, y1) in zip(jobs, boxes)]
+    if not crops:
+        return []
+    results = yolo_model.predict(crops, classes=[BAT_CLASS], conf=CONF, imgsz=IMGSZ, retina_masks=True, verbose=False)
+    return [_pick_bat(result, box[:2], wrists, height) for result, box, (_, wrists, height) in zip(results, boxes, jobs)]
+
+
+def _pick_bat(result, origin, wrists, height):
+    """區塊內的候選中挑打者手上那支（握把離手腕最近），座標從區塊換回整張畫面"""
+    x0, y0 = origin
     if result.masks is None:
         return None
     best, best_dist = None, None
