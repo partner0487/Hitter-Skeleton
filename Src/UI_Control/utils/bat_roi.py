@@ -6,7 +6,7 @@
 - 握把在手上：較近那隻手腕到遮罩輪廓的距離需 ≤ 身高 × GRIP_SCALE
   （手會遮住握把，遮罩常離手腕 60 px 以上；收棒時更遠）。量到較近的那隻手而非兩手中點：
   收棒單手放開時中點落在胸前、離球棒很遠（TSG 從打者後方拍，手腕常被身體擋住也是如此）
-- 多個候選取握把離手腕最近者（打者手上那支一定最近，即使揮動中模糊、信心較低）
+- 多個候選取握把離手腕最近者（打者手上那支一定最近，即使揮動中模糊、信心較低）；都貼著手（TOUCH_SCALE 內）時取信心高者
 - 離手稍遠（> 身高 × FAR_GRIP_SCALE）的候選，長度需 ≥ 身高 × MIN_FAR_LENGTH：
   後方其他球員的球棒離相機遠、畫面上短（TSG 為身高的 0.06～0.13），打者手上的球棒中位數 0.30
 依 WeiShu 2026-10-29 等 34 支片段：著地到擊球的有效遮罩 561 → 640 幀（共 755），
@@ -24,6 +24,9 @@ GRIP_SCALE = 0.22     # 遮罩離較近那隻手腕的容許距離 = 身高 × G
 # WeiShu、ChengXuan 的真球棒：手腕距離 / 身高 中位數 0.09、95% 0.16；棒長 / 身高 1% 0.11、5% 0.16
 FAR_GRIP_SCALE = 0.15
 MIN_FAR_LENGTH = 0.12
+# 離手腕 ≤ 身高 × TOUCH_SCALE 都算貼著手，貼著手的候選比信心：收棒時雙手舉在背景直立桿前，
+# 桿子與球棒都碰到手腕，只比距離會看手腕剛好落在誰的輪廓內（ChengXuan 正投 H11 第 73～75 幀選到桿子、擊球點誤判到收棒）
+TOUCH_SCALE = 0.03
 IMGSZ = 640
 MIN_WRIST_CONF = 0.3
 
@@ -78,7 +81,7 @@ def _pick_bat(result, origin, wrists, height):
         dist = grip_distance(poly, wrists, height)
         if dist is None:
             continue
-        if best is None or (max(dist, 0.0), -conf) < (max(best_dist, 0.0), -best[2]):
+        if best is None or (max(dist, height * TOUCH_SCALE), -conf) < (max(best_dist, height * TOUCH_SCALE), -best[2]):
             best, best_dist = ((box + np.array([x0, y0, x0, y0])).tolist(), poly, float(conf)), dist
     return best
 

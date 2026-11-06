@@ -500,7 +500,9 @@ class PhaseDetector:
         valid = (speeds if candidates is None else candidates).dropna()
         for i in valid.sort_values(ascending=False).index:
             if self._is_spike(speeds, i):
-                print(f"略過孤立尖峰：第 {i} 列 {speeds[i]:.1f} px/幀（前後 {speeds.get(i - 1):.1f}、{speeds.get(i + 1):.1f}）")
+                # 最後一列沒有下一幀（get 回傳 None）
+                near = "、".join("—" if v is None else f"{v:.1f}" for v in (speeds.get(i - 1), speeds.get(i + 1)))
+                print(f"略過孤立尖峰：第 {i} 列 {speeds[i]:.1f} px/幀（前後 {near}）")
                 continue
             return int(i)
         return int(valid.idxmax()) if not valid.empty else None
