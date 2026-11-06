@@ -8,8 +8,8 @@
 2. Setup conda environment:
     ```
     # 建立並啟用環境
-    conda create -n Pitcher python=3.8 -y
-    conda activate Pitcher
+    conda create -n hitter python=3.8 -y
+    conda activate hitter
 
     # 安裝 FLIR 工業相機驅動 (Spinnaker Python SDK)
     # 請替換為你本機的 wheel 檔實際路徑：
@@ -51,7 +51,7 @@
 
 ### Data Preparation
 ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing 下載，放到 `Db/pretrain/`。
-YOLO26（`yolo26m-seg.pt`）從 https://github.com/ultralytics/assets/releases 下載，需要 ultralytics 8.4 以上；舊環境或沒有這個檔案時自動改用 `yolo11m-seg.pt`。`Db/` 不進 git，整體結構如下：
+YOLO26（`yolo26m-seg.pt`，需要 ultralytics 8.4 以上）從 https://github.com/ultralytics/assets/releases 下載。`Db/` 不進 git，整體結構如下：
 
     Hitter-Skeleton
     |-- Db
@@ -59,7 +59,6 @@ YOLO26（`yolo26m-seg.pt`）從 https://github.com/ultralytics/assets/releases �
     |   |   |-- epoch_210.pth
     |   |   |-- vitpose_Sk26.pth
     |   |   |-- yolo26m-seg.pt
-    |   |   |-- yolo11m-seg.pt                # 舊環境（ultralytics < 8.4）使用
     |   |   `-- yolov7_x_syncbn_fast_8x16b-300e_coco_20221124_215331-ef949a68.pth
     |   |-- Calibration                       # 雙相機校正（見下方「相機校正」）
     |   |   |-- stereo.json                   # 日期最新的內外參
@@ -81,7 +80,7 @@ YOLO26（`yolo26m-seg.pt`）從 https://github.com/ultralytics/assets/releases �
 
 ### Demo
 ```
-conda activate Pitcher
+conda activate hitter
 python Src\UI_Control\main.py
 ```
 或直接執行 `start.bat`。
