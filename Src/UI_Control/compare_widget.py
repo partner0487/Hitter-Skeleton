@@ -1,7 +1,7 @@
 """比較頁：兩支錄影並排播放，指標與分析頁（Analysis3DWidget）完全相同。
 
 指標交給背景 3D 程序（tools/process3d_worker.py）用分析頁同一套流程計算，讀回 metrics_3d.json 顯示；
-關鍵幀也用它的結果。main3d.py 與錄影頁共用同一個背景程序，main.py 第一次用到時才自己開一個。
+關鍵幀也用它的結果。main.py 傳入錄影頁的背景程序共用；沒傳時第一次用到才自己開一個。
 
 - 每位打者各自選右打／左打（影響校正與前後腳），改了就重算
 - 還沒處理過的錄影交給背景程序做雙相機偵測，處理完自動載入骨架影片
@@ -113,7 +113,7 @@ class CompareWidget(QWidget, Ui_hitter_ui_dual):
         self.timer.timeout.connect(self.update_frames_timer)
         self.clock = PlaybackClock()
 
-        # 背景 3D 程序：main3d.py 傳入錄影頁那一個；沒傳就自己開（第一次要算時才啟動）
+        # 背景 3D 程序：main.py 傳入錄影頁那一個；沒傳就自己開（第一次要算時才啟動）
         self.worker3d = worker3d or Worker3D(self)
         self.owns_worker = worker3d is None
         self.worker3d.done.connect(self.on3DDone)

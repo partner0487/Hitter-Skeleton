@@ -1,4 +1,4 @@
-"""main3d.py 的錄影頁：現場錄影與錄完的 2D 即時分析沿用 Analysis2dWidget（與 main.py 的 2D 頁相同），
+"""main.py 的錄影頁：現場錄影與錄完的 2D 即時分析沿用 Analysis2dWidget，
 2D 結果顯示後交給背景程序（tools/process3d_worker.py）做 3D，算完把指標換成 3D 的數值並補上 3D 才有的指標。
 
 - 右側控制區把原本的「相機」「設定」分頁合成一欄，不提供載入影片與最近錄影清單（過往錄影在分析頁看）
@@ -28,7 +28,7 @@ BLOCK_GAP_PX = 16
 class RecordWidget(Analysis2dWidget):
     def __init__(self, model, parent=None):
         super().__init__(model, parent)
-        # 背景 3D 程序：比較頁也共用這一個（main3d.py 傳給比較頁）
+        # 背景 3D 程序：比較頁也共用這一個（main.py 傳給比較頁）
         self.worker3d = Worker3D(self)
         self.worker3d.done.connect(self.apply3D)
         self.worker3d.failed.connect(self.fail3D)
