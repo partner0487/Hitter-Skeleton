@@ -632,20 +632,21 @@ class PoseEstimater:
             if curr_person_data.empty or pre_person_data.empty:
                 continue  # 當前幀或前幀沒有該 person_id 的數據，跳過
             
-            pre_kpts = torch.tensor(pre_person_data.iloc[0]['keypoints'], device='cuda')
-            curr_kpts = torch.tensor(curr_person_data.iloc[0]['keypoints'], device='cuda')
+            # 用 Python float（float64）逐點計算：原本每個關節都建 CUDA 張量再 .item() 取回，每幀上百次 GPU 同步，
+            # 一支 90 幀雙相機片段多花約 2.3 秒；濾波器有狀態（dx_prev 依序傳遞），呼叫順序維持不變
+            pre_kpts = np.asarray(pre_person_data.iloc[0]['keypoints'], dtype=np.float64)
+            curr_kpts = np.asarray(curr_person_data.iloc[0]['keypoints'], dtype=np.float64)
             smoothed_kpts = []
 
-            # 使用張量運算來進行平滑
             for pre_kpt, curr_kpt in zip(pre_kpts, curr_kpts):
-                pre_kptx, pre_kpty = pre_kpt[0], pre_kpt[1]
-                curr_kptx, curr_kpty, curr_conf, curr_label = curr_kpt[0], curr_kpt[1], curr_kpt[2], curr_kpt[3]
-                
-                if all([pre_kptx.item() != 0, pre_kpty.item() != 0, curr_kptx.item() != 0, curr_kpty.item() != 0]):
+                pre_kptx, pre_kpty = float(pre_kpt[0]), float(pre_kpt[1])
+                curr_kptx, curr_kpty, curr_conf, curr_label = (float(v) for v in curr_kpt[:4])
+
+                if pre_kptx != 0 and pre_kpty != 0 and curr_kptx != 0 and curr_kpty != 0:
                     curr_kptx = self.smooth_filter(curr_kptx, pre_kptx)
                     curr_kpty = self.smooth_filter(curr_kpty, pre_kpty)
-                
-                smoothed_kpts.append([curr_kptx.cpu().item(), curr_kpty.cpu().item(), curr_conf.item(), curr_label.item()])
+
+                smoothed_kpts.append([curr_kptx, curr_kpty, curr_conf, curr_label])
             
             # 更新當前幀的數據
             self.person_df.at[curr_person_data.index[0], 'keypoints'] = smoothed_kpts
