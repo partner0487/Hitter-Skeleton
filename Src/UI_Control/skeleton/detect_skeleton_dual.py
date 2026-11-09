@@ -12,8 +12,11 @@ from mmpose.apis import init_model as init_pose_estimator
 from mmpose.evaluation.functional import nms
 from mmpose.structures import merge_data_samples
 from utils.timer import FPSTimer
-from utils.bat_roi import detect_bat_near_hands, grip_distance, hands_and_height
+from utils.bat_roi import detect_bat_near_hands, detect_bats_near_hands, grip_distance, hands_and_height
 from ultralytics import YOLO
+from mmcv.transforms import Compose
+from mmengine.dataset import pseudo_collate
+from mmengine.registry import init_default_scope
 import torch
 import torch.autograd.profiler as profiler
 import cv2
@@ -26,6 +29,37 @@ try:
     has_mmdet = True
 except (ImportError, ModuleNotFoundError):
     has_mmdet = False
+
+# 整張畫面 YOLO：人（0）、球（32）、球棒（34）
+FULL_FRAME_KWARGS = dict(task='segment', classes=[0, 32, 34], conf=0.15, verbose=False)
+
+
+def topdown_batch(pose_model, jobs):
+    """多張畫面的骨架一起推論（雙相機同一幀），jobs 為 [(img, bboxes (n, 4) xyxy), ...]，
+    回傳各張畫面的結果列表，與逐張呼叫 mmpose inference_topdown 相同（沒有框時以整張畫面為框）"""
+    scope = pose_model.cfg.get('default_scope', 'mmpose')
+    if scope is not None:
+        init_default_scope(scope)
+    pipeline = getattr(pose_model, "_topdown_pipeline", None)
+    if pipeline is None:
+        pipeline = pose_model._topdown_pipeline = Compose(pose_model.cfg.test_dataloader.dataset.pipeline)
+    data_list, counts = [], []
+    for img, bboxes in jobs:
+        if bboxes is None or len(bboxes) == 0:
+            h, w = img.shape[:2]
+            bboxes = np.array([[0, 0, w, h]], dtype=np.float32)
+        for bbox in bboxes:
+            data_info = dict(img=img, bbox=bbox[None], bbox_score=np.ones(1, dtype=np.float32))
+            data_info.update(pose_model.dataset_meta)
+            data_list.append(pipeline(data_info))
+        counts.append(len(bboxes))
+    with torch.no_grad():
+        results = pose_model.test_step(pseudo_collate(data_list))
+    out, start = [], 0
+    for n in counts:
+        out.append(results[start:start + n])
+        start += n
+    return out
 
 class PoseEstimater:
     def __init__(self, model: Model =None):
@@ -315,12 +349,7 @@ class PoseEstimater:
         if is_video: 
             #影片處理方式
             if frame_num not in self.processed_frames:
-                pred_instances, person_ids, bat_bbox, bat_mask, ball_bboxes = self.processImage(self.model, image, select_id=self.person_id)
-                self.person_df = self.mergePersonData(pred_instances, person_ids, frame_num)
-                self.bat_df = self.mergeBatData(bat_bbox, bat_mask, frame_num)
-                self.ball_df = self.mergeBallData(ball_bboxes, frame_num)
-                self.smoothKpt(person_ids, frame_num)
-                self.processed_frames.add(frame_num)
+                self.storeVideoResult(self.processImage(self.model, image, select_id=self.person_id), frame_num)
             if self.kpt_id is not None:
                 self.kpt_buffer = self.updateKptBuffer(frame_num)
         else:
@@ -341,6 +370,38 @@ class PoseEstimater:
         fps = int(1/max(average_time, 0.00001))
 
         return image, self.person_df, fps, self.bat_df, self.ball_df
+
+    def storeVideoResult(self, result, frame_num):
+        pred_instances, person_ids, bat_bbox, bat_mask, ball_bboxes = result
+        self.person_df = self.mergePersonData(pred_instances, person_ids, frame_num)
+        self.bat_df = self.mergeBatData(bat_bbox, bat_mask, frame_num)
+        self.ball_df = self.mergeBallData(ball_bboxes, frame_num)
+        self.smoothKpt(person_ids, frame_num)
+        self.processed_frames.add(frame_num)
+
+    @staticmethod
+    def detectKptDual(side, front, img_side, img_front, frame_num, epipolar_F=None):
+        """影片處理：雙相機同一幀一起偵測（processDual），結果與先 side.detectKpt、再 front.detectKpt 相同；回傳正面 fps"""
+        if not (side.is_detect and front.is_detect) or frame_num in side.processed_frames or frame_num in front.processed_frames:
+            # 逐台處理：側面打者框從側面 person_df 取該幀資料
+            side.detectKpt(img_side, frame_num, is_video=True)
+            guide = None
+            side_df = side.person_df
+            if epipolar_F is not None and side_df is not None and not side_df.empty and "frame_number" in side_df:
+                rows = side_df[side_df["frame_number"] == frame_num]
+                if not rows.empty:
+                    guide = (epipolar_F, np.asarray(rows.iloc[0]["bbox"], dtype=np.float64).ravel())
+            front.epipolar_guide = guide
+            return front.detectKpt(img_front, frame_num, is_video=True)[2]
+        side_result, front_result = PoseEstimater.processDual(side.model, side, front, img_side, img_front,
+                                                              side.person_id, front.person_id, epipolar_F)
+        fps = 0
+        for est, result in ((side, side_result), (front, front_result)):
+            est.storeVideoResult(result, frame_num)
+            if est.kpt_id is not None:
+                est.kpt_buffer = est.updateKptBuffer(frame_num)
+            fps = int(1 / max(est.fps_timer.toc(), 0.00001))
+        return fps
 
     def filterBatBiggestTarget(self, online_targets, masks, pred_instances=None):
         # 看有沒有內容
@@ -632,20 +693,21 @@ class PoseEstimater:
             if curr_person_data.empty or pre_person_data.empty:
                 continue  # 當前幀或前幀沒有該 person_id 的數據，跳過
             
-            pre_kpts = torch.tensor(pre_person_data.iloc[0]['keypoints'], device='cuda')
-            curr_kpts = torch.tensor(curr_person_data.iloc[0]['keypoints'], device='cuda')
+            # 用 Python float（float64）逐點計算：原本每個關節都建 CUDA 張量再 .item() 取回，每幀上百次 GPU 同步，
+            # 一支 90 幀雙相機片段多花約 2.3 秒；濾波器有狀態（dx_prev 依序傳遞），呼叫順序維持不變
+            pre_kpts = np.asarray(pre_person_data.iloc[0]['keypoints'], dtype=np.float64)
+            curr_kpts = np.asarray(curr_person_data.iloc[0]['keypoints'], dtype=np.float64)
             smoothed_kpts = []
 
-            # 使用張量運算來進行平滑
             for pre_kpt, curr_kpt in zip(pre_kpts, curr_kpts):
-                pre_kptx, pre_kpty = pre_kpt[0], pre_kpt[1]
-                curr_kptx, curr_kpty, curr_conf, curr_label = curr_kpt[0], curr_kpt[1], curr_kpt[2], curr_kpt[3]
-                
-                if all([pre_kptx.item() != 0, pre_kpty.item() != 0, curr_kptx.item() != 0, curr_kpty.item() != 0]):
+                pre_kptx, pre_kpty = float(pre_kpt[0]), float(pre_kpt[1])
+                curr_kptx, curr_kpty, curr_conf, curr_label = (float(v) for v in curr_kpt[:4])
+
+                if pre_kptx != 0 and pre_kpty != 0 and curr_kptx != 0 and curr_kpty != 0:
                     curr_kptx = self.smooth_filter(curr_kptx, pre_kptx)
                     curr_kpty = self.smooth_filter(curr_kpty, pre_kpty)
-                
-                smoothed_kpts.append([curr_kptx.cpu().item(), curr_kpty.cpu().item(), curr_conf.item(), curr_label.item()])
+
+                smoothed_kpts.append([curr_kptx, curr_kpty, curr_conf, curr_label])
             
             # 更新當前幀的數據
             self.person_df.at[curr_person_data.index[0], 'keypoints'] = smoothed_kpts
@@ -662,12 +724,16 @@ class PoseEstimater:
         Returns:
             Tuple: 預測的姿態實例和在線的追蹤ID。
         """
-       
-        # 進行物件偵測
-        # YOLO for detection
-        yolo_model = model.detector
-        result = yolo_model.predict(img, task= 'segment', classes=[0, 32, 34], conf=0.15, verbose=False) # Turn off verbose yolo print
-        detections = result[0]
+        # 三段：整張畫面 YOLO → 選人 → 骨架 → 雙手附近找球棒；雙相機一起送見 processDual
+        result = model.detector.predict(img, **FULL_FRAME_KWARGS)
+        targets = self.selectTargets(img, result[0], select_id)
+        pose_results = inference_topdown(model.pose_estimator, img, np.array(targets["bbox"]))
+        pred_instances, hands = self.readPose(pose_results)
+        found = detect_bat_near_hands(model.detector, img, *hands) if hands is not None else None
+        return self.finishTargets(model, img, targets, pred_instances, hands, found)
+
+    def selectTargets(self, img, detections, select_id=None):
+        """整張畫面 YOLO 結果分成人／球棒／球，挑出打者框"""
         # human
         human_bboxes = []
         humane_scores = []
@@ -714,17 +780,13 @@ class PoseEstimater:
         # 過濾出有效的邊界框和追蹤ID
         img_h, img_w = img.shape[:2]
         online_bbox, online_ids = self.filterBiggestTargets(online_targets, select_id, (img_w, img_h), bat_bboxes)
-        # 姿態估計
-        pose_results = inference_topdown(model.pose_estimator, img, np.array(online_bbox))
-        data_samples = merge_data_samples(pose_results)
-    
-        online_bat_bbox = []
-        online_bat_mask = None
-        online_ball_bbox = ball_bboxes
-        pred_instances = data_samples.get('pred_instances', None) if data_samples else None
+        return {"bbox": online_bbox, "ids": online_ids, "bat_bboxes": bat_bboxes, "bat_masks": bat_masks,
+                "ball_bboxes": ball_bboxes}
 
-        # 球棒：有打者手腕時在雙手附近重新偵測（utils/bat_roi.py），模糊的球棒也抓得到、不會選到背景；
-        # mask 格式與下面相同：(序號, 輪廓陣列 (1, n, 2))
+    def readPose(self, pose_results):
+        """骨架結果合併成 pred_instances，取出雙手腕與身高（沒有可信手腕為 None）"""
+        data_samples = merge_data_samples(pose_results)
+        pred_instances = data_samples.get('pred_instances', None) if data_samples else None
         hands = None
         if pred_instances is not None and len(pred_instances) > 0:
             try:
@@ -733,19 +795,47 @@ class PoseEstimater:
             except (AttributeError, IndexError, KeyError):
                 hands = None
         self.last_hands = hands   # 沒偵測到球棒時，判斷能否沿用上一幀（_stillHeld）
+        return pred_instances, hands
+
+    def finishTargets(self, model, img, targets, pred_instances, hands, found):
+        """球棒：有打者手腕時用雙手附近的偵測結果 found（utils/bat_roi.py），模糊的球棒也抓得到、不會選到背景；
+        沒有手腕時退回整張畫面的偵測結果。mask 格式皆為 (序號, 輪廓陣列 (1, n, 2))"""
+        online_bat_bbox = []
+        online_bat_mask = None
+        bat_bboxes = targets["bat_bboxes"]
         if hands is not None:
-            found = detect_bat_near_hands(yolo_model, img, *hands)
             if found is not None:
                 online_bat_bbox, online_bat_mask = found[0], (0, found[1][None])
-        # 沒有手腕時退回整張畫面的偵測結果
         elif len(bat_bboxes):
             online_targets_bat = model.tracker.update(
                     np.hstack((np.vstack(bat_bboxes), np.full((np.vstack(bat_bboxes).shape[0], 2), [0.9, 0]))), img.copy()
             )
-            online_bat_bbox, online_bat_mask = self.filterBatBiggestTarget(online_targets_bat, bat_masks, pred_instances)
+            online_bat_bbox, online_bat_mask = self.filterBatBiggestTarget(online_targets_bat, targets["bat_masks"], pred_instances)
 
-        return data_samples.get('pred_instances', None), online_ids, online_bat_bbox, online_bat_mask, online_ball_bbox
-        
+        return pred_instances, targets["ids"], online_bat_bbox, online_bat_mask, targets["ball_bboxes"]
+
+    @staticmethod
+    def processDual(model, side, front, img_side, img_front, side_select_id=None, front_select_id=None, epipolar_F=None):
+        """雙相機同一幀一起偵測：整張畫面 YOLO、骨架、雙手附近的球棒 YOLO 各只送一次（兩張一批），
+        結果與兩邊各自 processImage 相同（側面先選人，側面打者框經對極幾何導引正面選人）。
+        回傳 (側面結果, 正面結果)，格式同 processImage"""
+        sides = ((side, img_side), (front, img_front))
+        results = model.detector.predict([img_side, img_front], **FULL_FRAME_KWARGS)
+        side_targets = side.selectTargets(img_side, results[0], side_select_id)
+        # 與原本從側面 person_df 取該幀打者框相同：有選到人才有該幀資料
+        front.epipolar_guide = ((epipolar_F, np.asarray(side_targets["bbox"][0], dtype=np.float64).ravel())
+                                if epipolar_F is not None and len(side_targets["ids"]) and len(side_targets["bbox"]) else None)
+        front_targets = front.selectTargets(img_front, results[1], front_select_id)
+        targets = (side_targets, front_targets)
+
+        poses = topdown_batch(model.pose_estimator, [(img, np.array(t["bbox"])) for (_, img), t in zip(sides, targets)])
+        read = [est.readPose(pose) for (est, _), pose in zip(sides, poses)]
+
+        jobs = [i for i, (_, hands) in enumerate(read) if hands is not None]
+        found = dict(zip(jobs, detect_bats_near_hands(model.detector, [(sides[i][1], *read[i][1]) for i in jobs])))
+        return tuple(est.finishTargets(model, img, t, pred, hands, found.get(i))
+                     for i, ((est, img), t, (pred, hands)) in enumerate(zip(sides, targets, read)))
+
     def setPersonId(self, person_id):
         self.person_id = person_id
 

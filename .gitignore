@@ -165,7 +165,6 @@ cython_debug/
 # Db 整個不進版控；模型權重請從雲端硬碟下載放到 Db/pretrain/
 /Db/*
 !/Db/README.md
-/Src/Db/
 
 # ==== 大型二進位檔（保險：不論放在哪個資料夾都忽略）====
 *.mp4

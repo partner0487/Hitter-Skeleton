@@ -7,7 +7,7 @@ import cv2
 import PyQt5.QtCore as QtCore
 from PIL import Image, ImageDraw, ImageFont
 from PyQt5 import QtWidgets
-from PyQt5.QtWidgets import QWidget, QFileDialog, QGraphicsView, QGraphicsScene, QSizePolicy, QMessageBox
+from PyQt5.QtWidgets import QApplication, QWidget, QFileDialog, QGraphicsView, QGraphicsScene, QSizePolicy, QMessageBox
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QEvent, QRect
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QPen, QBrush, QStandardItemModel, QStandardItem
 from utils.selector import PersonSelector
@@ -26,7 +26,7 @@ from utils.phase_detect3d import PhaseDetector, PhaseResult
 from utils.phase_detect2d import PhaseDetector as PhaseDetector2D
 from utils.model import Model
 from skeleton.detect_skeleton_dual import PoseEstimater
-from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_parts, clip_title, clip_videos, is_result_dir
+from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_parts, clip_title, clip_videos, is_result_dir, source_videos
 from PyQt5 import QtGui
 from ui_utils.analysis_bar import AnalysisBar
 from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
@@ -1373,7 +1373,7 @@ class Analysis3DWidget(QWidget):
         return getattr(self, "processing", False) or getattr(self, "batch_queue", None) is not None
 
     def setProcessingLock(self, locked):
-        """處理影片時鎖住會打斷處理的操作。處理迴圈逐幀讓出介面（playFrame4Process 的 waitKey），
+        """處理影片時鎖住會打斷處理的操作。處理迴圈逐幀讓出介面（playFrame4Process 的 processEvents），
         期間點清單載入別支會把剩下的幀變成播放那支（這支不會存檔、批量處理也停在這裡），
         播放鍵會暫停處理、拖進度條會跳幀、換打擊方向會換掉選手腕與校正。批量處理只留「停止批量處理」"""
         self.processing = locked
@@ -1414,20 +1414,12 @@ class Analysis3DWidget(QWidget):
 
     def detectDualKpt(self, frame, frame_2, frame_num):
         """先偵測側面（pose_estimater_2）、再偵測正面（pose_estimater）：側面鎖定的打者人框經對極幾何導引正面選人，
-        正投時才不會選到站在正面相機前的投手；純側面錄影（frame 為 None）只偵測側面"""
-        _, _, fps, _, _ = self.pose_estimater_2.detectKpt(frame_2, frame_num, is_video=True)
+        正投時才不會選到站在正面相機前的投手；純側面錄影（frame 為 None）只偵測側面。
+        兩台相機的 YOLO 與骨架各一起送一次（PoseEstimater.detectKptDual），每支片段約省 1.8 秒"""
         if frame is None:
-            return fps
-        guide = None
-        F = getattr(self, "F_side_front", None)
-        side_df = self.pose_estimater_2.person_df
-        if F is not None and side_df is not None and not side_df.empty and "frame_number" in side_df:
-            rows = side_df[side_df["frame_number"] == frame_num]
-            if not rows.empty:
-                guide = (F, np.asarray(rows.iloc[0]["bbox"], dtype=np.float64).ravel())
-        self.pose_estimater.epipolar_guide = guide
-        _, _, fps_front, _, _ = self.pose_estimater.detectKpt(frame, frame_num, is_video=True)
-        return fps_front
+            return self.pose_estimater_2.detectKpt(frame_2, frame_num, is_video=True)[2]
+        return PoseEstimater.detectKptDual(self.pose_estimater_2, self.pose_estimater, frame_2, frame, frame_num,
+                                           getattr(self, "F_side_front", None))
 
     def analyzeFrame4Process(self):
         """Analyze and process each video frame."""
@@ -1455,8 +1447,7 @@ class Analysis3DWidget(QWidget):
             self.is_dual = False
             return
         if frame_num == self.video_loader_dual.total_frames - 1:
-            self.video_loader_dual.saveDualVideo(False)
-            self.video_loader_dual.saveDualVideo(True)
+            self.video_loader_dual.saveResults()
             self.processFinished.emit(self.video_loader_dual.output_folder)
             self.is_dual = False
 
@@ -1541,7 +1532,13 @@ class Analysis3DWidget(QWidget):
             self.ui.frameSlider.setValue(i)
             if i == self.video_loader_dual.total_frames - 1 and self.is_play:
                 self.playBtnClicked4Process()
-            
+
+            # 偵測處理：只處理視窗訊息（更新畫面、停止鍵）不等待。waitKey(1) 在 Windows 上實際每幀等約 10 ms，
+            # 一支 90 幀片段多約 0.9 秒
+            if self.ui.showSkeletonCheckBox.isChecked():
+                QApplication.processEvents()
+                continue
+
             # 還原原本系統 1 倍速為最低延遲 1ms 的體驗；偵測處理中不套用慢動作
             # （原本沿用播放速度 0.25x，每幀多等約 100 ms，佔一支影片處理時間的 35%）。
             # waitKey 在 Windows 上會順便處理視窗訊息，畫面才會更新，所以仍保留 1 ms
@@ -1617,9 +1614,8 @@ class Analysis3DWidget(QWidget):
         self.folder = folder
         self.is_dual = False
         # 只有側面影片的錄影（結果在 CS_ 子資料夾、沒有正面影片）：純側面 2D，不三角化、不畫 3D
-        self.side_only = os.path.basename(folder).startswith("CS_") or not (
-            glob.glob(os.path.join(folder, "CF*.mp4"))
-            or any(os.path.isfile(os.path.join(folder, n)) for n in ("skel_front.mp4", "raw_front.mp4")))
+        front_video, side_video = source_videos(folder)
+        self.side_only = os.path.basename(folder).startswith("CS_") or front_video is None
         print(f"📁 Loading Folder: {folder}" + ("（純側面 2D）" if self.side_only else ""))
         # 依錄影路徑中的日期與畫面上選的右打／左打，使用當天或之前最新的對應校正
         self.applyStereoCalibration(self.calibrationFor(folder))
@@ -1667,20 +1663,9 @@ class Analysis3DWidget(QWidget):
         self.pose_estimater.ball_df = self.ball_front_df
         self.pose_estimater_2.ball_df = self.ball_side_df
 
-        # 3. 影片路徑解析 (優先找 skel_，再找 CS/CF 前綴)
-        def find_mp4(prefix, fallback_suffix):
-            skel = os.path.join(folder, f"skel_{fallback_suffix}.mp4")
-            if os.path.exists(skel): return skel
-            vids = glob.glob(os.path.join(folder, f"{prefix}*.mp4"))
-            return vids[0] if vids else None
-
-        self.video_side_path = None if self.side_only else find_mp4("CF_", "front")
-        self.video_front_path = find_mp4("CS_", "side")
-
-        # Raw 影片路徑
-        self.video_side_raw = None if self.side_only else \
-            (glob.glob(os.path.join(folder, "CF*.mp4")) + [os.path.join(folder, "raw_front.mp4")])[0]
-        self.video_front_raw = (glob.glob(os.path.join(folder, "CS*.mp4")) + [os.path.join(folder, "raw_side.mp4")])[0]
+        # 3. 影片路徑：原始 CF／CS 影片，骨架由 updateFrame 依 JSON 即時畫上（注意 video_side_* 是正面、video_front_* 是側面）
+        self.video_side_path = self.video_side_raw = None if self.side_only else front_video
+        self.video_front_path = self.video_front_raw = side_video
 
         # 4. 執行載入
         self.loadVideo()

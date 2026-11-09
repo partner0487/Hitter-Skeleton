@@ -406,8 +406,10 @@ class VideoLoader:
         video_writer2.release()
         print("Store video success")
 
-    def saveDualVideo(self, process: bool):
-        # 1. 建立輸出資料夾：Db/Record/<video_name>/
+    def saveResults(self):
+        """把偵測結果存成 JSON。不另存 raw_／skel_ 影片：介面直接讀原始 CF／CS 影片、依 JSON 即時畫骨架
+        （utils/paths.source_videos），每支片段省下約 3 秒的畫圖與影片壓縮"""
+        # 1. 建立輸出資料夾：<錄影資料夾>/<video_name>/
         
         # Create a subfolder using the video filename (without extension)
         # 結果子資料夾以正面影片檔名命名（CF_…）；純側面錄影以側面影片檔名命名（CS_…）
@@ -460,30 +462,7 @@ class VideoLoader:
         save_batht_df_side.to_json(json_path_side_batht, orient='records')
         save_batht_df_front.to_json(json_path_front_batht, orient='records')
 
-        if process:
-            # video_writer1 吃到的是 CF 的影像 -> 對應 front
-            save_location1 = os.path.join(output_folder, "skel_front.mp4")
-            # video_writer2 吃到的是 CS 的影像 -> 對應 side
-            save_location2 = os.path.join(output_folder, "skel_side.mp4")
-        else:
-            save_location1 = os.path.join(output_folder, "raw_front.mp4")
-            save_location2 = os.path.join(output_folder, "raw_side.mp4")
-
-        # 正面（CF）用 image_drawer2、側面（CS）用 image_drawer 畫骨架；純側面錄影沒有正面影格，不寫正面影片
-        jobs = ((save_location1, self.video_frames1, self.image_drawer2),
-                (save_location2, self.video_frames2, self.image_drawer))
-        for location, frames, drawer in jobs:
-            if not frames:
-                continue
-            size = (frames[0].shape[1], frames[0].shape[0])
-            writer = cv2.VideoWriter(location, cv2.VideoWriter_fourcc(*'mp4v'), self.video_fps, size)
-            if not writer.isOpened():
-                print(f"Error while opening video writer: {location}")
-                continue
-            for frame_num, frame in enumerate(frames):
-                writer.write(drawer.drawInfo(img=frame, frame_num=frame_num) if process else frame)
-            writer.release()
-        print("Store video success, folder =", output_folder)
+        print("Store results success, folder =", output_folder)
 
     def reset(self):
         self.video_path = None
