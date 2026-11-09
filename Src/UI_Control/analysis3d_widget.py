@@ -7,7 +7,7 @@ import cv2
 import PyQt5.QtCore as QtCore
 from PIL import Image, ImageDraw, ImageFont
 from PyQt5 import QtWidgets
-from PyQt5.QtWidgets import QWidget, QFileDialog, QGraphicsView, QGraphicsScene, QSizePolicy, QMessageBox
+from PyQt5.QtWidgets import QApplication, QWidget, QFileDialog, QGraphicsView, QGraphicsScene, QSizePolicy, QMessageBox
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QEvent, QRect
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QPen, QBrush, QStandardItemModel, QStandardItem
 from utils.selector import PersonSelector
@@ -1373,7 +1373,7 @@ class Analysis3DWidget(QWidget):
         return getattr(self, "processing", False) or getattr(self, "batch_queue", None) is not None
 
     def setProcessingLock(self, locked):
-        """處理影片時鎖住會打斷處理的操作。處理迴圈逐幀讓出介面（playFrame4Process 的 waitKey），
+        """處理影片時鎖住會打斷處理的操作。處理迴圈逐幀讓出介面（playFrame4Process 的 processEvents），
         期間點清單載入別支會把剩下的幀變成播放那支（這支不會存檔、批量處理也停在這裡），
         播放鍵會暫停處理、拖進度條會跳幀、換打擊方向會換掉選手腕與校正。批量處理只留「停止批量處理」"""
         self.processing = locked
@@ -1532,7 +1532,13 @@ class Analysis3DWidget(QWidget):
             self.ui.frameSlider.setValue(i)
             if i == self.video_loader_dual.total_frames - 1 and self.is_play:
                 self.playBtnClicked4Process()
-            
+
+            # 偵測處理：只處理視窗訊息（更新畫面、停止鍵）不等待。waitKey(1) 在 Windows 上實際每幀等約 10 ms，
+            # 一支 90 幀片段多約 0.9 秒
+            if self.ui.showSkeletonCheckBox.isChecked():
+                QApplication.processEvents()
+                continue
+
             # 還原原本系統 1 倍速為最低延遲 1ms 的體驗；偵測處理中不套用慢動作
             # （原本沿用播放速度 0.25x，每幀多等約 100 ms，佔一支影片處理時間的 35%）。
             # waitKey 在 Windows 上會順便處理視窗訊息，畫面才會更新，所以仍保留 1 ms
