@@ -489,6 +489,13 @@ class PhaseDetector:
         track["toward_pitcher_px"] = toward
         return track.drop(columns=[c for c in ("_head", "_mask") if c in track])
 
+    def _head_below_wrists(self, track: pd.DataFrame) -> pd.Series:
+        """每一列棒頭是否低於（畫面 y 較大）該幀附近的雙手腕中點；沒有手腕資料為 False"""
+        def below(row):
+            wrist = self._wrist_near(int(row["frame"]))
+            return wrist is not None and not pd.isna(row["head_y"]) and row["head_y"] > wrist[1]
+        return track.apply(below, axis=1).astype(bool) if len(track) else pd.Series(dtype=bool)
+
     def _fastest_non_spike(self, speeds: pd.Series, candidates: Optional[pd.Series] = None):
         """
         棒頭最高速的那一列；跳過孤立尖峰：前後幀中有速度的（非 0、非缺，至少一幀）都低於它的 SPIKE_RATIO。
@@ -531,10 +538,15 @@ class PhaseDetector:
         # 只看棒頭往投手方向移動的幀：收棒時棒頭往回繞。左打者面向側面相機，收棒在身前繞過、畫面上很快，
         # 收棒最高速常是擊球的 1～2.3 倍（ChengXuan 2026-10-29），只取最高速會抓到收棒；
         # 右打收棒繞到身後，只有擊球的 0.30～0.64 倍。兩者擊球時都往投手方向、收棒高峰都往回（WeiShu、ChengXuan 實測）
-        toward = speeds.where(track["toward_pitcher_px"] > 0) if self.pitcher_dir else None
-        best = self._fastest_non_spike(speeds, toward)
-        if best is None and toward is not None:
-            best = self._fastest_non_spike(speeds)
+        toward = speeds.where(track["toward_pitcher_px"] > 0) if self.pitcher_dir else speeds
+        # 擊球時棒頭在手腕下方：33 支真值片段擊球幀棒頭比手腕低 0.12～0.36 個身高；收棒棒頭舉到手上方
+        # （ChengXuan 正投 H11 第 74 幀遮罩跳到背景桿子，往投手 112 px/幀，棒頭高於手腕 0.22 個身高）。
+        # 只是必要條件，揮棒前段、收棒後段棒頭也常在下方，仍由最高速決定；都沒有手腕資料時退回不限高低
+        best = None
+        for candidates in (toward.where(self._head_below_wrists(track)), toward, speeds):
+            best = self._fastest_non_spike(speeds, candidates)
+            if best is not None:
+                break
         if best is not None:
             best_frame = int(track.at[best, "frame"])
             print(f"✅ 成功找到擊球點！影格: {best_frame}, 棒頭最高速: {speeds[best]:.2f}")
