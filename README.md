@@ -1,6 +1,6 @@
 # Hitter-Skeleton
 
-棒球打擊動作分析：雙 FLIR 相機（正面、側面）同步錄影，ViTPose 偵測骨架，分析揮棒、動作階段與 3D 姿態。
+棒球打擊動作分析：雙 FLIR 相機（正面、側面）同步錄影，YOLO26 偵測打者與球棒、ViTPose 偵測骨架，分析揮棒、動作階段與 3D 姿態。
 
 ## Usage
 ### Installation
@@ -50,16 +50,17 @@
     ``` 
 
 ### Data Preparation
-ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing 下載，放到 `Db/pretrain/`。
-YOLO26（`yolo26m-seg.pt`，需要 ultralytics 8.4 以上）從 https://github.com/ultralytics/assets/releases 下載。`Db/` 不進 git，整體結構如下：
+兩個模型權重都放到 `Db/pretrain/`：
+- 骨架 ViTPose（`epoch_210.pth`，Halpe 26 個關節點）：從 https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing 下載
+- 人與球棒偵測 YOLO26（`yolo26m-seg.pt`，需要 ultralytics 8.4 以上）：從 https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26m-seg.pt 下載
+
+`Db/` 不進 git，整體結構如下：
 
     Hitter-Skeleton
     |-- Db
     |   |-- pretrain
-    |   |   |-- epoch_210.pth
-    |   |   |-- vitpose_Sk26.pth
-    |   |   |-- yolo26m-seg.pt
-    |   |   `-- yolov7_x_syncbn_fast_8x16b-300e_coco_20221124_215331-ef949a68.pth
+    |   |   |-- epoch_210.pth                 # ViTPose（Halpe 26 點）
+    |   |   `-- yolo26m-seg.pt                # YOLO26 分割（人、球棒、球）
     |   |-- Calibration                       # 雙相機校正（見下方「相機校正」）
     |   |   |-- stereo.json                   # 日期最新的內外參
     |   |   |-- intrinsics_all.json
