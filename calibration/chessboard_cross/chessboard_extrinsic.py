@@ -7,6 +7,9 @@ from chessboard_cross.chessboard_metric import (align_pairs, camera_arrays, fit_
     fit_pnp, object_points, paired_views, read_json, validate_rig)
 
 CONVENTION = "X_cs = R_cs_from_cf @ X_cf + t_cs_from_cf_mm"
+# Fallback-detected boards whose triangulated edge RMSE exceeds this fraction of
+# the square size (1.5 mm on a 100 mm board) are dropped.
+FALLBACK_MAX_SQUARE_RMSE = 0.015
 
 
 def load_rig(path):
@@ -53,15 +56,26 @@ def fit_chessboard_rig(calibration, detections, method, max_pairs=40):
     cameras, pattern, square = calibration["cameras"], tuple(calibration["pattern"]), calibration["square_mm"]
     print("Resolving chessboard corner ordering and checking fixed camera geometry...", flush=True)
     pairs, rejected = align_pairs(paired_views(calibration, detections["cameras"], max_pairs), cameras, pattern, square)
-    holdout = pairs[::5]
-    training = [p for i, p in enumerate(pairs) if i % 5]
-    if len(training) < 3 or not holdout:
-        raise ValueError("Insufficient consistent training/held-out pairs")
     solver = fit_pnp if method == "pnp" else fit_eight_point
-    print(f"Fitting {method}: {len(training)} pairs; held out {len(holdout)}", flush=True)
-    R, t, details = solver(training, cameras, pattern, square)
-    train_checks, warnings = validate_rig(training, cameras, R, t, pattern, square)
-    held_checks, held_warnings = validate_rig(holdout, cameras, R, t, pattern, square)
+    fallback_rejected = []
+    while True:
+        holdout = pairs[::5]
+        training = [p for i, p in enumerate(pairs) if i % 5]
+        if len(training) < 3 or not holdout:
+            raise ValueError("Insufficient consistent training/held-out pairs")
+        print(f"Fitting {method}: {len(training)} pairs; held out {len(holdout)}", flush=True)
+        R, t, details = solver(training, cameras, pattern, square)
+        train_checks, warnings = validate_rig(training, cameras, R, t, pattern, square)
+        held_checks, held_warnings = validate_rig(holdout, cameras, R, t, pattern, square)
+        # Boards rescued by the classic detector must triangulate as well as SB boards;
+        # drop the poor ones and refit so they do not pull R/t.
+        fallback = {p["name"] for p in pairs if p.get("fallback")}
+        bad = {c["name"] for c in train_checks + held_checks
+               if c["name"] in fallback and c["square_rmse_mm"] > FALLBACK_MAX_SQUARE_RMSE * square}
+        if not bad:
+            break
+        fallback_rejected += [p["name"] for p in pairs if p["name"] in bad]
+        pairs = [p for p in pairs if p["name"] not in bad]
     warnings += ["Held-out: " + w for w in held_warnings]
     for c in cameras:
         warnings += [c + ": " + w for w in cameras[c].get("warnings", [])]
@@ -72,7 +86,8 @@ def fit_chessboard_rig(calibration, detections, method, max_pairs=40):
               "R_cs_from_cf": R, "t_cs_from_cf_mm": t, "baseline_mm": float(np.linalg.norm(t)),
               "intrinsics": cameras, "board": {"pattern": pattern, "square_mm": square},
               "fit": details, "training_pairs": [p["name"] for p in training],
-              "rejected_pairs": rejected, "training_board_checks": train_checks,
+              "rejected_pairs": rejected, "rejected_fallback_pairs": fallback_rejected,
+              "training_board_checks": train_checks,
               "held_out_board_checks": held_checks, "warnings": warnings,
               "held_out_note": "Held out from stereo pose/scale fit; may overlap intrinsic calibration photos. Not independent validation.",
               "corner_ordering": "PnP fixed-rig consensus resolves square-board symmetry; 8point pose and scale are then fitted independently.",

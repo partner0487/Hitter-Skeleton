@@ -1033,16 +1033,19 @@ class CalibrationWindow(QMainWindow):
         fit = report["fit"]
         checks = report["held_out_board_checks"]
         held_rmse = float(np.median([c["square_rmse_mm"] for c in checks]))
+        fallback_rejected = report.get("rejected_fallback_pairs", [])
         summary = ("外參結果：Stereo RMS {:.3f} px｜基線 {:.0f} mm｜訓練 {} 組、驗證 {} 組、剔除 {} 組｜"
                    "驗證組格子邊長誤差中位數 {:.2f} mm"
                    .format(fit["stereo_rms_px"], report["baseline_mm"], len(report["training_pairs"]),
-                           len(checks), len(report["rejected_pairs"]), held_rmse))
+                           len(checks), len(report["rejected_pairs"]) + len(fallback_rejected), held_rmse))
         self.log(summary)
         for role, names in report["detection_failed"].items():
             if names:
                 self.log("{}未偵測到棋盤格：{}".format("正面" if role == "cf" else "側面", "、".join(names)))
         if report["rejected_pairs"]:
             self.log("姿態不一致而剔除：{}".format("、".join(report["rejected_pairs"])))
+        if fallback_rejected:
+            self.log("備用偵測的角點誤差過大而剔除：{}".format("、".join(fallback_rejected)))
         for warning in report["warnings"]:
             self.log("REVIEW：{}".format(warning))
         if fit["stereo_rms_px"] > MAX_STEREO_RMS:

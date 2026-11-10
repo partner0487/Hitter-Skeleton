@@ -101,7 +101,7 @@ def _plain(value):
 def estimate_chessboard_stereo(session, roles, entries, pattern, square_mm):
     """偵測 session/cf、cs 的同名棋盤格照片，固定內參求正面→側面外參（R、t，mm）。
 
-    角點偵測用 findChessboardCornersSB；align_pairs 以跨組姿態一致性挑出側面的正確角點排列，
+    角點偵測用 findChessboardCornersSB，失敗時改用 findChessboardCorners + cornerSubPix；align_pairs 以跨組姿態一致性挑出側面的正確角點排列，
     解決棋盤格旋轉 180° 造成的配對錯誤；每 5 組留 1 組驗證邊長。
     """
     session = Path(session)

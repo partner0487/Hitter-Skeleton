@@ -84,6 +84,39 @@ def canonical_corners(points, pattern):
     return max(grid_variants(points, pattern), key=score).astype(np.float32)
 
 
+SB_DETECTOR = "findChessboardCornersSB"
+
+
+def detect_corners(gray, pattern):
+    """SB first; classic detector + cornerSubPix as fallback.
+
+    SB can lock onto cluttered backgrounds (batting-cage netting) when the
+    squares are small (~20 px); the threshold-based classic detector is not
+    affected by thin lines, so it rescues those views.
+    Returns (ok, corners Nx1x2, detector name, flags).
+    """
+    # The third positional argument is the output corners, not flags.
+    flags = cv2.CALIB_CB_NORMALIZE_IMAGE
+    ok, corners = cv2.findChessboardCornersSB(gray, pattern, flags=flags)
+    if not ok:
+        flags |= cv2.CALIB_CB_EXHAUSTIVE
+        ok, corners = cv2.findChessboardCornersSB(gray, pattern, flags=flags)
+    if ok:
+        return True, corners, SB_DETECTOR, flags
+    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
+    ok, corners = cv2.findChessboardCorners(gray, pattern, flags=flags)
+    if not ok:
+        return False, None, None, flags
+    # refinement window must stay inside one square
+    grid = corners.reshape(pattern[1], pattern[0], 2)
+    spacing = min(np.linalg.norm(np.diff(grid, axis=0), axis=2).min(),
+                  np.linalg.norm(np.diff(grid, axis=1), axis=2).min())
+    half = int(np.clip(spacing * 0.3, 2, 11))
+    corners = cv2.cornerSubPix(gray, corners, (half, half), (-1, -1),
+                               (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.01))
+    return True, corners, "findChessboardCorners+cornerSubPix", flags
+
+
 def detect_folder(folder, pattern, output, preview_every=10):
     files = sorted((p for p in Path(folder).iterdir()
                     if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}), key=natural_key)
@@ -97,18 +130,13 @@ def detect_folder(folder, pattern, output, preview_every=10):
             raise ValueError(f"Mixed image sizes in {folder}: {path.name}")
         size = current_size
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        # The third positional argument is the output corners, not flags.
-        flags = cv2.CALIB_CB_NORMALIZE_IMAGE
-        ok, corners = cv2.findChessboardCornersSB(gray, pattern, flags=flags)
-        if not ok:
-            flags |= cv2.CALIB_CB_EXHAUSTIVE
-            ok, corners = cv2.findChessboardCornersSB(gray, pattern, flags=flags)
+        ok, corners, detector, flags = detect_corners(gray, pattern)
         if not ok:
             failed.append(path.name)
         else:
             corners = canonical_corners(corners, pattern)
             views.append({"name": path.name, "path": str(path.resolve()), "corners": corners.tolist(),
-                          "detector": "findChessboardCornersSB", "detection_flags": int(flags)})
+                          "detector": detector, "detection_flags": int(flags)})
             if preview_every and index % preview_every == 0:
                 cv2.drawChessboardCorners(image, pattern, corners.reshape(-1, 1, 2), True)
                 for k in (0, pattern[0] - 1, len(corners) - 1):
@@ -206,7 +234,9 @@ def paired_views(calibration, detections, max_pairs=40):
         raise ValueError("Need >=3 same-name synchronized chessboard pairs at different board positions.")
     names = [names[i] for i in np.unique(np.linspace(0, len(names)-1, min(max_pairs, len(names))).astype(int))]
     return [{"name": n, "cf": np.array(maps["cf"][n]["corners"], float),
-             "cs": np.array(maps["cs"][n]["corners"], float)} for n in names]
+             "cs": np.array(maps["cs"][n]["corners"], float),
+             "fallback": any(maps[c][n].get("detector", SB_DETECTOR) != SB_DETECTOR for c in ("cf", "cs"))}
+            for n in names]
 
 
 def align_pairs(pairs, cameras, pattern, square_mm):

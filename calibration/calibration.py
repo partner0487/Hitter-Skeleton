@@ -107,11 +107,15 @@ def calculate(args):
         return 1
     fit = report["fit"]
     checks = report["held_out_board_checks"]
+    fallback_rejected = report.get("rejected_fallback_pairs", [])
     print(f"   Stereo RMS {fit['stereo_rms_px']:.3f} px｜基線 {report['baseline_mm'] / 1000:.2f} m｜"
-          f"訓練 {len(report['training_pairs'])}、驗證 {len(checks)}、剔除 {len(report['rejected_pairs'])} 組")
+          f"訓練 {len(report['training_pairs'])}、驗證 {len(checks)}、"
+          f"剔除 {len(report['rejected_pairs']) + len(fallback_rejected)} 組")
     print(f"   驗證組格子邊長誤差中位數 {sorted(c['square_rmse_mm'] for c in checks)[len(checks) // 2]:.2f} mm")
     if report["rejected_pairs"]:
         print(f"   姿態不一致而剔除：{'、'.join(report['rejected_pairs'])}")
+    if fallback_rejected:
+        print(f"   備用偵測的角點誤差過大而剔除：{'、'.join(fallback_rejected)}")
     for warning in report["warnings"]:
         print(f"   REVIEW：{warning}")
 
