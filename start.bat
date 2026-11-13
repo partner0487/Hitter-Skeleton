@@ -1,5 +1,6 @@
 @echo off
 call conda activate Pitcher
-cd Src\UI_Control
+set KMP_DUPLICATE_LIB_OK=TRUE
+cd /d "%~dp0Src\UI_Control"
 python main.py
 pause

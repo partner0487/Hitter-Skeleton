@@ -5,49 +5,58 @@
 ## Usage
 ### Installation
 1. Clone this repo.
-2. Setup conda environment:
+2. Setup conda environment（在專案根目錄執行，Anaconda Prompt 或 PowerShell 皆可）:
     ```
     # 建立並啟用環境
     conda create -n Pitcher python=3.8 -y
     conda activate Pitcher
 
-    # 安裝 FLIR 工業相機驅動 (Spinnaker Python SDK)
-    # 請替換為你本機的 wheel 檔實際路徑：
-    pip install "Src\spinnaker_python-4.0.0.116-cp38-cp38-win_amd64\spinnaker_python-4.0.0.116-cp38-cp38-win_amd64.whl"
-
-    # 安裝其餘 requirements
-    pip install -r requirements.txt
-
-    # 解決 OMP 函式庫重複衝突 (libiomp5md.dll)
-    $env:KMP_DUPLICATE_LIB_OK="TRUE"
+    # 解決 OMP 函式庫重複衝突 (libiomp5md.dll)，寫進環境設定，之後每次 activate 都會生效
+    conda env config vars set KMP_DUPLICATE_LIB_OK=TRUE
+    conda activate Pitcher
 
     # 安裝 PyQt5
     conda install -y -c defaults pyqt=5.15.10 qt-main=5.15.2
 
-    # 安裝 PyTorch 2.0.1 (CUDA 11.8)
-    pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 torchaudio==2.0.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
-
-    # 安裝 Windows 專用的 Faiss GPU 或 CPU 版本
-    conda install -c conda-forge faiss-gpu
+    # 安裝 Windows 專用的 Faiss GPU 版本（追蹤器 fast-reid 執行時會用到）
+    conda install -y -c conda-forge faiss-gpu
     # 若 GPU 版後續有相容性問題，可退回: conda install -c conda-forge faiss-cpu
 
-    # 安裝 Cython 及依賴庫
-    pip install cython
-    pip install cython_bbox
+    # 先安裝 PyTorch 2.0.1 (CUDA 11.8)，避免 requirements 裡的套件先拉進 CPU 版 torch
+    pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 torchaudio==2.0.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+
+    # 安裝 FLIR 工業相機驅動 (Spinnaker Python SDK)
+    pip install "Src\spinnaker_python-4.0.0.116-cp38-cp38-win_amd64\spinnaker_python-4.0.0.116-cp38-cp38-win_amd64.whl"
+
+    # cython_bbox 編譯時需要 Cython 與 numpy，要先裝
+    pip install Cython==3.0.11 numpy==1.24.4
+
+    # 安裝其餘 requirements
+    pip install -r requirements.txt
     ```
 3. setup openmim
-    ``` 
-    #安裝 OpenMMLab 系列預編譯套件（避免本機 MSVC 編譯報錯）
+    ```
+    # 安裝 OpenMMLab 系列預編譯套件（避免本機 MSVC 編譯報錯）
     pip install -U openmim
+    mim install "mmengine==0.10.5"
     mim install "mmcv==2.0.1"
     mim install "mmdet==3.1.0"
-    mim install "mmengine==0.10.5"
 
-    #本地 Editable 模式安裝專案模組
+    # 本地 Editable 模式安裝專案模組（主程式直接 import mmpose，這步不能省略）
     pip install --no-build-isolation -e Src\mmpose_main
     pip install --no-build-isolation -e Src\mmpretrain_main
     pip install --no-build-isolation -e Src\mmyolo_main
-    ``` 
+    ```
+4. 確認環境
+    ```
+    pip check
+    python -c "import torch, mmcv, mmdet, mmpose, mmpretrain, mmyolo, faiss, PySpin, cv2; print('torch', torch.__version__, 'CUDA', torch.cuda.is_available())"
+    ```
+    `pip check` 應顯示 `No broken requirements found.`，第二行應印出 `CUDA True`。
+
+    > 舊環境若裝過 `mmrotate`、`mmrazor`、`mmcls`，安裝 mmdet 3.1.0 時會出現
+    > `mmrotate 1.0.0rc1 requires mmdet<3.1.0` 的警告。本專案沒有用到這三個套件，可以移除：
+    > `pip uninstall -y mmrotate mmrazor mmcls`
 
 ### Data Preparation
 ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing 下載，放到 `Db/pretrain/`。`Db/` 不進 git，整體結構如下：
