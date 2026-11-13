@@ -8,12 +8,12 @@
 2. Setup conda environment（在專案根目錄執行，Anaconda Prompt 或 PowerShell 皆可）:
     ```
     # 建立並啟用環境
-    conda create -n Pitcher python=3.8 -y
-    conda activate Pitcher
+    conda create -n hitter python=3.8 -y
+    conda activate hitter
 
     # 解決 OMP 函式庫重複衝突 (libiomp5md.dll)，寫進環境設定，之後每次 activate 都會生效
     conda env config vars set KMP_DUPLICATE_LIB_OK=TRUE
-    conda activate Pitcher
+    conda activate hitter
 
     # 安裝 PyQt5
     conda install -y -c defaults pyqt=5.15.10 qt-main=5.15.2
@@ -88,7 +88,7 @@ ViTPose、YOLO 與 fast-reid 權重請從 https://drive.google.com/drive/folders
 
 ### Demo
 ```
-conda activate Pitcher
+conda activate hitter
 python Src\UI_Control\main.py
 ```
 或直接執行 `start.bat`。

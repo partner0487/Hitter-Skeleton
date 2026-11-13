@@ -9,7 +9,7 @@
 
 ## 1. 環境
 
-使用主程式的 `Pitcher` conda 環境即可。若要另外建立，需要：
+使用主程式的 `hitter` conda 環境即可。若要另外建立，需要：
 
 | 套件 | 用途 |
 |---|---|
@@ -21,7 +21,7 @@
 | `PyYAML` | 讀相機設定檔 |
 
 ```bash
-conda activate Pitcher
+conda activate hitter
 python calibration/calibration.py --help
 ```
 
