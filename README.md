@@ -38,7 +38,7 @@
     ```
     python -c "import torch, mmcv.ops, mmpose, PySpin; print(torch.cuda.get_device_name(0), torch.cuda.get_arch_list())"
     ```
-    顯示卡名稱正確、清單裡有 `sm_89`（4090）或 `sm_120`（5090）即可。
+    顯示卡名稱正確、清單裡有 `sm_86`（4090 用這個）與 `sm_120`（5090）即可；清單本來就沒有 `sm_89`，屬正常。
 
 #### 重新編譯 mmcv（只有換 Python 或 torch 版本時才需要）
 需要 Visual Studio 2022（含「使用 C++ 的桌面開發」）。CUDA 12.8 編譯器用 conda 裝在環境內，不影響系統的 CUDA：
