@@ -61,17 +61,22 @@ pip wheel . --no-build-isolation --no-deps -w dist
 ```
 
 ### Data Preparation
-兩個模型權重都放到 `Db/pretrain/`：
-- 骨架 ViTPose（`epoch_210.pth`，Halpe 26 個關節點）：從 https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing 下載
-- 人與球棒偵測 YOLO26（`yolo26m-seg.pt`，需要 ultralytics 8.4 以上）：從 https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26m-seg.pt 下載
+兩個模型權重都在 `Db/pretrain/`，在專案根目錄執行一次即可：
+```
+python download_weights.py
+```
+- 骨架 ViTPose（`epoch_210.pth`，Halpe 26 個關節點，328 MB）：超過 GitHub 單檔上限，放在 [Release weights-v1](https://github.com/partner0487/Hitter-Skeleton/releases/tag/weights-v1)，腳本會自動下載並檢查完整性。只含推論用權重，結果與原本 1.1 GB 的訓練存檔（[雲端硬碟](https://drive.google.com/drive/folders/1D7Q5bTnTAfKkfLuppqUo4_8W4t0wrCmP?usp=sharing)，續訓才需要）完全相同
+- 人與球棒偵測 YOLO26（`yolo26m-seg.pt`，需要 ultralytics 8.4 以上）：已在 git 裡，clone 下來就有
 
-`Db/` 不進 git，整體結構如下：
+已經存在的權重檔不會被覆蓋。
+
+`Db/` 除了 `pretrain/yolo26m-seg.pt` 都不進 git，整體結構如下：
 
     Hitter-Skeleton
     |-- Db
     |   |-- pretrain
-    |   |   |-- epoch_210.pth                 # ViTPose（Halpe 26 點）
-    |   |   `-- yolo26m-seg.pt                # YOLO26 分割（人、球棒、球）
+    |   |   |-- epoch_210.pth                 # ViTPose（Halpe 26 點），download_weights.py 下載
+    |   |   `-- yolo26m-seg.pt                # YOLO26 分割（人、球棒、球），在 git 裡
     |   |-- Calibration                       # 雙相機校正（見下方「相機校正」）
     |   |   |-- stereo.json                   # 日期最新的內外參
     |   |   |-- intrinsics_all.json
