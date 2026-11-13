@@ -27,6 +27,22 @@ except (ImportError, ModuleNotFoundError):
     has_mmdet = False
 
 
+def load_trusted_checkpoint(load, *args):
+    """載入自己訓練的 checkpoint（epoch_210.pth 存了 optimizer、訓練紀錄 HistoryBuffer 與 numpy 物件）：
+    torch 2.6 起 torch.load 預設只讀權重會拒絕，mmengine 又沒有參數可改，載入期間以環境變數允許完整載入；
+    torch 2.0 不認得這個變數，不受影響。RTX 5090 需要 torch 2.7 以上"""
+    key = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
+    old = os.environ.get(key)
+    os.environ[key] = "1"
+    try:
+        return load(*args)
+    finally:
+        if old is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = old
+
+
 class Model(object):
     def __init__(self):
         self.detect_args_yolo = self.setDetectParserYolo()
@@ -36,10 +52,8 @@ class Model(object):
             self.detect_args_yolo.model
         )
 
-        self.pose_estimator = init_pose_estimator(
-            self.pose_args.pose_config,
-            self.pose_args.pose_checkpoint
-        )
+        self.pose_estimator = load_trusted_checkpoint(
+            init_pose_estimator, self.pose_args.pose_config, self.pose_args.pose_checkpoint)
         self.tracker = BoTSORT(self.tracker_args, frame_rate=30.0)
         self.image_size = (0, 0, 0)
 

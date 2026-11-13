@@ -4,50 +4,61 @@
 
 ## Usage
 ### Installation
+適用 RTX 4090 與 RTX 5090：5090（Blackwell）需要 PyTorch 2.7 以上、CUDA 12.8，顯示卡驅動 572 版以上。以下都在專案根目錄、Anaconda Prompt 或 PowerShell 執行。
+
 1. Clone this repo.
-2. Setup conda environment:
+2. 建立環境並依序安裝（順序不能換：先裝 torch，requirements 才不會另外裝 CPU 版 torch）：
     ```
-    # 建立並啟用環境
-    conda create -n hitter python=3.8 -y
+    # Python 3.10（torch 2.7 不支援 3.8）
+    conda create -n hitter python=3.10 -y
     conda activate hitter
 
-    # 安裝 FLIR 工業相機驅動 (Spinnaker Python SDK)
-    # 請替換為你本機的 wheel 檔實際路徑：
-    pip install "Src\spinnaker_python-4.0.0.116-cp38-cp38-win_amd64\spinnaker_python-4.0.0.116-cp38-cp38-win_amd64.whl"
+    # PyTorch 2.7.1 + CUDA 12.8（同時支援 4090 sm_89、5090 sm_120）
+    pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
 
-    # 安裝其餘 requirements
-    pip install -r requirements.txt
+    # mmcv 2.1.0：官方沒有 torch 2.7 + CUDA 12.8 的 Windows 版，用專案內自行編譯的 wheel（含 4090、5090 架構）
+    # 這個 wheel 只能搭配 Python 3.10 + torch 2.7.1，換版本要重新編譯（見下方「重新編譯 mmcv」）
+    pip install Src\mmcv_prebuilt\mmcv-2.1.0-cp310-cp310-win_amd64.whl
 
-    # 解決 OMP 函式庫重複衝突 (libiomp5md.dll)
-    $env:KMP_DUPLICATE_LIB_OK="TRUE"
+    # FLIR 工業相機驅動（Spinnaker Python SDK，Python 3.10 版）
+    pip install Src\spinnaker_python-4.0.0.116-cp310-cp310-win_amd64\spinnaker_python-4.0.0.116-cp310-cp310-win_amd64.whl
 
-    # 安裝 PyQt5
+    # PyQt5
     conda install -y -c defaults pyqt=5.15.10 qt-main=5.15.2
 
-    # 安裝 PyTorch 2.0.1 (CUDA 11.8)
-    pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 torchaudio==2.0.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+    # 其餘套件
+    pip install -r requirements.txt
+    pip install --no-build-isolation cython_bbox==0.1.5
 
-    # 安裝 Windows 專用的 Faiss GPU 或 CPU 版本
-    conda install -c conda-forge faiss-gpu
-    # 若 GPU 版後續有相容性問題，可退回: conda install -c conda-forge faiss-cpu
-
-    # 安裝 Cython 及依賴庫
-    pip install cython
-    pip install cython_bbox
-    ```
-3. setup openmim
-    ``` 
-    #安裝 OpenMMLab 系列預編譯套件（避免本機 MSVC 編譯報錯）
-    pip install -U openmim
-    mim install "mmcv==2.0.1"
-    mim install "mmdet==3.1.0"
-    mim install "mmengine==0.10.5"
-
-    #本地 Editable 模式安裝專案模組
+    # mmpose、mmpretrain（本地 editable 安裝；mmyolo 程式沒用到，不用裝）
     pip install --no-build-isolation -e Src\mmpose_main
     pip install --no-build-isolation -e Src\mmpretrain_main
-    pip install --no-build-isolation -e Src\mmyolo_main
-    ``` 
+    ```
+3. 確認安裝：
+    ```
+    python -c "import torch, mmcv.ops, mmpose, PySpin; print(torch.cuda.get_device_name(0), torch.cuda.get_arch_list())"
+    ```
+    顯示卡名稱正確、清單裡有 `sm_86`（4090 用這個）與 `sm_120`（5090）即可；清單本來就沒有 `sm_89`，屬正常。
+
+#### 重新編譯 mmcv（只有換 Python 或 torch 版本時才需要）
+需要 Visual Studio 2022（含「使用 C++ 的桌面開發」）。CUDA 12.8 編譯器用 conda 裝在環境內，不影響系統的 CUDA：
+```
+conda activate hitter
+conda install -y -c "nvidia/label/cuda-12.8.1" cuda-nvcc cuda-cudart-dev cuda-cccl cuda-nvrtc-dev libcublas-dev libcusparse-dev libcusolver-dev libcurand-dev cuda-profiler-api
+pip install ninja wheel "setuptools<70"
+pip download mmcv==2.1.0 --no-binary :all: --no-deps -d mmcv_src
+```
+解壓 `mmcv_src\mmcv-2.1.0.tar.gz` 後，在「x64 Native Tools Command Prompt for VS 2022」執行（約 20 分鐘）：
+```
+conda activate hitter
+set CUDA_HOME=%CONDA_PREFIX%\Library
+set MMCV_WITH_OPS=1
+set FORCE_CUDA=1
+set TORCH_CUDA_ARCH_LIST=8.9;12.0
+set DISTUTILS_USE_SDK=1
+cd mmcv-2.1.0
+pip wheel . --no-build-isolation --no-deps -w dist
+```
 
 ### Data Preparation
 兩個模型權重都放到 `Db/pretrain/`：
