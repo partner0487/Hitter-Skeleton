@@ -29,7 +29,7 @@ from skeleton.detect_skeleton_dual import PoseEstimater
 from utils.paths import DB_DIR, RECORD_DIR, ICON_DIR, NON_HITTER_DIRS, clip_parts, clip_title, clip_videos, is_result_dir, source_videos
 from PyQt5 import QtGui
 from ui_utils.analysis_bar import AnalysisBar
-from utils.fps_utils import NOMINAL_DURATION_S, frame_seconds, get_video_fps, phase_seconds
+from utils.fps_utils import NOMINAL_DURATION_S, clip_duration, frame_seconds, get_video_fps, phase_seconds, time_label
 from utils.clip_trim import clip_frames, trim_if_long
 from utils.metrics2d import bat_metrics_2d, body_metrics_2d, knee_angles_2d, side_scale
 from utils.stereo_calibration import fundamental_side_to_front, load_stereo_params
@@ -1421,13 +1421,20 @@ class Analysis3DWidget(QWidget):
         return PoseEstimater.detectKptDual(self.pose_estimater_2, self.pose_estimater, frame_2, frame, frame_num,
                                            getattr(self, "F_side_front", None))
 
+    def processTimeText(self, frame_num):
+        """處理中的時間標籤，與分析時同一套換算（frameTimeText）；影片長度與 frame_times.csv 每支影片只讀一次"""
+        loader = self.video_loader_dual
+        key = (loader.folder_path, loader.total_frames)
+        if getattr(self, "_process_clock", (None,))[0] != key:
+            self._process_clock = (key, read_frame_times(loader.folder_path),
+                                   clip_duration(loader.total_frames, get_video_fps(loader)))
+        _, times, duration = self._process_clock
+        return time_label(frame_seconds(frame_num, loader.total_frames, times, duration), duration)
+
     def analyzeFrame4Process(self):
         """Analyze and process each video frame."""
         frame_num = self.ui.frameSlider.value()
-        total_duration = 1.5
-        current_seconds = (float(frame_num) / float(self.video_loader_dual.total_frames - 1)) * total_duration
-        # 顯示格式： 0.45s / 1.50s
-        self.ui.frameNumLabel.setText(f'{current_seconds:.2f}/{total_duration:.1f}s')
+        self.ui.frameNumLabel.setText(self.processTimeText(frame_num))
         frame = self.video_loader_dual.getVideoImage(frame_num)
         frame_2 = self.video_loader_dual.getVideoImage2(frame_num)
         fps = 0
@@ -1832,8 +1839,9 @@ class Analysis3DWidget(QWidget):
         """跨步時間、擊球時間，與進度條上各段秒數一致"""
         total = int(getattr(self.video_loader, "total_frames", 0) or 0)
         times = getattr(self, "frame_times", None)
-        stride = phase_seconds(phase_result.F_liftoff, phase_result.F_landing, total, times)
-        swing = phase_seconds(phase_result.F_landing, phase_result.F_impact, total, times)
+        duration = getattr(self, "clip_duration", NOMINAL_DURATION_S)
+        stride = phase_seconds(phase_result.F_liftoff, phase_result.F_landing, total, times, duration)
+        swing = phase_seconds(phase_result.F_landing, phase_result.F_impact, total, times, duration)
         self.strideTimeLabel.setText(fmt(stride, "s", 2))
         self.swingTimeLabel.setText(fmt(swing, "s", 2))
 
@@ -2594,13 +2602,15 @@ class Analysis3DWidget(QWidget):
         """讀 frame_times.csv（3D 的 CF_ 子資料夾沒有時看上一層），時間標籤與進度條各段秒數用實際擷取時間"""
         self.frame_times = read_frame_times(folder) or read_frame_times(os.path.dirname(folder or ""))
         total = int(getattr(self.video_loader, "total_frames", 0) or 0)
+        self.clip_duration = clip_duration(total, get_video_fps(self.video_loader))
         if hasattr(self, "analysis_bar") and total > 1:
             self.analysis_bar.set_time_of_ratio(
-                lambda r: frame_seconds(int(round(r * (total - 1))), total, self.frame_times))
+                lambda r: frame_seconds(int(round(r * (total - 1))), total, self.frame_times, self.clip_duration))
 
     def frameTimeText(self, frame_num, total_frames):
-        """目前時間/影片長度，影片結束時為 1.50/1.5s（見 fps_utils.frame_seconds）"""
-        return f"{frame_seconds(frame_num, total_frames, getattr(self, 'frame_times', None)):.2f}/{NOMINAL_DURATION_S:.1f}s"
+        """目前時間/影片長度，標準片段結束時為 1.50/1.5s，其他長度為實際秒數（見 fps_utils.clip_duration）"""
+        duration = getattr(self, "clip_duration", NOMINAL_DURATION_S)
+        return time_label(frame_seconds(frame_num, total_frames, getattr(self, "frame_times", None), duration), duration)
 
     def initFrameSlider(self, total_frames=None):
         """初始化影片滑桿和相關的標籤。"""
@@ -2612,8 +2622,7 @@ class Analysis3DWidget(QWidget):
         self.ui.frameSlider.setMinimum(0)
         self.ui.frameSlider.setMaximum(total_frames - 1)
         self.ui.frameSlider.setValue(0)
-        total_seconds = 1.5
-        # 初始化標籤顯示： 0.00s / 1.50s
+        # 初始化標籤顯示： 0.00/1.5s
         self.ui.frameNumLabel.setText(self.frameTimeText(0, int(total_frames)))
 
     def updateFrame(self, frame_num:int = None):
@@ -2621,7 +2630,7 @@ class Analysis3DWidget(QWidget):
         # 若外部沒傳，從 slider 讀（保險用）
         if frame_num is None:
             frame_num = self.ui.frameSlider.value()
-        # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間）
+        # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間；非標準長度為實際秒數）
         self.ui.frameNumLabel.setText(self.frameTimeText(frame_num, self.video_loader.total_frames))
         if getattr(self, "side_only", False):
             self.updateFrameSideOnly(frame_num)
@@ -2686,7 +2695,7 @@ class Analysis3DWidget(QWidget):
     def analyzeFrame(self):
         """Analyze and process each video frame."""
         frame_num = self.ui.frameSlider.value()
-        # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間）
+        # 顯示格式： 0.45/1.5s（有 frame_times.csv 時為實際擷取時間；非標準長度為實際秒數）
         self.ui.frameNumLabel.setText(self.frameTimeText(frame_num, self.video_loader.total_frames))
         frame = self.video_loader.getVideoImage(frame_num)
         frame_2 = self.video_loader.getVideoImage2(frame_num)
