@@ -4,6 +4,8 @@ import sys
 
 # 環境變數必須在 import PyQt5 / ultralytics 之前設定才會生效
 os.environ["NO_ALBUMENTATIONS_UPDATE"] = "1"
+# torch、paddle、numpy 各帶一份 OpenMP（libiomp5md.dll），重複載入會直接結束程式
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 conda_prefix = os.environ.get("CONDA_PREFIX")
 if conda_prefix:
     os.environ.setdefault(
