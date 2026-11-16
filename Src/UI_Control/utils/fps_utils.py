@@ -2,7 +2,7 @@
 import csv
 import os
 
-# 錄影串流的名目 fps（相機 180 fps ÷ EMIT_EVERY 3），與論文資料集一致
+# 分析用影片的名目 fps（相機 180 fps 每 3 幀取 1，見 cv_thread_dual.analysis_step），與論文資料集一致
 DEFAULT_FPS = 60.0
 
 
