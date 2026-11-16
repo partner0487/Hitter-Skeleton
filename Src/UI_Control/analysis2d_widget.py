@@ -28,13 +28,13 @@ from utils.paths import DB_DIR, ICON_DIR, NON_HITTER_DIRS, clip_title, clip_vide
 from ui_utils.analysis_bar import AnalysisBar
 from utils.fps_utils import NOMINAL_DURATION_S, clip_duration, frame_seconds, get_video_fps, phase_seconds, time_label
 from utils.bat_speed2d import read_frame_times
-from utils.motion_trigger import MotionTrigger
+from cv_utils.clip_writer import save_clip
 import time
 
-# 側拋／正投的自動錄影觸發："motion" 看 ROI 內畫面變化（快速球、殘影、地上有球都可用，見 utils/motion_trigger.py），
-# "yolo" 為原本的 YOLO 找球進入 ROI。T座 一律用 YOLO（球靜止放在 ROI 內，離開時觸發）
+# 側拋／正投的自動錄影觸發："motion" 看 ROI 內畫面變化，在擷取執行緒以相機完整 fps 檢查
+# （快速球、殘影、地上有球都可用，見 utils/motion_trigger.py）；"yolo" 為原本的 YOLO 找球進入 ROI。
+# T座 一律用 YOLO（球靜止放在 ROI 內，離開時觸發）
 TOSS_TRIGGER = "motion"
-TRIGGER_COOLDOWN_S = 1.0   # 觸發後這段時間不再觸發
 from utils.metrics2d import bat_metrics_2d, body_metrics_2d, knee_angles_2d, side_scale
 from utils.stereo_calibration import load_stereo_params
 from utils.body_metrics import SideScale
@@ -157,9 +157,7 @@ class Analysis2dWidget(QWidget):
         self.strike_zone_roi = [800, 200, 800, 600] 
         self.ball_pos_history = collections.deque(maxlen=10)
         self.bat_head_history = collections.deque(maxlen=10)
-        self.trigger_block_until = 0.0   # time.perf_counter() 秒，冷卻到這個時間
         self.ball_was_in_roi = False
-        self.motion_trigger = MotionTrigger()
         self.is_roi_drawing = False
         self.roi_start_pos = None
         self.roi_temp_rect = None
@@ -180,7 +178,7 @@ class Analysis2dWidget(QWidget):
         self.analysis_bar = AnalysisBar(self.ui.frameSlider)
         self.ui.frameSlider.installEventFilter(self)
         self.camera = Camera()
-        self.camera.frame_listener = self.onCameraFrame
+        self.camera.on_triggered = self.onMotionTriggered
         self.timer = QTimer()
         self.timer.timeout.connect(self.analyzeFrame)
         self.video_timer = QTimer()
@@ -584,9 +582,8 @@ class Analysis2dWidget(QWidget):
             self.reset()
             self.toggleSelect(0)
             self.toggleShowSkeleton(0)
-            self.trigger_block_until = 0.0
             self.ball_was_in_roi = False
-            self.motion_trigger.reset()
+            self.camera.continuous_recorder.reset_trigger()
             self.is_video = False
             # 用哪幾台相機由相機設定決定；側面沒接上時無法錄影，正面沒接上改成只錄側面
             try:
@@ -631,60 +628,25 @@ class Analysis2dWidget(QWidget):
             self.is_hitting = False
 
     def saveExistingVideo(self):
-        """直接儲存已經在記憶體中的 full_video"""
-        # 1. 取得影像資料
-        full_video = self.camera.continuous_recorder.full_video
-        
-        if not full_video:
+        """儲存 ContinuousRecorder 收完的片段：分析用 60 fps 影片（寫完才回傳），完整 fps 版本在背景寫到 full_fps/"""
+        clip = self.camera.continuous_recorder.take_clip()
+        if not clip or not clip["frames2"]:
             print("沒有影像資料可以儲存！")
             return
 
-        # 2. 準備路徑 (建議統一抓一次時間，避免誤差)
         now = datetime.now()
         current_date = now.strftime("%Y-%m-%d")
-        current_time = now.strftime("%H%M%S")
-        current_time_hhmm = now.strftime("%H%M")
-        
-        # 取得 FPS：優先用實測值（反映戶外過熱掉幀），否則用設定值換算
-        recorder = self.camera.continuous_recorder
-        fps = recorder.measured_fps
-        if not fps:
-            try:
-                fps = self.camera.get_stream_fps()
-            except Exception:
-                fps = 60
-
         hitter_name = self.ui.hitterNameInput.currentText()
         current_mode_zh = self.mode_dict.get(getattr(self, 'current_mode', 'Tbar'), 'T座')
         ball_folder = f"{hitter_name}_H{self.hitBallNum:02d}"
         output_dir = os.path.join(DB_DIR, hitter_name, current_date, current_mode_zh, ball_folder)
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Increment ball count and update UI
-        # 只開側面相機（純側面 2D）時正面畫面為 None，只寫 CS_ 影片
-        frame1, frame2 = full_video[0]
-        video_filename = os.path.join(output_dir, f'CF_{ball_folder}.mp4') if frame1 is not None else None
-        video_filename_2 = os.path.join(output_dir, f'CS_{ball_folder}.mp4')
+
+        # 只開側面相機（純側面 2D）時沒有正面畫面，只寫 CS_ 影片；fps 用實測擷取時間（反映戶外過熱掉幀）
+        video_filename, video_filename_2, fps, _ = save_clip(output_dir, ball_folder, clip)
         self.video_path = video_filename
         self.video_path2 = video_filename_2
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        for index, path in ((0, video_filename), (1, video_filename_2)):
-            if path is None:
-                continue
-            h, w = full_video[0][index].shape[:2]
-            out = cv2.VideoWriter(path, fourcc, fps, (w, h))
-            for frames in full_video:
-                out.write(frames[index])
-            out.release()
-        # 每幀實際擷取時間：掉幀時 mp4 的固定 fps 不準，分析應以此為準
-        if recorder.frame_times:
-            t0 = recorder.frame_times[0]
-            with open(os.path.join(output_dir, "frame_times.csv"), "w", encoding="utf-8") as f:
-                f.write("frame,time_sec\n")
-                for i, t in enumerate(recorder.frame_times):
-                    f.write(f"{i},{t - t0:.6f}\n")
-
-        print(f"Videos saved: {video_filename or '（純側面，沒有正面影片）'}, {video_filename_2}")
+        print(f"Videos saved ({fps:.1f} fps): {video_filename or '（純側面，沒有正面影片）'}, {video_filename_2}"
+              f"；完整 {clip['camera_fps']:.0f} fps 版本背景寫入中")
 
         # --- 即時模式下也儲存側面 JSON 資料 (即使是空的) ---
         try:
@@ -830,6 +792,7 @@ class Analysis2dWidget(QWidget):
             if not self.camera.frame_buffer_2.empty() and not (needs_front and self.camera.frame_buffer.empty()):
                 frame = self.camera.frame_buffer.get().copy() if needs_front else None
                 frame_2 = self.camera.frame_buffer_2.get().copy()
+                self.updateMotionTrigger()
                 if self.is_hitting:
                     self.hitterAnaylze(frame_2)
                 self.updateFrame(frame=frame, frame_2=frame_2)
@@ -1455,29 +1418,26 @@ class Analysis2dWidget(QWidget):
         recorder = self.camera.continuous_recorder
         return recorder.is_recording_post or recorder.is_saving
 
-    def onCameraFrame(self, frame_2):
-        """每個送出的側面畫面（60 fps）都會呼叫：側拋／正投用 ROI 畫面變化觸發錄影"""
-        if (not self.is_hitting or not self.usesMotionTrigger() or self.strike_zone_roi is None
-                or frame_2 is None or self.recorderBusy()):
-            self.motion_trigger.reset()   # 錄完或剛開始時先重新取基準，不拿舊畫面比較
-            return
-        moved = self.motion_trigger.update(frame_2, self.strike_zone_roi)
-        if moved and time.perf_counter() >= self.trigger_block_until:
-            self.startTriggeredRecording("ROI 內畫面變化")
+    def updateMotionTrigger(self):
+        """把畫面變化觸發的 ROI 交給擷取執行緒（打擊模式、側拋／正投且已設定 ROI 才偵測）"""
+        active = self.is_hitting and self.usesMotionTrigger() and self.strike_zone_roi is not None
+        self.camera.set_motion_roi(self.strike_zone_roi if active else None)
+
+    def onMotionTriggered(self):
+        """擷取執行緒的畫面變化觸發成功（recorder 已開始收觸發後的畫面）"""
+        print("!!! 偵測到打擊（ROI 內畫面變化），開始擷取影片片段 !!!")
+        self.scheduleAutoSave()
 
     def hitterAnaylze(self, frame_2=None):
-        # 側拋／正投改由 onCameraFrame 以畫面變化觸發；如果已經在錄製中或儲存中，就跳過，避免重複觸發
+        # 側拋／正投由擷取執行緒以畫面變化觸發；如果已經在錄製中或儲存中，就跳過，避免重複觸發
         if self.usesMotionTrigger() or self.recorderBusy():
             return
-        if self.is_bat_swing_detected(frame_2):
-            self.startTriggeredRecording("YOLO 球與 ROI")
+        if self.is_bat_swing_detected(frame_2) and self.camera.continuous_recorder.trigger(time.perf_counter()):
+            print("!!! 偵測到打擊（YOLO 球與 ROI），開始擷取影片片段 !!!")
+            self.scheduleAutoSave()
 
-    def startTriggeredRecording(self, reason: str):
-        print(f"!!! 偵測到打擊（{reason}），開始擷取影片片段 !!!")
-        self.trigger_block_until = time.perf_counter() + TRIGGER_COOLDOWN_S
-        # 1. 觸發 ContinuousRecorder 開始收觸發後的幀
-        self.camera.continuous_recorder.trigger()
-        # 2. 觸發後 40 幀（60 fps 約 0.67 秒）收完再存檔；還沒收完時 autoSaveTriggeredVideo 會自己延後
+    def scheduleAutoSave(self):
+        # 觸發後 0.67 秒收完再存檔；還沒收完時 autoSaveTriggeredVideo 會自己延後
         QTimer.singleShot(1000, self.autoSaveTriggeredVideo)
 
     def autoSaveTriggeredVideo(self):
@@ -1542,7 +1502,7 @@ class Analysis2dWidget(QWidget):
         - Tbar (T座): 球原本在 ROI 內，然後離開 ROI 時觸發。
         - 其他 (側拋/正投): 球原本不在 ROI 內，然後進入 ROI 時觸發。
         """
-        if time.perf_counter() < self.trigger_block_until:
+        if self.camera.continuous_recorder.cooling_down(time.perf_counter()):
             return False
 
         # 1. 確保有 ROI 設定
