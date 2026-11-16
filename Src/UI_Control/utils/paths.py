@@ -12,9 +12,7 @@ ICON_DIR = DB_DIR / "icon"
 CAMERA_CONFIG_DIR = UI_CONTROL_DIR / "camera_config"
 
 # Db 底下不是球員的資料夾，列出球員清單時要排除
-FULL_FPS_DIR = "full_fps"   # 自動錄影的相機完整 fps 版本（分析用的是每 3 幀取 1 的 60 fps 影片）
-# full_clip：裁剪前的原始長片段（clip_trim）；full_fps：完整 fps 版本，不是另一支錄影
-NON_HITTER_DIRS = {"icon", "pretrain", "Calibration", "full_clip", FULL_FPS_DIR}
+NON_HITTER_DIRS = {"icon", "pretrain", "Calibration", "full_clip"}  # full_clip：裁剪前的原始長片段（clip_trim）
 # 處理結果子資料夾：以正面影片檔名命名（CF_<片段>）；只有側面影片的錄影以側面影片檔名命名（CS_<片段>）
 RESULT_PREFIXES = ("CF_", "CS_")
 

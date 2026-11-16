@@ -6,8 +6,7 @@ import pandas as pd
 from enum import Enum
 from PyQt5.QtWidgets import QGraphicsScene
 from utils.vis_image_dual import ImageDrawer
-from cv_utils.cv_thread_dual import (VideoCaptureThread, VideoWriterThread, VideoToImagesThread, analysis_step,
-                                     PRE_ROLL_S, POST_ROLL_S, TRIGGER_COOLDOWN_S)
+from cv_utils.cv_thread_dual import VideoCaptureThread, VideoWriterThread, VideoToImagesThread
 from utils.paths import RECORD_DIR
 from utils.camera_roles import resolve_cameras
 from PyQt5.QtWidgets import *
@@ -20,78 +19,60 @@ import os
 import glob
 
 class ContinuousRecorder:
-    """自動錄影的觸發前後緩衝：在擷取執行緒以相機完整 fps（180，廠商 160）保存原始畫面。
+    def __init__(self, pre_roll_frames=50, post_roll_frames=40):
+        self.post_roll_frames = post_roll_frames
+        # 環形緩衝區，儲存觸發「前」的 (frame1, frame2, grab_time)
+        self.buffer = collections.deque(maxlen=pre_roll_frames)
 
-    存相機原始 Bayer（每台每幀約 2 MB，存檔時才轉彩色），180 fps 的 0.83 秒緩衝兩台約 0.6 GB，
-    與原本存 60 fps 彩色畫面相同。觸發前後以秒計，換 fps 時分析用影片仍是 1.5 秒。
-    add() 在擷取執行緒呼叫，其餘在介面執行緒，以 lock 保護。"""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self.cooldown_until = 0.0
-        self.configure(180)
-
-    def configure(self, camera_fps: float):
-        """開相機時依相機 fps 設定緩衝長度"""
-        with self._lock:
-            self.camera_fps = float(camera_fps)
-            self.step = analysis_step(camera_fps)
-            self.post_frames = max(1, int(round(POST_ROLL_S * camera_fps)))
-            self.buffer = collections.deque(maxlen=max(1, int(round(PRE_ROLL_S * camera_fps))))
-            self._reset_locked()
-
-    def _reset_locked(self):
         self.is_recording_post = False
-        self.is_saving = False      # 片段收完到存檔完成之間，不再觸發
-        self.pre_frames = []
-        self.post_data = []
-        self.clip = None
+        self.post_count = 0
+        self.trigger_data = []  # 暫存觸發後的影像
+        self.is_saving = False
+        self.full_video = []
+        self.frame_times = []
+        self.measured_fps = None
 
-    def add(self, raw1, raw2, grab_time):
-        """擷取執行緒每一幀呼叫（raw1 為 None 表示純側面）；陣列需為呼叫端已複製的新物件"""
-        item = (raw1, raw2, grab_time)
-        with self._lock:
-            self.buffer.append(item)   # 一直滾動，下一次觸發時才有完整的觸發前畫面
-            if not self.is_recording_post:
-                return
-            self.post_data.append(item)
-            if len(self.post_data) >= self.post_frames:
-                frames = self.pre_frames + self.post_data
-                self.clip = {
-                    "frames1": [f for f, _, _ in frames],
-                    "frames2": [f for _, f, _ in frames],
-                    "times": [t for _, _, t in frames],
-                    "camera_fps": self.camera_fps,
-                    "step": self.step,
-                }
-                self.pre_frames, self.post_data = [], []
+    @staticmethod
+    def _calc_fps(times):
+        # 以實際擷取時間計算平均 fps，可反映掉幀
+        if len(times) > 1 and times[-1] > times[0]:
+            return (len(times) - 1) / (times[-1] - times[0])
+        return None
+
+    def add_frame(self, frame1, frame2, grab_time):
+        if self.is_saving: return
+
+        # emit 出來的陣列每次都是新物件，不需要再 copy
+        item = (frame1, frame2, grab_time)
+        if not self.is_recording_post:
+            self.buffer.append(item)
+        else:
+            self.trigger_data.append(item)
+            self.post_count += 1
+
+            if self.post_count >= self.post_roll_frames:
+                clip = list(self.buffer) + self.trigger_data
+                self.full_video = [(f1, f2) for f1, f2, _ in clip]
+                self.frame_times = [t for _, _, t in clip]
+                self.measured_fps = self._calc_fps(self.frame_times)
                 self.is_recording_post = False
-                self.is_saving = True
-                print(f"片段擷取完成（{len(frames)} 幀，{self.camera_fps:.0f} fps），等待寫入磁碟...")
+                print(f"片段擷取完成（{len(clip)} 幀），等待寫入磁碟...")
 
-    def trigger(self, now: float) -> bool:
-        """開始收觸發後的畫面；錄製中、存檔中或冷卻中回傳 False"""
-        with self._lock:
-            if self.is_recording_post or self.is_saving or now < self.cooldown_until:
-                return False
-            self.pre_frames = list(self.buffer)
-            self.post_data = []
-            self.is_recording_post = True
-            self.cooldown_until = now + TRIGGER_COOLDOWN_S
+    def trigger(self):
+        """當偵測到球碰到球棒時呼叫此函數"""
+        if not self.is_recording_post and not self.is_saving:
             print("Event Triggered! Recording post-roll...")
-            return True
-
-    def cooling_down(self, now: float) -> bool:
-        return now < self.cooldown_until
-
-    def take_clip(self):
-        """取出收完的片段（dict）；還沒收完回傳 None"""
-        with self._lock:
-            return self.clip
+            self.is_recording_post = True
+            self.post_count = 0
+            self.trigger_data = []
 
     def reset_trigger(self):
-        with self._lock:
-            self._reset_locked()
+        self.is_recording_post = False
+        self.post_count = 0
+        self.trigger_data = []
+        self.full_video = []
+        self.frame_times = []
+        self.measured_fps = None
 
 class Camera:
     # 即時預覽只需最新畫面，限制緩衝避免延遲累積與記憶體成長
@@ -111,9 +92,7 @@ class Camera:
         self.video_thread = None
         self.notice = ""   # 開相機時的提示（例如找不到正面相機、改成只錄側面）
         self.frame_size=None
-        self.continuous_recorder = ContinuousRecorder()
-        # 擷取執行緒的畫面變化觸發成功時（在介面執行緒）呼叫，安排存檔
-        self.on_triggered = None
+        self.continuous_recorder = ContinuousRecorder(pre_roll_frames=50, post_roll_frames=40)
 
     def _put_latest(self, buffer: queue.Queue, frame: np.ndarray):
         # 佇列滿時丟掉最舊的幀，只保留最新畫面
@@ -126,16 +105,7 @@ class Camera:
 
     def get_stream_fps(self) -> float:
         """buffer_frame 實際收到的名目 fps（相機 fps ÷ 抽幀間隔）"""
-        return self.video_thread.camera_fps / self.video_thread.emit_every
-
-    def set_motion_roi(self, roi):
-        """畫面變化觸發的 ROI（側面畫面座標 [x, y, w, h]）；None 表示不偵測"""
-        if self.video_thread is not None:
-            self.video_thread.motion_roi = tuple(int(v) for v in roi) if roi else None
-
-    def _handle_triggered(self):
-        if self.on_triggered is not None:
-            self.on_triggered()
+        return self.video_thread.camera2.get_fps() / VideoCaptureThread.EMIT_EVERY
 
     @property
     def side_only(self) -> bool:
@@ -147,9 +117,8 @@ class Camera:
         側面相機沒接上時丟 RuntimeError；正面沒接上改成只開側面，原因放在 self.notice"""
         self.frame_count = 0
         front_sn, side_sn, self.notice = resolve_cameras()
-        self.video_thread = VideoCaptureThread(front_sn=front_sn, side_sn=side_sn, recorder=self.continuous_recorder)
+        self.video_thread = VideoCaptureThread(front_sn=front_sn, side_sn=side_sn)
         self.video_thread.frame_ready.connect(self.buffer_frame)
-        self.video_thread.triggered.connect(self._handle_triggered)
         self.video_thread.start_capture()
         self.is_opened = True
 
@@ -181,9 +150,12 @@ class Camera:
 
     def buffer_frame(self, frame, frame2:np.ndarray, grab_time:float):
         # 接收每一幀並進行處理；只開側面相機時 frame（正面）為 None
-        # 自動錄影的緩衝與畫面變化觸發在擷取執行緒以完整 fps 處理（ContinuousRecorder），這裡只負責顯示與手動錄影
         self.frame_count += 1
-
+        
+        # 更新 ContinuousRecorder
+        if self.continuous_recorder:
+            self.continuous_recorder.add_frame(frame, frame2, grab_time)
+            
         if self.is_opened and self.frame_count % self.fps_control ==0:
             if frame is not None:
                 self._put_latest(self.frame_buffer, frame)

@@ -53,28 +53,16 @@ class VideoToImagesThread(QThread):
         print("stop video to image thread")
 
 from camera_objects.single_camera import FlirCameraSystem
-from utils.motion_trigger import MotionTrigger
-
-# 分析與即時顯示用的 fps：每 analysis_step 幀取 1（相機 180 → 60 fps，與論文資料集、真值片段一致；
-# 廠商相機 160 fps → 53.3 fps）。自動錄影另存相機完整 fps 版本（ContinuousRecorder）
-ANALYSIS_FPS = 60
-PRE_ROLL_S = 50 / 60       # 自動錄影觸發前保留的秒數（原本 60 fps 的 50 幀）
-POST_ROLL_S = 40 / 60      # 觸發後的秒數（原本 40 幀）；合計 1.5 秒
-TRIGGER_COOLDOWN_S = 1.0   # 觸發後這段時間不再觸發
-
-
-def analysis_step(camera_fps: float) -> int:
-    return max(1, int(round(float(camera_fps) / ANALYSIS_FPS)))
-
 
 class VideoCaptureThread(QThread):
     # 正面相機沒用時第一個畫面為 None（純側面錄影），所以用 object 而非 np.ndarray
     frame_ready = pyqtSignal(object, object, float)
-    triggered = pyqtSignal()   # 畫面變化觸發了自動錄影（recorder 已開始收觸發後的畫面）
+    # 相機 180 fps，每 EMIT_EVERY 幀送出一次（180 → 60 fps，與論文資料集一致）
+    EMIT_EVERY = 3
 
-    def __init__(self, parent=None, front_sn=None, side_sn=None, recorder=None):
-        """front_sn 為 None 時只開側面相機；序號由 utils/camera_roles.resolve_cameras 決定。
-        recorder（ContinuousRecorder）在這個執行緒以相機完整 fps 收原始畫面"""
+
+    def __init__(self, parent=None, front_sn=None, side_sn=None):
+        """front_sn 為 None 時只開側面相機；序號由 utils/camera_roles.resolve_cameras 決定"""
         super().__init__(parent)
         CONFIG = str(CAMERA_CONFIG_DIR / "GH3_camera_config.yaml")    # 正面
         CONFIG_2 = str(CAMERA_CONFIG_DIR / "GH3_camera_config_2.yaml")  # 側面
@@ -87,14 +75,6 @@ class VideoCaptureThread(QThread):
             except Exception:
                 pass
             raise
-        self.camera_fps = float(self.camera2.get_fps())
-        self.emit_every = analysis_step(self.camera_fps)   # 送給介面（即時顯示、手動錄影）的間隔
-        self.recorder = recorder
-        if recorder is not None:
-            recorder.configure(self.camera_fps)
-        # 畫面變化觸發：與約 1/60 秒前的幀比較（門檻以 60 fps 驗證）；motion_roi 由介面執行緒設定，None 不偵測
-        self.motion = MotionTrigger(lag=self.emit_every)
-        self.motion_roi = None
         self.running = False
 
     @property
@@ -134,19 +114,8 @@ class VideoCaptureThread(QThread):
                     continue
                 fail_count = 0
 
-                # 自動錄影緩衝：每一幀都留（原始 Bayer，複製一份；PySpin 的陣列不保證之後仍有效）
-                if self.recorder is not None:
-                    self.recorder.add(frame_1.copy() if frame_1 is not None else None, frame_2.copy(), grab_time)
-                roi = self.motion_roi
-                if roi is None:
-                    if self.motion.has_history():
-                        self.motion.reset()
-                elif self.motion.update(frame_2, roi) and self.recorder is not None \
-                        and self.recorder.trigger(grab_time):
-                    self.triggered.emit()
-
                 # 只轉換要送出的幀，避免浪費運算
-                if count % self.emit_every == 0:
+                if count % self.EMIT_EVERY == 0:
                     rgb_frame_1 = cv2.cvtColor(frame_1, cv2.COLOR_BayerBG2BGR) if frame_1 is not None else None
                     rgb_frame_2 = cv2.cvtColor(frame_2, cv2.COLOR_BayerBG2BGR)
                     self.frame_ready.emit(rgb_frame_1, rgb_frame_2, grab_time)
