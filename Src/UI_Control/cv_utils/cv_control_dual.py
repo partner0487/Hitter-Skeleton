@@ -93,6 +93,8 @@ class Camera:
         self.notice = ""   # 開相機時的提示（例如找不到正面相機、改成只錄側面）
         self.frame_size=None
         self.continuous_recorder = ContinuousRecorder(pre_roll_frames=50, post_roll_frames=40)
+        # 每個送出的側面畫面（60 fps，未抽成 30 fps）都會呼叫，給自動錄影觸發用
+        self.frame_listener = None
 
     def _put_latest(self, buffer: queue.Queue, frame: np.ndarray):
         # 佇列滿時丟掉最舊的幀，只保留最新畫面
@@ -155,7 +157,9 @@ class Camera:
         # 更新 ContinuousRecorder
         if self.continuous_recorder:
             self.continuous_recorder.add_frame(frame, frame2, grab_time)
-            
+        if self.frame_listener is not None:
+            self.frame_listener(frame2)
+
         if self.is_opened and self.frame_count % self.fps_control ==0:
             if frame is not None:
                 self._put_latest(self.frame_buffer, frame)
