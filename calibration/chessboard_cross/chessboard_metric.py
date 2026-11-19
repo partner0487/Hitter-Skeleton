@@ -215,8 +215,11 @@ def undistort(pixels, camera, pixel_units=False):
 
 
 def solve_board_pose(pixels, camera, obj):
+    # SQPnP (Terzakis & Lourakis 2020): globally optimal, works for planar and non-planar points, so the same
+    # solver keeps working if correspondences later come from automatic matching instead of a chessboard.
+    # On the 2026-10 sessions it gives the same corner orders and the same stereo R/t as SOLVEPNP_ITERATIVE.
     K, dist = camera_arrays(camera)
-    ok, rvec, tvec = cv2.solvePnP(obj, np.asarray(pixels, float), K, dist, flags=cv2.SOLVEPNP_ITERATIVE)
+    ok, rvec, tvec = cv2.solvePnP(obj, np.asarray(pixels, float), K, dist, flags=cv2.SOLVEPNP_SQPNP)
     if not ok:
         raise ValueError("Board PnP failed.")
     R = cv2.Rodrigues(rvec)[0]
@@ -319,7 +322,7 @@ def fit_pnp(pairs, cameras, pattern, square_mm):
     rms, _, _, _, _, R, t, E, F = result
     return R, t.reshape(3), {"stereo_rms_px": rms, "F_undistorted_pixels": F,
                             "E": E, "scale_source": "100% chessboard object coordinates (mm)",
-                            "solver": "per-pair solvePnP + fixed-intrinsic joint stereo refinement"}
+                            "solver": "per-pair solvePnP (SQPnP) + fixed-intrinsic joint stereo refinement"}
 
 
 def estimate_eight_point(p1, p2, cameras, threshold_px=1.5):

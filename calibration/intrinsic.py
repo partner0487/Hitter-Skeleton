@@ -156,7 +156,7 @@ def estimate_pose(corners, pattern, square_mm, image_size, focal_mm):
     if init_K is None:
         return None
     objp = object_points(pattern, square_mm)
-    ok, rvec, tvec = cv2.solvePnP(objp, corners, init_K, None)
+    ok, rvec, tvec = cv2.solvePnP(objp, corners, init_K, None, flags=cv2.SOLVEPNP_SQPNP)
     if not ok:
         return None
     R, _ = cv2.Rodrigues(rvec)
